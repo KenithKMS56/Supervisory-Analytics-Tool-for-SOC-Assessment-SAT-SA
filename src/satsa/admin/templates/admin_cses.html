@@ -1,0 +1,205 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Critical Sector Entities{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <h2>Critical Sector Entities (CSEs)</h2>
+    <p>Target entities subjected to NCIIPC supervisory oversight, SOC alert assessments, and peer benchmarking.</p>
+  </div>
+  <button type="button" class="btn-admin btn-admin-primary" onclick="toggleCreateCSEModal()" id="registerCSEBtn">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+      <line x1="12" y1="5" x2="12" y2="19"></line>
+      <line x1="5" y1="12" x2="19" y2="12"></line>
+    </svg>
+    Register CSE
+  </button>
+</div>
+
+{% if message %}
+<div class="admin-alert admin-alert-success" role="alert">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+    <polyline points="20 6 9 17 4 12"></polyline>
+  </svg>
+  <div>{{ message }}</div>
+</div>
+{% endif %}
+
+{% if error %}
+<div class="admin-alert admin-alert-error" role="alert">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+    <circle cx="12" cy="12" r="10"></circle>
+    <line x1="12" y1="8" x2="12" y2="12"></line>
+    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+  </svg>
+  <div>{{ error }}</div>
+</div>
+{% endif %}
+
+<!-- Beautiful Collapsible Registration Card -->
+<div id="createCSECard" class="form-card" style="display: none; border-color: var(--accent-primary); box-shadow: var(--shadow-md);">
+  <div class="card-header" style="background: var(--admin-surface-subtle);">
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <div class="stat-icon" style="width: 28px; height: 28px; background: rgba(56, 189, 248, 0.15); color: var(--accent-blue);">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+        </svg>
+      </div>
+      <div>
+        <h3>Register New Critical Sector Entity (CSE)</h3>
+        <span style="font-size: 0.74rem; color: var(--admin-text-muted);">Defines operational boundary for SOC alert ingestion &amp; supervisory assessment</span>
+      </div>
+    </div>
+    <button type="button" class="btn-admin btn-admin-secondary btn-admin-sm" onclick="toggleCreateCSEModal()" title="Close form">
+      ✕ Close
+    </button>
+  </div>
+
+  <form method="post" action="/cses/create" class="form-body">
+    
+    <div class="form-section">
+      <div class="form-section-header">
+        <h4>Entity Classification &amp; Parent Organisation</h4>
+        <span>Authoritative Identity Details</span>
+      </div>
+
+      <div class="form-grid-3">
+        <!-- CSE ID -->
+        <div class="form-group">
+          <label class="form-label" for="cse_id">
+            CSE Identifier <span class="req">*</span>
+          </label>
+          <input
+            type="text"
+            id="cse_id"
+            name="cse_id"
+            class="form-input form-input-mono"
+            placeholder="e.g. CSE-11"
+            required
+            pattern="^[A-Z0-9_\-]{3,16}$"
+            title="3 to 16 uppercase characters, numbers, and hyphens"
+          >
+          <span class="form-helper">Canonical ID matching alert logs (e.g. CSE-01).</span>
+        </div>
+
+        <!-- Parent Organisation -->
+        <div class="form-group">
+          <label class="form-label" for="org_id">
+            Parent Organisation <span class="req">*</span>
+          </label>
+          <select id="org_id" name="org_id" class="form-select" required onchange="syncSector()">
+            <option value="" disabled selected>-- Select Organisation --</option>
+            {% for o in organisations %}
+            <option value="{{ o.org_id }}" data-sector="{{ o.sector }}">
+              {{ o.name }} ({{ o.org_id }})
+            </option>
+            {% endfor %}
+          </select>
+          <span class="form-helper">Governing entity organization.</span>
+        </div>
+
+        <!-- Critical Sector -->
+        <div class="form-group">
+          <label class="form-label" for="sector">
+            Critical Infrastructure Sector <span class="req">*</span>
+          </label>
+          <input
+            type="text"
+            id="sector"
+            name="sector"
+            class="form-input"
+            placeholder="Auto-synced or enter sector"
+            required
+          >
+          <span class="form-helper">Domain taxonomy used for benchmarking.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Actions Bar -->
+    <div class="form-actions-bar" style="margin-top: 0; padding-top: 1.25rem;">
+      <button type="button" class="btn-admin btn-admin-secondary" onclick="toggleCreateCSEModal()">Cancel</button>
+      <button type="submit" class="btn-admin btn-admin-primary">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+        Register Critical Sector Entity
+      </button>
+    </div>
+
+  </form>
+</div>
+
+<!-- Monitored Entities Table Card -->
+<div class="admin-card">
+  <div class="card-header">
+    <h3>Monitored Critical Sector Entities ({{ cses|length }})</h3>
+    <span style="font-size: 0.76rem; color: var(--admin-text-muted);">Configured boundaries for SOC assessment engine</span>
+  </div>
+
+  <table class="admin-table">
+    <thead>
+      <tr>
+        <th style="width: 140px;">CSE ID</th>
+        <th>Parent Organisation</th>
+        <th>Critical Sector</th>
+        <th style="text-align: center; width: 140px;">Assigned Users</th>
+        <th style="width: 110px;">Status</th>
+        <th style="text-align: right; width: 160px;">Supervisory Profile</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in cses %}
+      <tr>
+        <td style="font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--accent-blue);">
+          {{ c.cse_id }}
+        </td>
+        <td style="font-size: 0.83rem;">
+          {{ c.org_name or c.org_id }}
+          <span style="font-family: 'JetBrains Mono', monospace; color: var(--admin-text-muted); font-size: 0.72rem; margin-left: 4px;">({{ c.org_id }})</span>
+        </td>
+        <td>
+          <span class="badge" style="background: var(--admin-surface-subtle); color: var(--admin-text-primary); border: 1px solid var(--admin-border);">
+            {{ c.sector }}
+          </span>
+        </td>
+        <td style="text-align: center; font-family: 'JetBrains Mono', monospace; font-weight: 600;">
+          {{ c.user_count or 0 }}
+        </td>
+        <td>
+          <span class="badge badge-active">{{ c.status }}</span>
+        </td>
+        <td style="text-align: right;">
+          <a href="http://localhost:8001/entity/{{ c.cse_id }}" target="_blank" rel="noopener noreferrer" class="btn-admin btn-admin-secondary btn-admin-sm" title="Inspect entity supervisory profile in SAT-SA Engine">
+            SAT-SA Profile ↗
+          </a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+function toggleCreateCSEModal() {
+  var card = document.getElementById("createCSECard");
+  if (card.style.display === "none") {
+    card.style.display = "block";
+    document.getElementById("cse_id").focus();
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } else {
+    card.style.display = "none";
+  }
+}
+
+function syncSector() {
+  var sel = document.getElementById("org_id");
+  var opt = sel.options[sel.selectedIndex];
+  var sector = opt.getAttribute("data-sector");
+  if (sector) {
+    document.getElementById("sector").value = sector;
+  }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,221 @@
+{% extends "base.html" %}
+
+{% block title %}Blind Review Studio{% endblock %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>Blinded Supervisory Review Studio</h1>
+    <p>Cognitive bias mitigation: evaluate raw operational signals before revealing algorithmic scores.</p>
+  </div>
+</div>
+
+<!-- Entity Selection Bar -->
+<div class="card" style="margin-bottom: 1.5rem;">
+  <form method="get" action="/blind-review" style="display: flex; gap: 1rem; align-items: center;">
+    <label style="font-weight: 600;">Select Entity to Audit:</label>
+    <select name="entity_id" class="form-control" style="width: 250px;" onchange="this.form.submit()">
+      {% for ent in all_entities %}
+        <option value="{{ ent }}" {% if selected_entity == ent %}selected{% endif %}>{{ ent }}</option>
+      {% endfor %}
+    </select>
+    <span style="color: var(--text-muted); font-size: 0.85rem;">All pre-computed SAT-SA risk scores and rule names are hidden to preserve independent examiner judgment.</span>
+  </form>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+  <!-- Left: Raw Operational Telemetry Evidence -->
+  <div class="card">
+    <h2>Raw Operational Telemetry: {{ selected_entity }}</h2>
+    <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1rem;">
+      Empirical operational telemetry computed directly from canonical logs:
+    </p>
+
+    <div class="table-container">
+      <table>
+        <tbody>
+          <tr>
+            <td><strong>Total Recorded Alerts:</strong></td>
+            <td><code>{{ metrics.total_alerts }}</code></td>
+          </tr>
+          <tr>
+            <td><strong>Empirical Median MTTA:</strong></td>
+            <td><code>{{ metrics.median_mtta_min }} minutes</code></td>
+          </tr>
+          <tr>
+            <td><strong>Empirical Median MTTR:</strong></td>
+            <td><code>{{ metrics.median_mttr_min }} minutes</code></td>
+          </tr>
+          <tr>
+            <td><strong>Self-Declared MTTR (Attestation):</strong></td>
+            <td><code style="color: var(--accent-indigo);">{{ metrics.declared_mttr }} minutes</code></td>
+          </tr>
+          <tr>
+            <td><strong>Tier-1 Escalation Rate:</strong></td>
+            <td><code>{{ metrics.esc_rate }}%</code> of High/Critical alerts</td>
+          </tr>
+          <tr>
+            <td><strong>SOAR Automation Volume Share:</strong></td>
+            <td><code>{{ metrics.soar_share }}%</code></td>
+          </tr>
+          <tr>
+            <td><strong>False Positive Classification Share:</strong></td>
+            <td><code>{{ metrics.fp_rate }}%</code></td>
+          </tr>
+          <tr>
+            <td><strong>Silent Monitored Assets (&gt;3 Days):</strong></td>
+            <td><code style="color: {% if metrics.silent_assets > 0 %}var(--risk-crit){% else %}var(--text-primary){% endif %};">{{ metrics.silent_assets }} assets</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3 style="margin-top: 1.5rem;">Sample Anonymized Closure Log Notes:</h3>
+    <div style="background: var(--surface-sunken); border: 1px solid var(--border-color); border-radius: 6px; padding: 0.75rem; font-size: 0.82rem; font-family: monospace; color: var(--text-secondary); max-height: 150px; overflow-y: auto;">
+      {% for s in metrics.sample_comments %}
+        <div>&bull; {{ s }}</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Right: Blinded Evaluation Input Form -->
+  <div class="card">
+    <h2>Examiner Independent Assessment</h2>
+    <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1.5rem;">
+      Formulate your independent regulatory verdict. SAT-SA's findings will be revealed upon submission.
+    </p>
+
+    {% set identity = get_identity(request) %}
+    {% if not (identity and identity.role in ('examiner', 'supervisor', 'admin')) %}
+    <p style="font-size: 0.85rem;">
+      <a href="/login?next=/blind-review%3Fentity_id%3D{{ selected_entity }}">Log in as examiner, supervisor, or admin</a>
+      to submit an independent assessment.
+    </p>
+    {% else %}
+    <form method="post" action="/blind-review/submit">
+      <input type="hidden" name="entity_id" value="{{ selected_entity }}">
+      
+      <div style="margin-bottom: 1rem;">
+        <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">Assessed Supervisory Concern Level:</label>
+        <select name="examiner_concern" class="form-control" required>
+          <option value="Low">Low Concern (Operational Integrity Maintained)</option>
+          <option value="Moderate">Moderate Concern (Minor Process Inconsistencies)</option>
+          <option value="Elevated">Elevated Concern (Significant Execution Gaps)</option>
+          <option value="Critical">Critical Concern (Severe Blind Spots / Metric Gaming)</option>
+        </select>
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">Recommended Inquest Priority:</label>
+        <select name="examiner_priority" class="form-control" required>
+          <option value="Routine">Routine Annual Cycle</option>
+          <option value="P3">P3 - Targeted Inquest in 60 Days</option>
+          <option value="P2">P2 - Priority Evidentiary Review in 30 Days</option>
+          <option value="P1">P1 - Immediate On-Site Examination</option>
+        </select>
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">Statutory Recommendation:</label>
+        <select name="examiner_recommendation" class="form-control" required>
+          <option value="Satisfactory">Satisfactory Operations (No Action)</option>
+          <option value="Advisory Notice">Issue Supervisory Advisory Notice</option>
+          <option value="Formal Audit Directive">Issue Formal Audit Directive under Sec 70A</option>
+          <option value="Statutory Inquest">Initiate Full Forensic Regulatory Inquest</option>
+        </select>
+      </div>
+
+      <div style="margin-bottom: 1.5rem;">
+        <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">Examiner Justification & Workpaper Notes:</label>
+        <textarea name="examiner_notes" class="form-control" rows="4" placeholder="Detail observed inconsistencies (e.g. MTTR mismatch, excessive FP rates, silent assets)..." required></textarea>
+      </div>
+
+      <button type="submit" class="btn btn-success" style="width: 100%; justify-content: center;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M9 11l3 3L22 4"/>
+          <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
+        </svg>
+        Submit Verdict & Reveal SAT-SA Concordance
+      </button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Comparison Reveal Section (if review exists) -->
+{% if latest_review %}
+<div class="card" style="margin-top: 2rem; border-color: var(--accent-secondary);">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+    <h2>Inter-Rater Concordance & Reveal Analysis</h2>
+    <span class="concordance-badge {% if latest_review.concordance_score >= 80 %}concordance-high{% elif latest_review.concordance_score >= 50 %}concordance-mod{% else %}concordance-low{% endif %}">
+      {{ latest_review.concordance_score }}% Algorithmic Concordance
+    </span>
+  </div>
+
+  <div class="blind-comparison-grid">
+    <div class="verdict-card">
+      <h3 style="color: var(--accent-indigo); margin-bottom: 0.75rem;">Examiner Blinded Verdict</h3>
+      <p><strong>Concern Level:</strong> {{ latest_review.examiner_concern }}</p>
+      <p><strong>Priority:</strong> {{ latest_review.examiner_priority }}</p>
+      <p><strong>Recommendation:</strong> {{ latest_review.examiner_recommendation }}</p>
+      <div style="margin-top: 1rem; color: var(--text-secondary); font-size: 0.85rem;">
+        <em>"{{ latest_review.examiner_notes }}"</em>
+      </div>
+    </div>
+
+    <div class="verdict-card">
+      <h3 style="color: var(--accent-blue); margin-bottom: 0.75rem;">SAT-SA Algorithmic Evidence</h3>
+      <p><strong>Supervisory Risk Index:</strong> <strong>{{ latest_review.system_risk_index }} / 100</strong></p>
+      <p><strong>Risk Band:</strong> {{ latest_review.system_risk_band }}</p>
+      <p><strong>Triggered Detection Rules:</strong></p>
+      <ul style="margin-top: 0.5rem; padding-left: 1.25rem; font-size: 0.85rem;">
+        {% for f in system_findings %}
+          <li><strong>{{ f.rule_id }}:</strong> {{ f.title }} (Score: {{ f.score }})</li>
+        {% else %}
+          <li style="color: var(--risk-low);">Zero critical execution gaps or negative space detected.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Historical Blind Reviews Table -->
+<div class="card" style="margin-top: 2rem;">
+  <h2>Historical Blind Review Audit Trail</h2>
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Review ID</th>
+          <th>Entity</th>
+          <th>Examiner Concern</th>
+          <th>SAT-SA Risk Band</th>
+          <th>Concordance</th>
+          <th>Submitted At</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in historical_reviews %}
+        <tr>
+          <td><code>{{ r.review_id }}</code></td>
+          <td><strong>{{ r.entity_id }}</strong></td>
+          <td>{{ r.examiner_concern }}</td>
+          <td>{{ r.system_risk_band }}</td>
+          <td>
+            <span class="concordance-badge {% if r.concordance_score >= 80 %}concordance-high{% elif r.concordance_score >= 50 %}concordance-mod{% else %}concordance-low{% endif %}">
+              {{ r.concordance_score }}%
+            </span>
+          </td>
+          <td style="font-size: 0.85rem;">{{ r.created_at }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 1.5rem;">No blinded reviews recorded yet for this entity.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,68 @@
+# SAT-SA Execution Plan
+
+Supervisory Analytics Tool for SOC Assessment (NCIIPC)
+
+## Progress Checklist
+
+- [x] **Phase 1: Foundation**
+  - [x] Repository initialized & pyproject.toml created
+  - [x] Virtual environment & dependencies installed
+  - [x] Directory layout created
+  - [x] Canonical data models (Pydantic schemas)
+  - [x] Stores: DuckDB (partitioned parquet) & SQLite (metadata, audit, findings)
+  - [x] Configuration YAMLs (`rules.yaml`, `scoring.yaml`, `taxonomy.yaml`, `peers.yaml`, `expected.yaml`, `mappings/`)
+  - [x] CLI skeleton (`satsa`)
+  - [x] `make check` (ruff, mypy, pytest) passing
+- [x] **Phase 2: Synthetic Data & Ground Truth**
+  - [x] Generator engine with deterministic seeds
+  - [x] 10 CSE profiles across 5 sectors (power, banking, telecom, oil & gas, transport) over 6 months
+  - [x] Clean baselines (CSE-01, CSE-04, CSE-06)
+  - [x] Injected defects (CSE-02, CSE-03, CSE-05, CSE-07, CSE-08, CSE-09, CSE-10)
+  - [x] Confounders (SOAR automated closures, small entity)
+  - [x] Machine-readable `ground_truth.json`
+- [x] **Phase 3: Ingestion & Data Quality**
+  - [x] 3 source adapters (Splunk, ServiceNow, TheHive JSON)
+  - [x] Mapping engine and taxonomy normalizer
+  - [x] Pseudonymisation (HMAC-SHA256 with local secret salt)
+  - [x] Redaction (regex for IPv4/v6, emails, hostnames, long digits)
+  - [x] Data Quality checks (required fields, timestamps, sequence gaps, null rates)
+  - [x] Submission manifest & audit log entry
+- [x] **Phase 4: Metrics & Peer Benchmarking**
+  - [x] DuckDB SQL metrics computation
+  - [x] Robust statistics (median, MAD, robust z, IQR, percentile rank)
+  - [x] SPC (CUSUM, EWMA) for trend break detection
+  - [x] Peer grouping & fallback mechanism
+  - [x] Metric sweep (~100 numeric metrics per entity)
+- [x] **Phase 5: Detection Rules**
+  - [x] Base rule class & registry
+  - [x] Execution gaps (EG01 to EG12)
+  - [x] Negative space (NS01 to NS08)
+  - [x] Rationale templates, benign explanations, examiner checks
+- [x] **Phase 6: Scoring, Prioritisation, Explainability & Audit**
+  - [x] Rule score (0-100) with confidence damping
+  - [x] Domain score (probabilistic noisy-OR)
+  - [x] Entity risk index & risk band cut-offs
+  - [x] Review queue (70% top-risk, 30% stratified random)
+  - [x] Finding cards with complete evidence links
+  - [x] Cryptographic hash-chain audit log (`prev_hash`) & verification
+- [x] **Phase 7: REST API & Offline UI**
+  - [x] FastAPI backend with local auth (admin, supervisor, examiner)
+  - [x] Vendored Apache ECharts (offline, zero CDN)
+  - [x] 6 UI views (Portfolio, Entity Profile, Finding Detail, Review Queue, DQ & Coverage, Runs & Audit)
+  - [x] Examiner feedback capture (does not alter scores)
+- [x] **Phase 8: Reports & Validation Harness**
+  - [x] Self-contained HTML report with disclaimer
+  - [x] CSV exports (findings, queue, metrics)
+  - [x] ReportLab PDF export
+  - [x] Validation harness (`satsa validate`) vs `ground_truth.json`
+  - [x] Precision, recall, lift curves, and +/-20% stability
+- [x] **Phase 9: Performance & Offline Packaging**
+  - [x] 5M alert scaling measurement recorded in `docs/infrastructure.md`
+  - [x] No-network test assertion
+  - [x] Offline bundle creation & verification
+- [x] **Phase 10: Documentation & Polish**
+  - [x] `architecture.md` (≤ 2 pages)
+  - [x] `functional_design.md`, `analytics_methodology.md`, `data_requirements.md`, `infrastructure.md`, `validation.md`, `deployment_ops.md`
+  - [x] `slides_outline.md` (≤ 5 slides)
+  - [x] `demo_script.md` (2-minute click-path)
+  - [x] Root `README.md`

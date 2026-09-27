@@ -1,0 +1,264 @@
+rules:
+  EG01:
+    name: Fast High-Severity Closure
+    version: 1.0.0
+    domain: Investigation
+    level: entity
+    min_sample: 10
+    severity_weight: 85
+    params:
+      max_workflow_events: 1
+      robust_z_threshold: 2.0
+      close_time_percentile_cutoff: 0.05
+    description: Human-closed High/Critical alerts closed faster than peer p5 with
+      1 or fewer workflow events.
+    threshold_seconds: 300
+  EG02:
+    name: Ack without Investigation
+    version: 1.0.0
+    domain: Investigation
+    level: entity
+    min_sample: 15
+    severity_weight: 80
+    params:
+      max_investigative_events: 0
+      max_comment_len: 20
+      robust_z_threshold: 2.0
+    description: Alerts acknowledged then closed with zero investigative events and
+      brief closure note.
+  EG03:
+    name: Critical Closed without Escalation
+    version: 1.0.0
+    domain: Escalation
+    level: alert
+    min_sample: 5
+    severity_weight: 95
+    params:
+      must_escalate_categories:
+      - Malware
+      - Ransomware
+      - Data Exfiltration
+      - Command and Control
+      - Unauthorized Access
+      trivial_comment_len: 25
+      robust_z_threshold: 2.0
+    description: Critical/High true-positives closed without an escalation record
+      or marked false-positive with trivial comments.
+  EG04:
+    name: Template-Driven Investigations
+    version: 1.0.0
+    domain: Investigation
+    level: entity
+    min_sample: 20
+    severity_weight: 75
+    params:
+      min_hash_repeats: 5
+      jaccard_threshold: 0.9
+      unique_comment_ratio_threshold: 0.3
+    description: High share of human-closed alert comments matching repeated normalized
+      hashes or Jaccard similarity >= 0.9.
+    max_comment_hash_share: 0.45
+  EG05:
+    name: Repeat Alerts without Root Cause
+    version: 1.0.0
+    domain: Operational Discipline
+    level: entity
+    min_sample: 10
+    severity_weight: 70
+    params:
+      window_days: 30
+      min_recurrence_count: 5
+      share_threshold: 0.08
+    description: Identical (asset, rule) pairs recurring >= 5 times in 30 days, repeatedly
+      closed benign without remediation ticket.
+    repeat_count: 5
+  EG06:
+    name: Metric Gaming
+    version: 1.0.0
+    domain: Governance and Oversight
+    level: entity
+    min_sample: 20
+    severity_weight: 90
+    params:
+      sla_deadline_window_ratio: 0.1
+      bulk_closure_max_seconds_gap: 60
+      bulk_closure_min_count: 5
+      downgrade_share_threshold: 0.15
+      clock_stop_ratio_threshold: 0.25
+    description: Composite indicator detecting deadline-hugging, bulk/identical-timestamp
+      closures, month-end spikes, and severity downgrades.
+  EG07:
+    name: Analyst Implausibility
+    version: 1.0.0
+    domain: Operational Discipline
+    level: entity
+    min_sample: 20
+    severity_weight: 75
+    params:
+      max_closures_per_hour: 25
+      outside_shift_ratio_threshold: 0.15
+      burst_window_seconds: 300
+      burst_closure_threshold: 8
+    description: Closures per analyst-hour exceeding realistic human capacity or concentrated
+      heavily outside declared shifts.
+  EG08:
+    name: Escalation without Follow-Through
+    version: 1.0.0
+    domain: Escalation
+    level: entity
+    min_sample: 5
+    severity_weight: 85
+    params:
+      max_ack_minutes: 120
+      unacknowledged_share_threshold: 0.2
+    description: Escalated alerts or cases lacking tier-2/tier-3 acknowledgment within
+      SLA or unlinked to an active case.
+  EG09:
+    name: Backlog and Aging
+    version: 1.0.0
+    domain: Incident Response
+    level: entity
+    min_sample: 10
+    severity_weight: 70
+    params:
+      sla_multiplier: 3.0
+      stale_days_threshold: 14
+      aging_share_threshold: 0.15
+    description: Open cases exceeding multiples of resolution SLA or exhibiting no
+      workflow activity for 14+ days.
+  EG10:
+    name: KPI Reconciliation Gap
+    version: 1.0.0
+    domain: Governance and Oversight
+    level: entity
+    min_sample: 10
+    severity_weight: 95
+    params:
+      relative_gap_threshold: 0.1
+    description: Material discrepancy (>10%) between declared MTTA/MTTR/SLA metrics
+      and empirical recomputation from operational timestamps.
+    tolerance_percent: 10.0
+  EG11:
+    name: Disposition Extremes
+    version: 1.0.0
+    domain: Threat Detection
+    level: entity
+    min_sample: 200
+    severity_weight: 80
+    params:
+      fp_rate_threshold: 0.98
+      min_alerts_for_fp_rule: 200
+    description: 'Abnormal disposition distribution: false positive rate > 98% with
+      no tuning, or 0 true positives over 6 months.'
+  EG12:
+    name: Workflow Non-Conformance
+    version: 1.0.0
+    domain: Security Operations
+    level: entity
+    min_sample: 15
+    severity_weight: 80
+    params:
+      skipped_step_threshold: 0.15
+    description: Cases with skipped or out-of-order mandatory workflow stages (triage,
+      investigate, escalate, contain, close).
+  NS01:
+    name: Silent Critical Assets
+    version: 1.0.0
+    domain: Threat Detection
+    level: asset
+    min_sample: 1
+    severity_weight: 95
+    params:
+      min_criticality: 3
+      consecutive_silent_days: 3
+      robust_z_threshold: -2.0
+    description: Tier-1/Tier-2 monitored critical assets with zero telemetry or alert
+      activity for >= 3 consecutive days.
+    consecutive_days_zero_events: 3
+  NS02:
+    name: Missing Alert Categories
+    version: 1.0.0
+    domain: Threat Detection
+    level: entity
+    min_sample: 30
+    severity_weight: 85
+    params:
+      peer_prevalence_threshold: 0.8
+      min_expected_count: 1
+    description: Standard MITRE/alert categories observed across >= 80% of peer entities
+      are completely absent.
+    peer_prevalence_threshold: 80.0
+  NS03:
+    name: Unexpectedly Low or Flat Activity
+    version: 1.0.0
+    domain: Security Operations
+    level: entity
+    min_sample: 30
+    severity_weight: 85
+    params:
+      robust_z_threshold: -2.0
+      night_weekend_ratio_threshold: 0.05
+      cusum_threshold: 5.0
+    description: Alerts per asset per day significantly below peer median or near-zero
+      weekend/night activity indicating monitoring blackouts.
+    robust_z_threshold: -2.0
+  NS04:
+    name: Missing Records
+    version: 1.0.0
+    domain: Governance and Oversight
+    level: entity
+    min_sample: 10
+    severity_weight: 90
+    params:
+      orphan_threshold: 0
+      missing_closure_threshold: 0
+    description: Gaps in ID sequences, True Positive alerts lacking incident cases,
+      alerts closed without closure records, or orphaned references.
+  NS05:
+    name: Rule Coverage Gaps
+    version: 1.0.0
+    domain: Threat Detection
+    level: entity
+    min_sample: 20
+    severity_weight: 75
+    params:
+      dormant_rule_share_threshold: 0.35
+      mitre_technique_gap_threshold: 0.3
+    description: High share of enabled SIEM detection rules that have never fired
+      or critical MITRE techniques completely uncovered.
+  NS06:
+    name: Inventory vs Telemetry
+    version: 1.0.0
+    domain: Cyber Resilience
+    level: entity
+    min_sample: 10
+    severity_weight: 85
+    params:
+      silent_inventory_share_threshold: 0.1
+      shadow_asset_count_threshold: 5
+    description: Assets in asset inventory never emitting alerts (ghost assets) or
+      uninventoried assets generating alerts (shadow assets).
+  NS07:
+    name: Absent External Reporting
+    version: 1.0.0
+    domain: Incident Response
+    level: entity
+    min_sample: 1
+    severity_weight: 95
+    params:
+      mandated_window_hours: 6
+    description: Confirmed Critical true-positive incidents not reported to NCIIPC/CERT-In
+      within the mandatory supervisory window.
+    window_hours: 6
+  NS08:
+    name: Submission Completeness
+    version: 1.0.0
+    domain: Governance and Oversight
+    level: entity
+    min_sample: 1
+    severity_weight: 90
+    params:
+      max_null_rate: 0.15
+      batch_deviation_threshold: 0.4
+    description: Missing monthly batches, severe volume drop vs historical baseline,
+      or high null rate in mandatory fields.

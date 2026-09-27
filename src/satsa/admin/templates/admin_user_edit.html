@@ -1,0 +1,256 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Edit User: {{ user.username }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <h2>Edit User Identity: <span style="font-family: 'JetBrains Mono', monospace; color: var(--accent-primary);">{{ user.username }}</span></h2>
+    <p>Modify authoritative role, organizational boundaries, and operational status.</p>
+  </div>
+  <a href="/users" class="btn-admin btn-admin-secondary">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="19" y1="12" x2="5" y2="12"></line>
+      <polyline points="12 19 5 12 12 5"></polyline>
+    </svg>
+    Back to Users Directory
+  </a>
+</div>
+
+{% if error %}
+<div class="admin-alert admin-alert-error" role="alert">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+    <circle cx="12" cy="12" r="10"></circle>
+    <line x1="12" y1="8" x2="12" y2="12"></line>
+    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+  </svg>
+  <div>{{ error }}</div>
+</div>
+{% endif %}
+
+<div class="form-card" style="max-width: 960px; margin: 0 auto;">
+  <div class="card-header">
+    <div>
+      <h3>Identity Configuration &amp; Boundaries</h3>
+      <span style="font-size: 0.76rem; color: var(--admin-text-muted);">Changes take effect immediately across active sessions</span>
+    </div>
+    {% if user.status == 'ACTIVE' %}
+      <span class="badge badge-active">ACTIVE</span>
+    {% else %}
+      <span class="badge badge-blocked">BLOCKED</span>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/users/{{ user.username }}/edit" id="editUserForm" class="form-body">
+    
+    <!-- SECTION 1: Identity Info -->
+    <div class="form-section">
+      <div class="form-section-header">
+        <h4>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="color: var(--accent-primary);">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
+          Account Identification &amp; Status
+        </h4>
+        <span>Immutable Identity &amp; Perimeter Status</span>
+      </div>
+
+      <div class="form-grid-2">
+        <!-- Username (Disabled) -->
+        <div class="form-group">
+          <label class="form-label" for="username">Authoritative Username</label>
+          <input
+            type="text"
+            id="username"
+            name="username"
+            class="form-input form-input-mono"
+            value="{{ user.username }}"
+            disabled
+            style="background: var(--admin-surface-subtle); color: var(--admin-text-secondary); cursor: not-allowed;"
+          >
+          <span class="form-helper">Canonical username is immutable.</span>
+        </div>
+
+        <!-- Account Status -->
+        <div class="form-group">
+          <label class="form-label" for="status">
+            Account Status <span class="req">*</span>
+          </label>
+          <select id="status" name="status" class="form-select" required>
+            <option value="ACTIVE" {% if user.status == 'ACTIVE' %}selected{% endif %}>ACTIVE (Full Access Permitted)</option>
+            <option value="BLOCKED" {% if user.status == 'BLOCKED' %}selected{% endif %}>BLOCKED (Immediate Revocation &amp; Perimeter Denial)</option>
+          </select>
+          <span class="form-helper">Setting to BLOCKED terminates all active sessions across :8000 and :8001.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 2: Role & Authority -->
+    <div class="form-section">
+      <div class="form-section-header">
+        <h4>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="color: var(--accent-primary);">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+          </svg>
+          Authoritative Role &amp; Console Access
+        </h4>
+        <span>Permission &amp; Capability Assignment</span>
+      </div>
+
+      <div class="form-grid-2">
+        <!-- Role -->
+        <div class="form-group">
+          <label class="form-label" for="role">
+            Platform Role <span class="req">*</span>
+          </label>
+          <select id="role" name="role" class="form-select" required>
+            <optgroup label="NCIIPC Supervisory Authorities">
+              <option value="NCIIPC Super Administrator" {% if user.role == 'NCIIPC Super Administrator' or user.role == 'admin' %}selected{% endif %}>NCIIPC Super Administrator</option>
+              <option value="NCIIPC Supervisor" {% if user.role == 'NCIIPC Supervisor' or user.role == 'supervisor' %}selected{% endif %}>NCIIPC Supervisor</option>
+              <option value="NCIIPC Examiner" {% if user.role == 'NCIIPC Examiner' or user.role == 'examiner' %}selected{% endif %}>NCIIPC Examiner</option>
+            </optgroup>
+            <optgroup label="Critical Sector Entity Scopes">
+              <option value="CSE Administrator" {% if user.role == 'CSE Administrator' %}selected{% endif %}>CSE Administrator</option>
+              <option value="SOC Manager" {% if user.role == 'SOC Manager' %}selected{% endif %}>SOC Manager</option>
+              <option value="SOC Analyst" {% if user.role == 'SOC Analyst' %}selected{% endif %}>SOC Analyst</option>
+              <option value="CSE Viewer" {% if user.role == 'CSE Viewer' %}selected{% endif %}>CSE Viewer</option>
+            </optgroup>
+          </select>
+          <span class="form-helper">Determines review, analytics, and administrative privileges.</span>
+        </div>
+
+        <!-- Admin Portal Checkbox Card -->
+        <div class="form-group">
+          <label class="form-label">Control Portal Authorization</label>
+          <label class="form-checkbox-card" for="is_admin_user">
+            <input type="checkbox" id="is_admin_user" name="is_admin_user" value="true" {% if user.is_admin_user %}checked{% endif %}>
+            <div class="form-checkbox-content">
+              <span class="form-checkbox-title">Grant NCIIPC Control Portal Access (:8000)</span>
+              <span class="form-checkbox-desc">Allows operator to authenticate to this administrative console.</span>
+            </div>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 3: Scoping & Boundary -->
+    <div class="form-section">
+      <div class="form-section-header">
+        <h4>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="color: var(--accent-primary);">
+            <rect x="4" y="2" width="16" height="20" rx="2" ry="2"></rect>
+            <line x1="9" y1="22" x2="9" y2="22.01"></line>
+            <line x1="15" y1="22" x2="15" y2="22.01"></line>
+          </svg>
+          Organizational Scoping &amp; Entity Boundaries
+        </h4>
+        <span>Enforced Boundary Scope</span>
+      </div>
+
+      <div class="form-grid-2">
+        <!-- Organisation Scope -->
+        <div class="form-group">
+          <label class="form-label" for="org_id">Organisation Scope</label>
+          <select id="org_id" name="org_id" class="form-select" onchange="handleOrgChange()">
+            <option value="" {% if not user.org_id %}selected{% endif %}>-- National Oversight / Unscoped (NCIIPC) --</option>
+            {% for org in organisations %}
+            <option value="{{ org.org_id }}" {% if user.org_id == org.org_id %}selected{% endif %}>
+              {{ org.name }} ({{ org.org_id }}) &mdash; {{ org.sector }}
+            </option>
+            {% endfor %}
+          </select>
+          <span class="form-helper">Parent organisation classification.</span>
+        </div>
+
+        <!-- Assigned CSE -->
+        <div class="form-group">
+          <label class="form-label" for="cse_id">Assigned Critical Sector Entity (CSE)</label>
+          <select id="cse_id" name="cse_id" class="form-select form-input-mono">
+            <option value="" {% if not user.cse_id %}selected{% endif %}>-- Multi-Entity / Supervisory Oversight --</option>
+            {% for cse in cses %}
+            <option value="{{ cse.cse_id }}" data-org="{{ cse.org_id }}" {% if user.cse_id == cse.cse_id %}selected{% endif %}>
+              {{ cse.cse_id }} &mdash; {{ cse.sector }} ({{ cse.org_id }})
+            </option>
+            {% endfor %}
+          </select>
+          <span class="form-helper">Entity users are restricted to this CSE ID.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- SECTION 4: Security Policy -->
+    <div class="form-section" style="margin-bottom: 0;">
+      <div class="form-section-header">
+        <h4>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="color: var(--accent-primary);">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+          Security Policies
+        </h4>
+        <span>Session &amp; Password Governance</span>
+      </div>
+
+      <label class="form-checkbox-card" for="force_password_change">
+        <input type="checkbox" id="force_password_change" name="force_password_change" value="true" {% if user.force_password_change %}checked{% endif %}>
+        <div class="form-checkbox-content">
+          <span class="form-checkbox-title">Require Password Reset on Next Login</span>
+          <span class="form-checkbox-desc">Forces user to change their passphrase before accessing platform dashboards.</span>
+        </div>
+      </label>
+    </div>
+
+    <!-- Actions Bar -->
+    <div class="form-actions-bar" style="justify-content: space-between;">
+      <a href="/users/{{ user.username }}/reset" class="btn-admin btn-admin-secondary" style="color: var(--accent-blue);">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+        Reset Passphrase
+      </a>
+
+      <div style="display: flex; gap: 0.75rem;">
+        <a href="/users" class="btn-admin btn-admin-secondary">Cancel</a>
+        <button type="submit" class="btn-admin btn-admin-primary">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <polyline points="20 6 9 17 4 12"></polyline>
+          </svg>
+          Save Identity Changes
+        </button>
+      </div>
+    </div>
+
+  </form>
+</div>
+
+<script>
+var allCSEs = [
+  {% for cse in cses %}
+  { cse_id: "{{ cse.cse_id }}", org_id: "{{ cse.org_id }}", sector: "{{ cse.sector }}" },
+  {% endfor %}
+];
+
+function handleOrgChange() {
+  var orgSelect = document.getElementById("org_id");
+  var selectedOrg = orgSelect.value;
+  var cseSelect = document.getElementById("cse_id");
+  var currentCSE = "{{ user.cse_id or '' }}";
+
+  cseSelect.innerHTML = '<option value="">-- Multi-Entity / Supervisory Oversight --</option>';
+
+  allCSEs.forEach(function(cse) {
+    if (!selectedOrg || cse.org_id === selectedOrg) {
+      var opt = document.createElement("option");
+      opt.value = cse.cse_id;
+      opt.text = cse.cse_id + " \u2014 " + cse.sector + " (" + cse.org_id + ")";
+      if (cse.cse_id === currentCSE) {
+        opt.selected = true;
+      }
+      cseSelect.appendChild(opt);
+    }
+  });
+}
+</script>
+{% endblock %}

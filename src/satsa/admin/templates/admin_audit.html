@@ -1,0 +1,80 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Administrative Audit{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <h2>Administrative Cryptographic Audit Trail</h2>
+    <p>Tamper-evident, forward-secure SHA-256 chained audit log of all identity and supervisory events.</p>
+  </div>
+  <div style="display: flex; gap: 0.5rem; align-items: center;">
+    {% if chain_valid %}
+      <span class="badge badge-active" style="padding: 0.5rem 0.85rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.4rem;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        Hash Chain Verified ({{ audit_logs|length }} Blocks)
+      </span>
+    {% else %}
+      <span class="badge badge-blocked" style="padding: 0.5rem 0.85rem; font-size: 0.8rem; display: flex; align-items: center; gap: 0.4rem;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+        Hash Chain Integrity Compromised!
+      </span>
+    {% endif %}
+    <a href="/audit" class="btn-admin btn-admin-secondary btn-admin-sm" title="Re-verify Chain">
+      Verify Chain
+    </a>
+  </div>
+</div>
+
+<div class="admin-card">
+  <div class="card-header">
+    <h3>Audit Records</h3>
+    <span style="font-size: 0.75rem; color: var(--admin-text-muted);">
+      Each record binds <code style="font-family:'JetBrains Mono',monospace;">SHA-256(prev_hash + timestamp + actor + action + target + details)</code>
+    </span>
+  </div>
+
+  <table class="admin-table">
+    <thead>
+      <tr>
+        <th style="width: 50px;">ID</th>
+        <th>Timestamp (UTC)</th>
+        <th>Action</th>
+        <th>Actor</th>
+        <th>Target</th>
+        <th>Details</th>
+        <th>Record Hash</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for log in audit_logs %}
+      <tr>
+        <td style="font-family: 'JetBrains Mono', monospace; color: var(--admin-text-muted); font-size: 0.75rem;">
+          #{{ log.log_id[:8] }}
+        </td>
+        <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; white-space: nowrap;">
+          {{ log.ts[:19].replace('T', ' ') if log.ts else '' }}
+        </td>
+        <td>
+          <span class="badge {% if 'BLOCKED' in log.action or 'FAIL' in log.action %}badge-blocked{% elif 'CREATE' in log.action or 'UNBLOCKED' in log.action %}badge-active{% else %}badge-role{% endif %}">
+            {{ log.action }}
+          </span>
+        </td>
+        <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; font-weight: 600;">
+          {{ log.actor }}
+        </td>
+        <td style="font-size: 0.8rem;">
+          <strong style="font-family: 'JetBrains Mono', monospace;">{{ log.target or '—' }}</strong>
+        </td>
+        <td style="font-size: 0.78rem; color: var(--admin-text-secondary); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ log.details }}">
+          {{ log.details }}
+        </td>
+        <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.72rem; color: var(--admin-text-muted);" title="Hash: {{ log.curr_hash }}&#10;Prev: {{ log.prev_hash }}">
+          {{ log.curr_hash[:12] if log.curr_hash else '' }}...
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

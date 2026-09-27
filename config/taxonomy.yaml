@@ -1,0 +1,48 @@
+# SAT-SA Taxonomy Normalisation
+# Standardizes entity-specific field values into canonical representations.
+# Unmapped values map to 'unmapped' and are logged in DQ reports.
+
+severities:
+  low: ["low", "l", "informational", "info", "1", "sev3", "p4", "minor"]
+  medium: ["medium", "med", "m", "moderate", "2", "sev2", "p3", "warning"]
+  high: ["high", "hi", "h", "3", "sev1", "p2", "major"]
+  critical: ["critical", "crit", "c", "4", "sev0", "p1", "urgent", "blocker"]
+
+statuses:
+  open: ["open", "new", "assigned", "in_progress", "in progress", "investigating", "triaged", "active"]
+  escalated: ["escalated", "tier2", "tier3", "transferred", "pending_external"]
+  closed: ["closed", "resolved", "dismissed", "completed", "done", "auto_closed"]
+
+dispositions:
+  true_positive: ["true_positive", "tp", "incident", "malicious", "confirmed", "true positive"]
+  false_positive: ["false_positive", "fp", "benign", "expected", "false alarm", "false positive", "noise"]
+  benign: ["benign", "authorized_activity", "testing", "maintenance", "system_test"]
+  unknown: ["unknown", "inconclusive", "not_determined", "unspecified", "na"]
+
+categories:
+  - "Malware"
+  - "Ransomware"
+  - "Data Exfiltration"
+  - "Command and Control"
+  - "Unauthorized Access"
+  - "Privilege Escalation"
+  - "Phishing"
+  - "Credential Access"
+  - "Lateral Movement"
+  - "Denial of Service"
+  - "Policy Violation"
+  - "Suspicious Activity"
+
+mitre_tactics:
+  "TA0001": "Initial Access"
+  "TA0002": "Execution"
+  "TA0003": "Persistence"
+  "TA0004": "Privilege Escalation"
+  "TA0005": "Defense Evasion"
+  "TA0006": "Credential Access"
+  "TA0007": "Discovery"
+  "TA0008": "Lateral Movement"
+  "TA0009": "Collection"
+  "TA0010": "Exfiltration"
+  "TA0011": "Command and Control"
+  "TA0040": "Impact"

@@ -1,0 +1,94 @@
+{% extends "admin_base.html" %}
+
+{% block title %}NCIIPC Control Portal | Welcome{% endblock %}
+
+{% set hide_nav = true %}
+
+{% block content %}
+<!-- 0xZenith NCIIPC Splash / Landing Screen -->
+<div id="adminLanding" class="satsa-landing-screen" role="region" aria-label="Welcome to NCIIPC Control Portal">
+  <div class="landing-theme-switcher" id="landingThemeSwitcher">
+    <div class="theme-switcher-segmented" role="radiogroup" aria-label="Theme Selection">
+      <button type="button" class="theme-btn theme-btn-light" onclick="nciipcSetTheme('light')" role="radio" aria-checked="false" aria-label="Light Theme" title="Light Theme">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <circle cx="12" cy="12" r="5"></circle>
+          <line x1="12" y1="1" x2="12" y2="3"></line>
+          <line x1="12" y1="21" x2="12" y2="23"></line>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+          <line x1="1" y1="12" x2="3" y2="12"></line>
+          <line x1="21" y1="12" x2="23" y2="12"></line>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+        </svg>
+        <span>Light</span>
+      </button>
+      <button type="button" class="theme-btn theme-btn-dark active" onclick="nciipcSetTheme('dark')" role="radio" aria-checked="true" aria-label="Dark Theme" title="Dark Theme">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+        </svg>
+        <span>Dark</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="satsa-landing-backdrop"></div>
+  <div class="satsa-landing-container">
+    
+    <!-- 1. LOGO / BRAND -->
+    <div class="satsa-landing-brand-area">
+      <div class="satsa-landing-logo-wrap">
+        <img src="/static/0xzenith-logo.png" alt="0xZenith Logo" class="satsa-landing-logo">
+      </div>
+      <div class="satsa-landing-brand-name">0xZenith</div>
+    </div>
+
+    <!-- 2. MAIN PRODUCT TITLE -->
+    <div class="satsa-landing-title-area">
+      <h1 class="satsa-landing-title">
+        National Cyber Resilience Oversight<br>Administrative &amp; Supervisory Control
+      </h1>
+      <div class="satsa-landing-id">NCIIPC CONTROL PORTAL</div>
+    </div>
+
+    <!-- 3. PRIMARY ACTION: LOGIN -->
+    <div class="satsa-landing-action-area">
+      <a href="/login" id="btnLandingLogin" class="satsa-landing-btn" style="text-decoration: none;">
+        <span>Access Control Console</span>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+          <polyline points="12 5 19 12 12 19"></polyline>
+        </svg>
+      </a>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  function nciipcSetTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    try {
+      localStorage.setItem('nciipc_theme', theme);
+      localStorage.setItem('satsa_theme', theme);
+    } catch(e) {}
+    var btns = document.querySelectorAll('.theme-switcher-segmented .theme-btn');
+    btns.forEach(function(btn) {
+      if ((theme === 'light' && btn.classList.contains('theme-btn-light')) ||
+          (theme === 'dark' && btn.classList.contains('theme-btn-dark'))) {
+        btn.classList.add('active');
+        btn.setAttribute('aria-checked', 'true');
+      } else {
+        btn.classList.remove('active');
+        btn.setAttribute('aria-checked', 'false');
+      }
+    });
+  }
+
+  // Sync active button on load
+  document.addEventListener('DOMContentLoaded', function() {
+    var cur = document.documentElement.getAttribute('data-theme') || 'dark';
+    nciipcSetTheme(cur);
+  });
+</script>
+{% endblock %}

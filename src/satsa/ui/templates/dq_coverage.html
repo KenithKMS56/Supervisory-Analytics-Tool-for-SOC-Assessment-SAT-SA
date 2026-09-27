@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+
+{% block title %}Data Quality & Schema Completeness | NCIIPC SAT-SA{% endblock %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>Data Quality & Submission Completeness</h1>
+    <p>Automated pre-flight schema verification, temporal ordering assertions, and referential integrity audit.</p>
+  </div>
+  <div class="header-actions">
+    {% if error_count == 0 %}
+      <span class="badge badge-low" style="padding: 0.5rem 1rem; font-size: 0.88rem;">✓ 100% Schema Validated</span>
+    {% else %}
+      <span class="badge badge-crit" style="padding: 0.5rem 1rem; font-size: 0.88rem;">⚠ {{ error_count }} Schema Violations</span>
+    {% endif %}
+  </div>
+</div>
+
+<!-- DQ Summary Strip -->
+<div class="stats-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 2rem;">
+  <div class="stat-card">
+    <div class="stat-label">Impacted Records</div>
+    <div class="stat-value" style="color: var(--accent-blue);">{{ total_records_affected }}</div>
+    <div class="stat-desc">Total non-conforming rows detected</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Schema Errors</div>
+    <div class="stat-value" style="color: var(--risk-crit);">{{ error_count }}</div>
+    <div class="stat-desc">Severe temporal or referential violations</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Data Warnings</div>
+    <div class="stat-value" style="color: var(--risk-mod);">{{ warning_count }}</div>
+    <div class="stat-desc">Formatting, drift, or unmapped columns</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Entities with Gaps</div>
+    <div class="stat-value" style="color: var(--accent-indigo);">{{ affected_entities }}</div>
+    <div class="stat-desc">CSE submissions requiring remediation</div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 2rem;">
+  <div class="card-title">
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-blue)" stroke-width="2">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      <span>Active Data Quality Checks (Deterministic Rule Engine)</span>
+    </div>
+  </div>
+  <div style="padding: 1rem 1.5rem; font-size: 0.88rem; color: var(--text-secondary); line-height: 1.6;">
+    NCIIPC SAT-SA executes 8 mandatory pre-flight integrity assertions on all ingested SOC datasets:
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; margin-top: 1rem;">
+      <div style="background: var(--surface-sunken); padding: 0.75rem 1rem; border-radius: 6px; border-left: 3px solid var(--accent-blue);">
+        <code style="color: var(--text-primary); font-weight: 600;">NULL_OR_INVALID_TIMESTAMP</code>
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Validates ISO-8601 formatting and non-null detection/closure timestamps.</div>
+      </div>
+      <div style="background: var(--surface-sunken); padding: 0.75rem 1rem; border-radius: 6px; border-left: 3px solid var(--accent-blue);">
+        <code style="color: var(--text-primary); font-weight: 600;">FUTURE_TIMESTAMPS</code>
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Detects clock skew or synthetic injection beyond UTC now.</div>
+      </div>
+      <div style="background: var(--surface-sunken); padding: 0.75rem 1rem; border-radius: 6px; border-left: 3px solid var(--accent-blue);">
+        <code style="color: var(--text-primary); font-weight: 600;">CLOSED_BEFORE_DETECTED</code>
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Ensures resolution time occurs strictly after detection timestamp.</div>
+      </div>
+      <div style="background: var(--surface-sunken); padding: 0.75rem 1rem; border-radius: 6px; border-left: 3px solid var(--accent-blue);">
+        <code style="color: var(--text-primary); font-weight: 600;">ORPHAN_ESCALATION</code>
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Verifies that every escalation references a known parent alert.</div>
+      </div>
+      <div style="background: var(--surface-sunken); padding: 0.75rem 1rem; border-radius: 6px; border-left: 3px solid var(--accent-blue);">
+        <code style="color: var(--text-primary); font-weight: 600;">ORPHAN_CASE_RECORD</code>
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Detects incident records lacking valid underlying alert linkages.</div>
+      </div>
+      <div style="background: var(--surface-sunken); padding: 0.75rem 1rem; border-radius: 6px; border-left: 3px solid var(--accent-blue);">
+        <code style="color: var(--text-primary); font-weight: 600;">EXCESSIVE_DURATION</code>
+        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">Flags alert resolution durations exceeding 180 days (stale tickets).</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">
+    <span>Data Quality Non-Conformance Log ({{ dq_issues|length }} checks flagged)</span>
+  </div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr>
+          <th>Entity ID</th>
+          <th>Check Name</th>
+          <th>Severity</th>
+          <th>Affected Count</th>
+          <th>Details & Diagnostics</th>
+          <th>Sample Record Identifiers</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for issue in dq_issues %}
+        <tr>
+          <td><a href="/entity/{{ issue.entity_id }}" style="color: var(--accent-blue); font-weight: 700;">{{ issue.entity_id }}</a></td>
+          <td><code>{{ issue.check_name }}</code></td>
+          <td>
+            {% if issue.severity == 'error' %}
+              <span class="badge badge-crit">Schema Error</span>
+            {% else %}
+              <span class="badge badge-mod">Data Warning</span>
+            {% endif %}
+          </td>
+          <td><strong style="color: var(--text-primary); font-size: 0.95rem;">{{ issue.count }}</strong></td>
+          <td style="font-size: 0.88rem; color: var(--text-secondary); max-width: 320px;">{{ issue.details }}</td>
+          <td>
+            <code style="font-size: 0.8rem; color: var(--text-secondary); background: var(--surface-sunken); padding: 0.2rem 0.5rem; border-radius: 4px;">{{ issue.sample_records|join(', ') }}</code>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="6" style="text-align: center; color: var(--text-muted); padding: 3rem;">
+            <div style="font-size: 1.5rem; margin-bottom: 0.5rem; color: var(--risk-low);">✓</div>
+            <strong>No data quality anomalies detected.</strong>
+            <p style="margin-top: 0.25rem; font-size: 0.85rem;">All uploaded SOC telemetry strictly satisfies canonical schema and temporal constraints.</p>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,203 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Organisations{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <h2>Critical Sector Organisations</h2>
+    <p>Hierarchical registry of national entities, sectors, and delegated security operations.</p>
+  </div>
+  <button type="button" class="btn-admin btn-admin-primary" onclick="toggleCreateOrgModal()" id="registerOrgBtn">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+      <line x1="12" y1="5" x2="12" y2="19"></line>
+      <line x1="5" y1="12" x2="19" y2="12"></line>
+    </svg>
+    Register Organisation
+  </button>
+</div>
+
+{% if message %}
+<div class="admin-alert admin-alert-success" role="alert">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+    <polyline points="20 6 9 17 4 12"></polyline>
+  </svg>
+  <div>{{ message }}</div>
+</div>
+{% endif %}
+
+{% if error %}
+<div class="admin-alert admin-alert-error" role="alert">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+    <circle cx="12" cy="12" r="10"></circle>
+    <line x1="12" y1="8" x2="12" y2="12"></line>
+    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+  </svg>
+  <div>{{ error }}</div>
+</div>
+{% endif %}
+
+<!-- Beautiful Collapsible Registration Card -->
+<div id="createOrgCard" class="form-card" style="display: none; border-color: var(--accent-primary); box-shadow: var(--shadow-md);">
+  <div class="card-header" style="background: var(--admin-surface-subtle);">
+    <div style="display: flex; align-items: center; gap: 0.6rem;">
+      <div class="stat-icon" style="width: 28px; height: 28px; background: var(--accent-primary-subtle); color: var(--accent-primary);">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <rect x="4" y="2" width="16" height="20" rx="2" ry="2"></rect>
+          <line x1="9" y1="22" x2="9" y2="22.01"></line>
+          <line x1="15" y1="22" x2="15" y2="22.01"></line>
+        </svg>
+      </div>
+      <div>
+        <h3>Register Critical Sector Organisation</h3>
+        <span style="font-size: 0.74rem; color: var(--admin-text-muted);">Defines parent entity boundary for CSE delegation</span>
+      </div>
+    </div>
+    <button type="button" class="btn-admin btn-admin-secondary btn-admin-sm" onclick="toggleCreateOrgModal()" title="Close form">
+      ✕ Close
+    </button>
+  </div>
+
+  <form method="post" action="/organisations/create" class="form-body">
+    
+    <div class="form-section">
+      <div class="form-section-header">
+        <h4>Organisation Identity &amp; Sector Classification</h4>
+        <span>Authoritative Registry Details</span>
+      </div>
+
+      <div class="form-grid-3">
+        <!-- Organisation ID -->
+        <div class="form-group">
+          <label class="form-label" for="org_id">
+            Organisation Identifier <span class="req">*</span>
+          </label>
+          <input
+            type="text"
+            id="org_id"
+            name="org_id"
+            class="form-input form-input-mono"
+            placeholder="e.g. ORG-CIVIL-AVIATION"
+            required
+            pattern="^[A-Z0-9_\-]{3,32}$"
+            title="3 to 32 uppercase characters, numbers, and hyphens"
+          >
+          <span class="form-helper">Uppercase alphanumeric code (e.g. ORG-POWER, ORG-FIN).</span>
+        </div>
+
+        <!-- Organisation Name -->
+        <div class="form-group">
+          <label class="form-label" for="name">
+            Legal / Authority Name <span class="req">*</span>
+          </label>
+          <input
+            type="text"
+            id="name"
+            name="name"
+            class="form-input"
+            placeholder="e.g. Directorate General of Civil Aviation"
+            required
+          >
+          <span class="form-helper">Full authoritative title of the governing organization.</span>
+        </div>
+
+        <!-- Critical Sector -->
+        <div class="form-group">
+          <label class="form-label" for="sector">
+            Critical Infrastructure Sector <span class="req">*</span>
+          </label>
+          <select id="sector" name="sector" class="form-select" required>
+            <option value="" disabled selected>-- Select Critical Sector --</option>
+            <option value="Power &amp; Energy">Power &amp; Energy</option>
+            <option value="Banking &amp; Financial Services">Banking &amp; Financial Services</option>
+            <option value="Telecommunications">Telecommunications</option>
+            <option value="Transport &amp; Aviation">Transport &amp; Aviation</option>
+            <option value="Strategic &amp; Public Enterprises">Strategic &amp; Public Enterprises</option>
+            <option value="Healthcare &amp; Essential Services">Healthcare &amp; Essential Services</option>
+            <option value="Defence &amp; Security">Defence &amp; Security</option>
+            <option value="Nuclear &amp; Atomic Energy">Nuclear &amp; Atomic Energy</option>
+          </select>
+          <span class="form-helper">Designated National Critical Information sector.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Actions Bar -->
+    <div class="form-actions-bar" style="margin-top: 0; padding-top: 1.25rem;">
+      <button type="button" class="btn-admin btn-admin-secondary" onclick="toggleCreateOrgModal()">Cancel</button>
+      <button type="submit" class="btn-admin btn-admin-primary">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+        Register Organisation
+      </button>
+    </div>
+
+  </form>
+</div>
+
+<!-- Organisations Table Card -->
+<div class="admin-card">
+  <div class="card-header">
+    <h3>Registered Organisations ({{ organisations|length }})</h3>
+    <span style="font-size: 0.76rem; color: var(--admin-text-muted);">Authoritative national entity boundaries</span>
+  </div>
+
+  <table class="admin-table">
+    <thead>
+      <tr>
+        <th style="width: 180px;">Org ID</th>
+        <th>Organisation Name</th>
+        <th>Critical Sector</th>
+        <th style="text-align: center; width: 120px;">CSE Count</th>
+        <th style="text-align: center; width: 120px;">User Count</th>
+        <th style="width: 110px;">Status</th>
+        <th style="width: 140px;">Registered</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for o in organisations %}
+      <tr>
+        <td style="font-family: 'JetBrains Mono', monospace; font-weight: 700; color: var(--accent-primary);">
+          {{ o.org_id }}
+        </td>
+        <td style="font-weight: 500;">
+          {{ o.name }}
+        </td>
+        <td>
+          <span class="badge" style="background: var(--admin-surface-subtle); color: var(--admin-text-primary); border: 1px solid var(--admin-border);">
+            {{ o.sector }}
+          </span>
+        </td>
+        <td style="text-align: center; font-family: 'JetBrains Mono', monospace; font-weight: 600;">
+          {{ o.cse_count or 0 }}
+        </td>
+        <td style="text-align: center; font-family: 'JetBrains Mono', monospace; font-weight: 600;">
+          {{ o.user_count or 0 }}
+        </td>
+        <td>
+          <span class="badge badge-active">{{ o.status }}</span>
+        </td>
+        <td style="font-size: 0.76rem; color: var(--admin-text-secondary); font-family: 'JetBrains Mono', monospace;">
+          {{ o.created_at[:10] if o.created_at else 'Pre-seeded' }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+function toggleCreateOrgModal() {
+  var card = document.getElementById("createOrgCard");
+  var btn = document.getElementById("registerOrgBtn");
+  if (card.style.display === "none") {
+    card.style.display = "block";
+    document.getElementById("org_id").focus();
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } else {
+    card.style.display = "none";
+  }
+}
+</script>
+{% endblock %}

@@ -1,0 +1,41 @@
+# Splunk ES Incident / Notable Event Ingestion Mapping
+format: "csv"
+entity_id: "CSE-01"
+timezone: "UTC"
+timestamp_format: "%Y-%m-%dT%H:%M:%SZ"
+
+column_mappings:
+  alert_id: "notable_id"
+  rule_id: "correlation_search_name"
+  category: "security_domain"
+  severity_orig: "urgency"
+  severity_final: "urgency"
+  asset_id: "dest_host"
+  created_at: "time"
+  acknowledged_at: "review_time"
+  first_touch_at: "first_comment_time"
+  closed_at: "close_time"
+  closed_by: "owner"
+  closed_by_type: "closure_actor_type"
+  playbook_id: "soar_playbook"
+  disposition: "status_label"
+  status: "status_code"
+
+value_mappings:
+  severity:
+    "critical": "critical"
+    "high": "high"
+    "medium": "medium"
+    "low": "low"
+    "informational": "low"
+  status:
+    "1": "open"
+    "2": "open"
+    "3": "escalated"
+    "4": "closed"
+    "5": "closed"
+  disposition:
+    "True Positive": "true_positive"
+    "False Positive": "false_positive"
+    "Benign Positive": "benign"
+    "Unresolved": "unknown"

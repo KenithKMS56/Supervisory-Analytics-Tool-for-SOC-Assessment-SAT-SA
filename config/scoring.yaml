@@ -1,0 +1,69 @@
+# SAT-SA Scoring & Prioritisation Configuration
+# Domain definitions, weights, risk thresholds, and review queue split
+
+domains:
+  "Threat Detection":
+    weight: 0.15
+    description: "Effectiveness, coverage, and timeliness of threat detection controls."
+  "Investigation":
+    weight: 0.15
+    description: "Quality, thoroughness, and validity of alert triage and analysis."
+  "Escalation":
+    weight: 0.15
+    description: "Adherence to escalation paths, timely notification, and Tier-2 handover."
+  "Incident Response":
+    weight: 0.15
+    description: "Containment speed, backlog management, and mandatory external incident reporting."
+  "Security Operations":
+    weight: 0.10
+    description: "Operational continuity, 24x7 coverage consistency, and workflow adherence."
+  "Governance and Oversight":
+    weight: 0.15
+    description: "Data integrity, record completeness, KPI reconciliation, and anti-gaming controls."
+  "Operational Discipline":
+    weight: 0.075
+    description: "Analyst shift compliance, realistic workload distribution, and root cause resolution."
+  "Cyber Resilience":
+    weight: 0.075
+    description: "Asset visibility, telemetry freshness, and shadow infrastructure monitoring."
+
+scoring:
+  # Rule score: score = min(100, max(0, normalized_distance * severity_weight * confidence))
+  # Confidence: min(1.0, n / min_sample)
+  low_confidence_threshold: 0.50
+
+  # Domain score: Noisy-OR combination
+  # domain_score = 100 * (1 - prod(1 - (rule_score_i / 100)))
+
+  # Entity Risk Index:
+  # Base = sum(domain_score_k * domain_weight_k)
+  # Breadth penalty: multiplier or addition based on distinct rules triggered
+  breadth_weight: 0.10  # 10% of score influenced by rule diversity
+
+risk_bands:
+  low:
+    min: 0.0
+    max: 25.0
+    label: "Low Supervisory Concern"
+    color: "#22c55e"
+  moderate:
+    min: 25.0
+    max: 50.0
+    label: "Moderate Supervisory Concern"
+    color: "#eab308"
+  high:
+    min: 50.0
+    max: 75.0
+    label: "High Supervisory Concern"
+    color: "#f97316"
+  very_high:
+    min: 75.0
+    max: 100.0
+    label: "Critical Supervisory Concern"
+    color: "#ef4444"
+
+review_queue:
+  top_risk_ratio: 0.70
+  stratified_random_ratio: 0.30
+  default_sample_size: 100
+  random_seed: 42

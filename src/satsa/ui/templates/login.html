@@ -1,0 +1,559 @@
+{% extends "base.html" %}
+{% block title %}Log In{% endblock %}
+
+{% set hide_nav = true %}
+
+{% block content %}
+<div class="login-page-wrapper">
+  <!-- Theme switcher top-right -->
+  <div class="login-theme-switcher">
+    <div class="theme-switcher-segmented" role="radiogroup" aria-label="Theme Selection">
+      <button type="button" class="theme-btn theme-btn-light active" onclick="satsaSetTheme('light')" role="radio" aria-checked="true" aria-label="Light Theme" title="Light Theme">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <circle cx="12" cy="12" r="5"></circle>
+          <line x1="12" y1="1" x2="12" y2="3"></line>
+          <line x1="12" y1="21" x2="12" y2="23"></line>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+          <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+          <line x1="1" y1="12" x2="3" y2="12"></line>
+          <line x1="21" y1="12" x2="23" y2="12"></line>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+          <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+        </svg>
+        <span>Light</span>
+      </button>
+      <button type="button" class="theme-btn theme-btn-dark" onclick="satsaSetTheme('dark')" role="radio" aria-checked="false" aria-label="Dark Theme" title="Dark Theme">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+        </svg>
+        <span>Dark</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="login-card">
+    <!-- Brand / Header -->
+    <div class="login-brand-header">
+      <a href="/" class="login-logo-link" title="Return to Welcome Screen">
+        <img src="/static/0xzenith-logo.png" alt="0xZenith Logo" class="login-logo-img">
+      </a>
+      <h2 class="login-title">SAT-SA Supervisory Login</h2>
+      <p class="login-subtitle">
+        Enter your authorized credentials to access the SOC supervisory analytics workspace.
+      </p>
+    </div>
+
+    <!-- Error Alerts -->
+    {% if blocked or (error and "blocked" in error|lower) %}
+    <div class="login-alert login-alert-blocked" role="alert">
+      <svg class="alert-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+      </svg>
+      <div>
+        <strong>Access Denied:</strong> This account has been blocked. Please contact an NCIIPC administrator.
+      </div>
+    </div>
+    {% elif error %}
+    <div class="login-alert login-alert-error" role="alert">
+      <svg class="alert-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"></circle>
+        <line x1="12" y1="8" x2="12" y2="12"></line>
+        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+      </svg>
+      <div>{{ error }}</div>
+    </div>
+    {% endif %}
+
+    <!-- Login Form -->
+    <form id="loginForm" method="post" action="/login" class="login-form" novalidate>
+      <input type="hidden" name="next" value="{{ next or '/portfolio' }}">
+
+      <div class="form-group">
+        <label for="username" class="form-label">Supervisory Username</label>
+        <div class="input-wrapper">
+          <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+            <circle cx="12" cy="7" r="4"></circle>
+          </svg>
+          <input
+            type="text"
+            id="username"
+            name="username"
+            class="form-control"
+            placeholder="admin / supervisor / examiner"
+            autocomplete="username"
+            required
+            autofocus
+          >
+        </div>
+      </div>
+
+      <div class="form-group">
+        <div class="label-row">
+          <label for="password" class="form-label">Passphrase</label>
+        </div>
+        <div class="input-wrapper">
+          <svg class="input-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+          <input
+            type="password"
+            id="password"
+            name="password"
+            class="form-control"
+            placeholder="••••••••••••••••"
+            autocomplete="current-password"
+            required
+          >
+          <button
+            type="button"
+            id="btnTogglePassword"
+            class="password-toggle-btn"
+            aria-label="Toggle password visibility"
+            onclick="togglePasswordVisibility()"
+          >
+            <svg id="eyeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <button type="submit" id="btnLoginSubmit" class="btn-login-submit">
+        <span class="btn-spinner" id="btnSpinner" aria-hidden="true"></span>
+        <span id="btnText">Log In</span>
+        <svg class="btn-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <line x1="5" y1="12" x2="19" y2="12"></line>
+          <polyline points="12 5 19 12 12 19"></polyline>
+        </svg>
+      </button>
+    </form>
+
+    <!-- Navigation Back Link -->
+    <div class="login-footer">
+      <a href="/" class="login-back-link">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="19" y1="12" x2="5" y2="12"></line>
+          <polyline points="12 19 5 12 12 5"></polyline>
+        </svg>
+        Back to Splash
+      </a>
+    </div>
+
+    <!-- Offline Security & Demo Credentials Notice -->
+    <div class="login-demo-helper">
+      <div class="demo-helper-title">
+        <span class="pulse-dot"></span> Offline Local RBAC (PBKDF2-HMAC-SHA256)
+      </div>
+      <div class="demo-credentials-grid">
+        <div class="cred-item" onclick="fillCreds('admin', 'ChangeMe-Admin#2026')" title="Click to fill credentials">
+          <span class="cred-role">Admin</span>
+          <code>admin</code>
+        </div>
+        <div class="cred-item" onclick="fillCreds('supervisor', 'ChangeMe-Supervisor#2026')" title="Click to fill credentials">
+          <span class="cred-role">Supervisor</span>
+          <code>supervisor</code>
+        </div>
+        <div class="cred-item" onclick="fillCreds('examiner', 'ChangeMe-Examiner#2026')" title="Click to fill credentials">
+          <span class="cred-role">Examiner</span>
+          <code>examiner</code>
+        </div>
+      </div>
+      <div class="demo-hint-text">
+        Click any role above to pre-fill credentials for demonstration review.
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<style>
+.login-page-wrapper {
+  min-height: calc(100vh - 120px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  padding: 1.5rem 1rem;
+}
+
+.login-theme-switcher {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 10;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 440px;
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-cards, 16px);
+  padding: 2.25rem 2rem;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.08);
+  transition: var(--theme-transition);
+  animation: landingFadeSlideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+[data-theme="dark"] .login-card {
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+
+.login-brand-header {
+  text-align: center;
+  margin-bottom: 1.75rem;
+}
+
+.login-logo-link {
+  display: inline-block;
+  margin-bottom: 0.85rem;
+  transition: transform var(--transition-fast);
+}
+
+.login-logo-link:hover {
+  transform: scale(1.05);
+}
+
+.login-logo-img {
+  width: 58px;
+  height: 58px;
+  object-fit: contain;
+  filter: var(--landing-logo-filter);
+  transition: filter var(--transition-base);
+}
+
+.login-title {
+  font-family: var(--font-display, 'Inter');
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: var(--text-primary);
+  margin: 0 0 0.4rem;
+}
+
+.login-subtitle {
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  margin: 0;
+}
+
+/* Alert Styling */
+.login-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 0.9rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  margin-bottom: 1.25rem;
+}
+
+.login-alert .alert-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.login-alert-error {
+  background: var(--risk-crit-bg, #fdecea);
+  color: #b91c1c;
+  border: 1px solid rgba(220, 38, 38, 0.25);
+}
+
+.login-alert-blocked {
+  background: rgba(185, 28, 28, 0.12);
+  color: #dc2626;
+  border: 1px solid rgba(220, 38, 38, 0.35);
+  font-weight: 500;
+}
+
+[data-theme="dark"] .login-alert-error {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+[data-theme="dark"] .login-alert-blocked {
+  background: rgba(239, 68, 68, 0.2);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.4);
+}
+
+/* Form Controls */
+.login-form {
+  margin-bottom: 1.25rem;
+}
+
+.form-group {
+  margin-bottom: 1.15rem;
+}
+
+.form-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 0.35rem;
+}
+
+.label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-icon {
+  position: absolute;
+  left: 0.85rem;
+  color: var(--text-secondary);
+  pointer-events: none;
+}
+
+.form-control {
+  width: 100%;
+  padding: 0.65rem 0.85rem 0.65rem 2.4rem;
+  font-size: 0.88rem;
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--surface-default, #fff);
+  border: 1px solid var(--border-default, #cbd5e1);
+  border-radius: 8px;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+[data-theme="dark"] .form-control {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.form-control:focus {
+  border-color: var(--accent-primary, #b7d334);
+  box-shadow: 0 0 0 3px rgba(183, 211, 52, 0.25);
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 0.75rem;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0.25rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.password-toggle-btn:hover {
+  color: var(--text-primary);
+}
+
+/* Submit Button with Loading State */
+.btn-login-submit {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  font-family: inherit;
+  color: #0f172a;
+  background: var(--accent-primary, #B7D334);
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: var(--radius-pills, 9999px);
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(183, 211, 52, 0.35);
+  transition: all var(--transition-fast);
+  margin-top: 0.5rem;
+}
+
+.btn-login-submit:hover:not(:disabled) {
+  background: #c5e13d;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(183, 211, 52, 0.45);
+}
+
+.btn-login-submit:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn-login-submit:disabled,
+.btn-login-submit.loading {
+  opacity: 0.75;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.btn-spinner {
+  display: none;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(15, 23, 42, 0.25);
+  border-top-color: #0f172a;
+  border-radius: 50%;
+  animation: loginSpin 0.7s linear infinite;
+}
+
+@keyframes loginSpin {
+  to { transform: rotate(360deg); }
+}
+
+.login-footer {
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.login-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+.login-back-link:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
+/* Demo Credentials Helper Box */
+.login-demo-helper {
+  background: var(--surface-default, rgba(0, 0, 0, 0.02));
+  border: 1px solid var(--border-default);
+  border-radius: 10px;
+  padding: 0.9rem;
+  text-align: left;
+}
+
+[data-theme="dark"] .login-demo-helper {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.demo-helper-title {
+  font-size: 0.74rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.65rem;
+}
+
+.demo-credentials-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.cred-item {
+  background: var(--surface-card);
+  border: 1px solid var(--border-default);
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.cred-item:hover {
+  border-color: var(--accent-primary);
+  transform: translateY(-1px);
+}
+
+.cred-role {
+  display: block;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.cred-item code {
+  font-size: 0.74rem;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-primary);
+  background: none;
+  padding: 0;
+}
+
+.demo-hint-text {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+</style>
+
+<script>
+function togglePasswordVisibility() {
+  const pwdInput = document.getElementById('password');
+  const eyeIcon = document.getElementById('eyeIcon');
+  if (!pwdInput) return;
+  if (pwdInput.type === 'password') {
+    pwdInput.type = 'text';
+    eyeIcon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line>';
+  } else {
+    pwdInput.type = 'password';
+    eyeIcon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle>';
+  }
+}
+
+function fillCreds(u, p) {
+  const uInput = document.getElementById('username');
+  const pInput = document.getElementById('password');
+  if (uInput && pInput) {
+    uInput.value = u;
+    pInput.value = p;
+    uInput.focus();
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  const form = document.getElementById('loginForm');
+  const btn = document.getElementById('btnLoginSubmit');
+  const btnSpinner = document.getElementById('btnSpinner');
+  const btnText = document.getElementById('btnText');
+
+  if (form && btn) {
+    form.addEventListener('submit', function (e) {
+      const u = (document.getElementById('username').value || '').trim();
+      const p = document.getElementById('password').value || '';
+
+      if (!u || !p) {
+        e.preventDefault();
+        const alertBox = document.querySelector('.login-alert') || document.createElement('div');
+        alertBox.className = 'login-alert login-alert-error';
+        alertBox.setAttribute('role', 'alert');
+        alertBox.innerHTML = '<svg class="alert-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg><div>Please enter both username and passphrase.</div>';
+        if (!alertBox.parentNode) {
+          form.parentNode.insertBefore(alertBox, form);
+        }
+        return;
+      }
+
+      // Show loading spinner and disable submit
+      btn.disabled = true;
+      btn.classList.add('loading');
+      if (btnSpinner) btnSpinner.style.display = 'inline-block';
+      if (btnText) btnText.textContent = 'Authenticating...';
+    });
+  }
+});
+</script>
+{% endblock %}

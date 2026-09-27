@@ -1,0 +1,31 @@
+# SAT-SA Peer Grouping Configuration
+# Governs cohort formation for robust statistical baselines.
+
+peer_groups:
+  min_peers: 3
+  hierarchy:
+    - ["sector", "size_band"]
+    - ["sector"]
+    - ["size_band"]
+    - ["all"]
+
+sectors:
+  - "power"
+  - "banking"
+  - "telecom"
+  - "oil_and_gas"
+  - "transport"
+
+size_bands:
+  - "small"    # < 5,000 employees / < 500 assets
+  - "medium"   # 5,000 - 25,000 employees
+  - "large"    # > 25,000 employees / critical national infra
+
+soc_models:
+  - "inhouse"
+  - "mssp"
+  - "hybrid"
+
+fallback:
+  warn_on_fallback: true
+  warning_message: "Weak peer group: fallback to broader cohort due to insufficient peer count (< 3 entities)."

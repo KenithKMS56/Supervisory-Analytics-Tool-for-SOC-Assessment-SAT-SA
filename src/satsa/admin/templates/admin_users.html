@@ -1,0 +1,189 @@
+{% extends "admin_base.html" %}
+
+{% block title %}User Management{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <h2>Authoritative User Management</h2>
+    <p>View, provision, and control SAT-SA user identities, organizational scopes, and access status.</p>
+  </div>
+  <a href="/users/create" class="btn-admin btn-admin-primary">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+      <line x1="12" y1="5" x2="12" y2="19"></line>
+      <line x1="5" y1="12" x2="19" y2="12"></line>
+    </svg>
+    Create New User
+  </a>
+</div>
+
+{% if message %}
+<div class="admin-alert admin-alert-success" role="alert">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <polyline points="20 6 9 17 4 12"></polyline>
+  </svg>
+  <div>{{ message }}</div>
+</div>
+{% endif %}
+
+{% if error %}
+<div class="admin-alert admin-alert-error" role="alert">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <circle cx="12" cy="12" r="10"></circle>
+    <line x1="12" y1="8" x2="12" y2="12"></line>
+    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+  </svg>
+  <div>{{ error }}</div>
+</div>
+{% endif %}
+
+<div class="admin-card">
+  <div class="card-header">
+    <h3>Provisioned Identities ({{ users|length }})</h3>
+    <div class="card-actions">
+      <input
+        type="text"
+        id="userSearchInput"
+        placeholder="Filter by username, role, or CSE..."
+        class="form-input"
+        style="width: 280px; padding: 0.4rem 0.75rem; font-size: 0.8rem;"
+        onkeyup="filterUsersTable()"
+      >
+    </div>
+  </div>
+
+  <table class="admin-table" id="usersTable">
+    <thead>
+      <tr>
+        <th>Username</th>
+        <th>Organisation</th>
+        <th>Assigned CSE</th>
+        <th>Authoritative Role</th>
+        <th>Status</th>
+        <th>State</th>
+        <th>Last Login</th>
+        <th style="text-align: right;">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr>
+        <!-- Username -->
+        <td style="font-weight: 600; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem;">
+          {{ u.username }}
+          {% if u.is_admin_user %}
+            <span title="NCIIPC Control Portal Access" style="font-size: 0.7rem; color: var(--accent-primary); margin-left: 4px;">★</span>
+          {% endif %}
+        </td>
+
+        <!-- Organisation -->
+        <td style="font-size: 0.82rem; color: var(--admin-text-secondary);">
+          {% if u.org_id %}
+            <span title="{{ u.org_name or u.org_id }}">{{ u.org_id }}</span>
+          {% else %}
+            <span style="color: var(--admin-text-muted);">National (NCIIPC)</span>
+          {% endif %}
+        </td>
+
+        <!-- Assigned CSE -->
+        <td>
+          {% if u.cse_id %}
+            <span class="badge" style="background-color: var(--admin-surface-subtle); color: var(--accent-blue); border: 1px solid var(--admin-border); font-family: 'JetBrains Mono', monospace;">
+              {{ u.cse_id }}
+            </span>
+          {% else %}
+            <span style="color: var(--admin-text-muted); font-size: 0.78rem;">All CSEs</span>
+          {% endif %}
+        </td>
+
+        <!-- Role -->
+        <td>
+          <span class="badge {% if 'Super' in u.role or u.role == 'admin' %}badge-role-admin{% else %}badge-role{% endif %}">
+            {{ u.role }}
+          </span>
+        </td>
+
+        <!-- Status -->
+        <td>
+          {% if u.status == 'ACTIVE' %}
+            <span class="badge badge-active">ACTIVE</span>
+          {% else %}
+            <span class="badge badge-blocked">BLOCKED</span>
+          {% endif %}
+        </td>
+
+        <!-- Online State -->
+        <td>
+          {% if u.is_online %}
+            <span class="badge-online" title="Active session found">
+              <span class="pulse-dot-online"></span> Online
+            </span>
+          {% else %}
+            <span style="color: var(--admin-text-muted); font-size: 0.75rem;">Offline</span>
+          {% endif %}
+        </td>
+
+        <!-- Last Login -->
+        <td style="font-size: 0.74rem; color: var(--admin-text-secondary); font-family: 'JetBrains Mono', monospace;">
+          {% if u.last_login %}
+            {{ u.last_login[:16].replace('T', ' ') }}
+          {% else %}
+            <span style="color: var(--admin-text-muted);">Never</span>
+          {% endif %}
+        </td>
+
+        <!-- Actions -->
+        <td style="text-align: right; white-space: nowrap;">
+          <div style="display: inline-flex; gap: 0.35rem; align-items: center;">
+            
+            <!-- Edit User (Change Role, Org, CSE) -->
+            <a href="/users/{{ u.username }}/edit" class="btn-admin btn-admin-secondary btn-admin-sm" title="Edit Role, Organisation, or CSE">
+              Edit
+            </a>
+
+            <!-- Block / Unblock Toggle -->
+            {% if u.status == 'ACTIVE' %}
+            <form method="post" action="/users/{{ u.username }}/block" style="display:inline; margin:0;" onsubmit="return confirm('Block user {{ u.username }} from accessing SAT-SA and Admin Portal?');">
+              <button type="submit" class="btn-admin btn-admin-danger btn-admin-sm" title="Block Account">
+                Block
+              </button>
+            </form>
+            {% else %}
+            <form method="post" action="/users/{{ u.username }}/unblock" style="display:inline; margin:0;">
+              <button type="submit" class="btn-admin btn-admin-primary btn-admin-sm" title="Unblock Account">
+                Unblock
+              </button>
+            </form>
+            {% endif %}
+
+            <!-- Reset Credentials -->
+            <a href="/users/{{ u.username }}/reset" class="btn-admin btn-admin-secondary btn-admin-sm" style="color: var(--accent-blue);" title="Reset Password">
+              Reset
+            </a>
+
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+function filterUsersTable() {
+  var input = document.getElementById("userSearchInput");
+  var filter = input.value.toLowerCase();
+  var table = document.getElementById("usersTable");
+  var tr = table.getElementsByTagName("tr");
+
+  for (var i = 1; i < tr.length; i++) {
+    var text = tr[i].textContent || tr[i].innerText;
+    if (text.toLowerCase().indexOf(filter) > -1) {
+      tr[i].style.display = "";
+    } else {
+      tr[i].style.display = "none";
+    }
+  }
+}
+</script>
+{% endblock %}

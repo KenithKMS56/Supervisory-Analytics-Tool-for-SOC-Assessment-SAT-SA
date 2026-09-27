@@ -1,0 +1,121 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Reset Credentials: {{ user.username }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div class="page-title">
+    <h2>Reset User Passphrase</h2>
+    <p>Issue a new cryptographic credential for <strong style="font-family: 'JetBrains Mono', monospace; color: var(--accent-primary);">{{ user.username }}</strong>.</p>
+  </div>
+  <a href="/users" class="btn-admin btn-admin-secondary">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="19" y1="12" x2="5" y2="12"></line>
+      <polyline points="12 19 5 12 12 5"></polyline>
+    </svg>
+    Back to Users Directory
+  </a>
+</div>
+
+{% if error %}
+<div class="admin-alert admin-alert-error" role="alert">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+    <circle cx="12" cy="12" r="10"></circle>
+    <line x1="12" y1="8" x2="12" y2="12"></line>
+    <line x1="12" y1="16" x2="12.01" y2="16"></line>
+  </svg>
+  <div>{{ error }}</div>
+</div>
+{% endif %}
+
+<div class="form-card" style="max-width: 680px; margin: 0 auto;">
+  <div class="card-header">
+    <div>
+      <h3>Credential Rotation</h3>
+      <span style="font-size: 0.76rem; color: var(--accent-amber);">Immediate Revocation of Active Sessions</span>
+    </div>
+    <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: var(--accent-amber); border: 1px solid rgba(245, 158, 11, 0.35);">
+      Session Invalidation
+    </span>
+  </div>
+
+  <form method="post" action="/users/{{ user.username }}/reset" id="resetPassForm" class="form-body">
+    
+    <div class="form-section">
+      <div class="form-section-header">
+        <h4>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="color: var(--accent-primary);">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+          Cryptographic Passphrase
+        </h4>
+        <span>PBKDF2-HMAC-SHA256 Derivation</span>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="new_password">
+          New Passphrase <span class="req">*</span>
+        </label>
+        <div class="passphrase-input-container">
+          <input
+            type="text"
+            id="new_password"
+            name="new_password"
+            class="form-input form-input-mono"
+            placeholder="Min. 8 characters"
+            required
+            minlength="8"
+            autocomplete="off"
+          >
+          <button type="button" class="btn-admin btn-admin-secondary" onclick="generatePassphrase()" title="Generate random passphrase">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+              <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"></path>
+            </svg>
+            Generate
+          </button>
+        </div>
+        <span class="form-helper">Safely convey this secret to the operator. Existing sessions will terminate immediately.</span>
+      </div>
+    </div>
+
+    <!-- Governance Option Card -->
+    <div class="form-section" style="margin-bottom: 0;">
+      <label class="form-checkbox-card" for="force_password_change">
+        <input type="checkbox" id="force_password_change" name="force_password_change" value="true" checked>
+        <div class="form-checkbox-content">
+          <span class="form-checkbox-title">Require User to Change Password on Subsequent Login</span>
+          <span class="form-checkbox-desc">User will be prompted to choose their own confidential passphrase upon entry.</span>
+        </div>
+      </label>
+    </div>
+
+    <!-- Actions Bar -->
+    <div class="form-actions-bar">
+      <a href="/users" class="btn-admin btn-admin-secondary">Cancel</a>
+      <button type="submit" class="btn-admin btn-admin-primary">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+        Confirm &amp; Rotate Passphrase
+      </button>
+    </div>
+
+  </form>
+</div>
+
+<script>
+function generatePassphrase() {
+  var chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*";
+  var pass = "";
+  for (var i = 0; i < 16; i++) {
+    pass += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  document.getElementById("new_password").value = pass;
+}
+
+window.onload = function() {
+  generatePassphrase();
+};
+</script>
+{% endblock %}

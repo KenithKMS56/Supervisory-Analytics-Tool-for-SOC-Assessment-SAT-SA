@@ -1,0 +1,37 @@
+# ServiceNow SIR (Security Incident Response) Ingestion Mapping
+format: "csv"
+entity_id: "CSE-02"
+timezone: "Asia/Kolkata"
+timestamp_format: "%Y-%m-%d %H:%M:%S"
+
+column_mappings:
+  case_id: "number"
+  severity: "priority"
+  status: "state"
+  owner: "assigned_to"
+  opened_at: "sys_created_on"
+  closed_at: "closed_at"
+  alert_id: "source_alert_number"
+  rule_id: "threat_intel_rule"
+  category: "subcategory"
+  asset_id: "configuration_item"
+  disposition: "close_code"
+
+value_mappings:
+  severity:
+    "1 - Critical": "critical"
+    "2 - High": "high"
+    "3 - Moderate": "medium"
+    "4 - Low": "low"
+  status:
+    "Draft": "open"
+    "Analysis": "open"
+    "Contain": "open"
+    "Eradicate": "open"
+    "Review": "open"
+    "Closed": "closed"
+  disposition:
+    "Solved (Work Around)": "true_positive"
+    "Solved (Permanently)": "true_positive"
+    "False Positive": "false_positive"
+    "Closed/Resolved by Caller": "benign"

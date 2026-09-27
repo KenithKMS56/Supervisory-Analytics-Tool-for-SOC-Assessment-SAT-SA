@@ -1,0 +1,54 @@
+# REST-Exposed Ticketing System Ingestion Mapping (API-style source)
+#
+# Unlike the other config/mappings/*.yaml files (CSV/JSON export dumps), this
+# mapping targets a source consumed via satsa.ingest.adapters.SourceAdapter.read_api()
+# -- a JSON REST API response rather than a file export. In a real deployment
+# `url` below would point at an entity's own on-prem/local ticketing API reachable
+# within the air-gapped network boundary (e.g. a self-hosted ticketing system's
+# REST interface on the entity's internal network); it must NEVER point at the
+# public internet, and read_api() enforces that by refusing any non-loopback host.
+format: "api"
+entity_id: "CSE-04"
+timezone: "UTC"
+timestamp_format: "%Y-%m-%dT%H:%M:%SZ"
+
+# Example live-endpoint configuration (illustrative -- 127.0.0.1 stands in for
+# the entity's own local/on-prem ticketing API in a real air-gapped deployment):
+#   url: "http://127.0.0.1:8088/api/v2/tickets"
+#   headers:
+#     Authorization: "Bearer <local-api-token>"
+#   records_key: "tickets"
+# For tests and offline demos, point read_api() at a local fixture instead:
+#   fixture_path: "tests/fixtures/api_ticketing_response.json"
+records_key: "tickets"
+
+column_mappings:
+  case_id: "ticket_id"
+  severity: "priority_level"
+  status: "ticket_status"
+  owner: "assigned_engineer"
+  opened_at: "created_timestamp"
+  closed_at: "resolved_timestamp"
+  alert_id: "linked_alert_ref"
+  rule_id: "detection_signature"
+  category: "issue_type"
+  asset_id: "affected_asset"
+  disposition: "resolution_code"
+
+value_mappings:
+  severity:
+    "P1": "critical"
+    "P2": "high"
+    "P3": "medium"
+    "P4": "low"
+  status:
+    "new": "open"
+    "in_progress": "open"
+    "pending_customer": "open"
+    "resolved": "closed"
+    "closed": "closed"
+  disposition:
+    "confirmed_incident": "true_positive"
+    "false_alarm": "false_positive"
+    "duplicate": "benign"
+    "no_action_required": "benign"

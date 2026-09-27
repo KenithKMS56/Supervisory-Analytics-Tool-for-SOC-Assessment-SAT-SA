@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% block title %}Entity Profile: {{ entity.entity_id }}{% endblock %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>{{ entity.name }} ({{ entity.entity_id }})</h1>
+    <p>Sector: <strong>{{ entity.sector.upper() }}</strong> | Size: <strong>{{ entity.size_band }}</strong> | SOC Model: <strong>{{ entity.soc_model }}</strong></p>
+  </div>
+  <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+    <a href="/reports/entity/{{ entity.entity_id }}/pdf" class="btn" target="_blank">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+      </svg>
+      Download PDF Dossier
+    </a>
+    <a href="/reports/entity/{{ entity.entity_id }}/html" class="btn btn-secondary" target="_blank">View Standalone HTML</a>
+    <a href="/blind-review?entity_id={{ entity.entity_id }}" class="btn btn-secondary">Blinded Review</a>
+  </div>
+</div>
+
+<div class="grid-4">
+  <div class="stat-box">
+    <div class="stat-val" style="color: {% if score.risk_index >= 50 %}var(--risk-crit){% elif score.risk_index >= 25 %}var(--risk-mod){% else %}var(--risk-low){% endif %};">
+      {{ score.risk_index }}
+    </div>
+    <div class="stat-lbl">Entity Risk Index</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-val">{{ score.risk_band }}</div>
+    <div class="stat-lbl">Risk Classification</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-val">{{ findings|length }}</div>
+    <div class="stat-lbl">Active Findings</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-val">{{ score.distinct_rules_triggered }}</div>
+    <div class="stat-lbl">Distinct Rules Triggered</div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">
+      <span>8-Domain Radar vs Peer Median</span>
+    </div>
+    <div id="domainRadar" style="width: 100%; height: 320px;"></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">
+      <span>KPI Reconciliation Panel</span>
+      <span class="badge badge-mod">Audit Verification</span>
+    </div>
+    <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
+      Comparison between declared management figures and empirical recomputation from raw timestamps.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th>Declared KPI</th>
+          <th>Empirical Recomputation</th>
+          <th>Variance</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for k in kpi_comparison %}
+        <tr>
+          <td><strong>{{ k.metric }}</strong> ({{ k.severity }})</td>
+          <td>{{ k.declared }} mins</td>
+          <td>{{ k.empirical }} mins</td>
+          <td>
+            {% if k.gap_ratio > 0.50 %}
+              <span class="badge badge-crit">+{{ (k.gap_ratio * 100)|round(0) }}% Gap</span>
+            {% else %}
+              <span class="badge badge-low">Reconciled</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">
+    <span>Supervisory Findings Requiring Examiner Review ({{ findings|length }})</span>
+  </div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr>
+          <th>Rule</th>
+          <th>Domain</th>
+          <th>Severity</th>
+          <th>Score</th>
+          <th>Title & Plain-Language Rationale</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for f in findings %}
+        <tr>
+          <td><strong style="color: var(--accent-blue);">{{ f.rule_id }}</strong></td>
+          <td>{{ f.domain }}</td>
+          <td>
+            {% if f.severity == 'critical' %}
+              <span class="badge badge-crit">Critical</span>
+            {% elif f.severity == 'high' %}
+              <span class="badge badge-high">High</span>
+            {% else %}
+              <span class="badge badge-mod">Medium</span>
+            {% endif %}
+          </td>
+          <td><strong>{{ f.score }}</strong></td>
+          <td>
+            <div style="font-weight: 600; margin-bottom: 0.2rem;">{{ f.title }}</div>
+            <div style="font-size: 0.85rem; color: var(--text-secondary);">{{ f.rationale }}</div>
+          </td>
+          <td>
+            <a href="/finding/{{ f.finding_id }}" class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.8rem;">Evidence Card</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const chartDom = document.getElementById('domainRadar');
+  const myChart = echarts.init(chartDom, 'satsa-light', { backgroundColor: 'transparent' });
+
+  const domainNames = {{ radar_domains | tojson }};
+  const entityVals = {{ radar_entity_vals | tojson }};
+  const peerVals = {{ radar_peer_vals | tojson }};
+
+  const option = {
+    tooltip: {},
+    legend: { data: ['This Entity', 'Peer Median'], bottom: 0 },
+    radar: {
+      indicator: domainNames.map(d => ({ name: d, max: 100 })),
+      splitArea: { show: false }
+    },
+    series: [{
+      name: 'Domain Scores',
+      type: 'radar',
+      data: [
+        {
+          value: entityVals,
+          name: 'This Entity',
+          areaStyle: { color: 'rgba(180, 35, 24, 0.12)' },
+          lineStyle: { color: '#B42318', width: 2 }
+        },
+        {
+          value: peerVals,
+          name: 'Peer Median',
+          areaStyle: { color: 'rgba(59, 79, 224, 0.10)' },
+          lineStyle: { color: '#3B4FE0', width: 2, type: 'dashed' }
+        }
+      ]
+    }]
+  };
+
+  myChart.setOption(option);
+</script>
+{% endblock %}

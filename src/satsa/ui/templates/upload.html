@@ -1,0 +1,355 @@
+{% extends "base.html" %}
+
+{% block title %}Upload & Ingest | Entity Management{% endblock %}
+
+{% block content %}
+{% set identity = get_identity(request) %}
+{% if not (identity and identity.role in ('admin', 'supervisor')) %}
+<div class="card" style="background: var(--bg-hover, #f8fafc); margin-bottom: 1rem; font-size: 0.85rem;">
+  Read-only: ingestion, entity registration, and demo re-seed require an <strong>admin</strong> or
+  <strong>supervisor</strong> session. <a href="/login?next=/upload">Log in</a> to enable these actions.
+</div>
+{% endif %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>Telemetric Submission & Ingestion Wizard</h1>
+    <p>Register Critical Sector Entities, download canonical schemas, and ingest multi-source SOC telemetry.</p>
+  </div>
+  <div class="header-actions">
+    <a href="/templates/canonical_soc_telemetry_bundle.zip" class="btn btn-secondary">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+      </svg>
+      Download Sample Data Bundle (.zip)
+    </a>
+  </div>
+</div>
+
+{% if message %}
+<div class="notice-banner">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4L12 14.01l-3-3"/>
+  </svg>
+  <div><strong>System Notification:</strong> {{ message }}</div>
+</div>
+{% endif %}
+
+<!-- Top Stats Grid -->
+<div class="stats-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 2rem;">
+  <div class="stat-card">
+    <div class="stat-label">Registered CSE Entities</div>
+    <div class="stat-value" style="color: var(--accent-blue);">{{ all_entities|length }}</div>
+    <div class="stat-desc">Critical infrastructure sectors</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Supported Formats</div>
+    <div class="stat-value" style="color: var(--risk-low);">CSV / JSON / ZIP</div>
+    <div class="stat-desc">Splunk, ServiceNow, TheHive, SIEMs</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Data Privacy Level</div>
+    <div class="stat-value" style="color: var(--accent-indigo);">HMAC &bull; Masked</div>
+    <div class="stat-desc">Automated analyst pseudonymisation</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Storage Architecture</div>
+    <div class="stat-value" style="color: var(--accent-cyan);">DuckDB &bull; Parquet</div>
+    <div class="stat-desc">Partitioned columnar execution</div>
+  </div>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2rem;">
+
+  <!-- Card 1: Add New Entity (Onboarding) -->
+  <div class="card">
+    <div class="card-title">
+      <span style="display: flex; align-items: center; gap: 0.5rem;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-blue);">
+          <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+          <circle cx="8.5" cy="7" r="4"/>
+          <line x1="20" y1="8" x2="20" y2="14"/>
+          <line x1="23" y1="11" x2="17" y2="11"/>
+        </svg>
+        1. Onboard Critical Sector Entity (CSE)
+      </span>
+      <span class="badge badge-low">Section 70A Registry</span>
+    </div>
+    <p style="color: var(--text-secondary); font-size: 0.88rem; margin-bottom: 1.25rem;">
+      Register a real-world infrastructure entity into the supervisory registry. Once created, you can ingest its alerts, cases, and telemetry for compliance assessment.
+    </p>
+
+    <form method="post" action="/upload/add-entity">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+        <div>
+          <label style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Entity ID (Unique Code):</label>
+          <input type="text" name="entity_id" placeholder="e.g. CSE-11, GRID-NORTH, SBI-SOC" required class="form-control" style="font-family: var(--font-mono); text-transform: uppercase;">
+        </div>
+        <div>
+          <label style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Critical Sector:</label>
+          <select name="sector" id="sector_select" class="form-control" required onchange="toggleCustomSector(this)">
+            <option value="Power">Power, Grid & Renewable Energy</option>
+            <option value="Banking">Banking, Financial Services & Insurance (BFSI)</option>
+            <option value="Telecom">Telecommunications & Strategic ICT Networks</option>
+            <option value="Transport">Transport (Railways, Aviation, Ports & Metro)</option>
+            <option value="Oil & Gas">Petroleum, Oil & Gas Pipelines</option>
+            <option value="Healthcare">Strategic Healthcare Systems & Pharma</option>
+            <option value="Defence">Defence, Aerospace & Strategic Manufacturing</option>
+            <option value="Space">Space Systems & Satellite Telemetry</option>
+            <option value="Nuclear">Nuclear & Atomic Energy Facilities</option>
+            <option value="Government">E-Governance & Critical Public Administration</option>
+            <option value="Water">Water Treatment, Dams & Municipal Utilities</option>
+            <option value="Other">Other Critical Sector (Custom Specification)...</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Custom Sector Specification (Shown when 'Other' is selected) -->
+      <div id="other_sector_wrapper" style="display: none; margin-bottom: 1rem; background: var(--accent-primary-bg); padding: 0.85rem; border-radius: 8px; border: 1px solid var(--accent-primary);">
+        <label for="custom_sector_input" style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--accent-blue); margin-bottom: 0.35rem;">
+          Specify Custom Critical Sector Name *:
+        </label>
+        <input type="text" name="custom_sector" id="custom_sector_input" placeholder="e.g. Critical Port Logistics & Maritime Customs" class="form-control">
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <label style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Organization / SOC Name:</label>
+        <input type="text" name="name" placeholder="e.g. National Thermal Power Grid - Cyber Operations Centre" required class="form-control">
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+        <div>
+          <label style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Size Tier:</label>
+          <select name="size_band" class="form-control">
+            <option value="Large">Tier-1 / Large</option>
+            <option value="Medium" selected>Tier-2 / Medium</option>
+            <option value="Small">Tier-3 / Small</option>
+          </select>
+        </div>
+        <div>
+          <label style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Declared MTTA (min):</label>
+          <input type="number" step="0.1" name="declared_mtta" value="15.0" class="form-control" required>
+        </div>
+        <div>
+          <label style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Declared MTTR (min):</label>
+          <input type="number" step="0.1" name="declared_mttr" value="60.0" class="form-control" required>
+        </div>
+      </div>
+
+      <div style="margin-bottom: 1.5rem;">
+        <label style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Target SLA Compliance (%):</label>
+        <input type="number" step="0.1" name="declared_sla" value="95.0" class="form-control" required>
+      </div>
+
+      <button type="submit" class="btn" style="width: 100%; justify-content: center;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 5v14M5 12h14"/>
+        </svg>
+        Register Entity & Initialize Baseline
+      </button>
+    </form>
+  </div>
+
+  <!-- Card 2: Upload Telemetry Batch -->
+  <div class="card">
+    <div class="card-title">
+      <span style="display: flex; align-items: center; gap: 0.5rem;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-indigo);">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+        </svg>
+        2. Ingest Periodic SOC Telemetry
+      </span>
+      <span class="badge" style="background: var(--accent-secondary-bg); color: var(--accent-indigo); border: 1px solid var(--accent-indigo);">Air-Gapped ETL</span>
+    </div>
+    <p style="color: var(--text-secondary); font-size: 0.88rem; margin-bottom: 1.25rem;">
+      Upload real CSV/JSON files or a ZIP archive containing alert, case, escalation, or inventory records. Automatic column mapping and data hygiene will be applied.
+    </p>
+
+    <form method="post" action="/upload" enctype="multipart/form-data">
+      <div style="margin-bottom: 1rem;">
+        <label style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Target Entity (Optional Override):</label>
+        <select name="target_entity" class="form-control">
+          <option value="">Auto-Detect from CSV "entity_id" column</option>
+          {% for ent in all_entities %}
+            <option value="{{ ent.entity_id }}">{{ ent.entity_id }} — {{ ent.name }} ({{ ent.sector }})</option>
+          {% endfor %}
+        </select>
+        <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; display: block;">If your CSV doesn't have an <code>entity_id</code> column, select an entity above to auto-assign it.</span>
+      </div>
+
+      <div class="upload-dropzone" onclick="document.getElementById('file-input').click();">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+        </svg>
+        <p style="font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem;">Click to browse or drop telemetry files here</p>
+        <p style="color: var(--text-muted); font-size: 0.82rem;">Accepts <code>alerts.csv</code>, <code>cases.csv</code>, <code>escalations.csv</code>, <code>assets.csv</code>, or <code>.zip</code> bundle</p>
+        <input type="file" id="file-input" name="files" multiple style="display: none;" onchange="updateFileList(this)">
+      </div>
+
+      <div id="file-list" style="margin-top: 1rem; color: var(--text-secondary); font-size: 0.85rem;"></div>
+
+      <button type="submit" class="btn" style="width: 100%; justify-content: center; margin-top: 1.25rem;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M5 12h14M12 5l7 7-7 7"/>
+        </svg>
+        Validate, Pseudonymise & Execute Assessment
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- Canonical Schemas & Template Downloads Section -->
+<div class="card">
+  <div class="card-title">
+    <span>Download Canonical Schema Templates for Real Data</span>
+    <span style="font-size: 0.85rem; color: var(--text-secondary);">Fill these templates with your real SOC extracts for 100% schema conformance</span>
+  </div>
+  <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 1rem;">
+    <a href="/templates/alerts.csv" class="stat-card" style="text-decoration: none; padding: 1rem; align-items: center; text-align: center;">
+      <div style="font-weight: 700; color: var(--accent-blue); font-size: 0.95rem; margin-bottom: 0.25rem;">Alerts Template</div>
+      <div style="font-size: 0.75rem; color: var(--text-muted);">alerts.csv</div>
+      <span class="badge badge-low" style="margin-top: 0.5rem;">Download</span>
+    </a>
+    <a href="/templates/cases.csv" class="stat-card" style="text-decoration: none; padding: 1rem; align-items: center; text-align: center;">
+      <div style="font-weight: 700; color: var(--accent-blue); font-size: 0.95rem; margin-bottom: 0.25rem;">Cases Template</div>
+      <div style="font-size: 0.75rem; color: var(--text-muted);">cases.csv</div>
+      <span class="badge badge-low" style="margin-top: 0.5rem;">Download</span>
+    </a>
+    <a href="/templates/escalations.csv" class="stat-card" style="text-decoration: none; padding: 1rem; align-items: center; text-align: center;">
+      <div style="font-weight: 700; color: var(--accent-blue); font-size: 0.95rem; margin-bottom: 0.25rem;">Escalations Template</div>
+      <div style="font-size: 0.75rem; color: var(--text-muted);">escalations.csv</div>
+      <span class="badge badge-low" style="margin-top: 0.5rem;">Download</span>
+    </a>
+    <a href="/templates/closures.csv" class="stat-card" style="text-decoration: none; padding: 1rem; align-items: center; text-align: center;">
+      <div style="font-weight: 700; color: var(--accent-blue); font-size: 0.95rem; margin-bottom: 0.25rem;">Closures Template</div>
+      <div style="font-size: 0.75rem; color: var(--text-muted);">closures.csv</div>
+      <span class="badge badge-low" style="margin-top: 0.5rem;">Download</span>
+    </a>
+    <a href="/templates/assets.csv" class="stat-card" style="text-decoration: none; padding: 1rem; align-items: center; text-align: center;">
+      <div style="font-weight: 700; color: var(--accent-blue); font-size: 0.95rem; margin-bottom: 0.25rem;">Assets Template</div>
+      <div style="font-size: 0.75rem; color: var(--text-muted);">assets.csv</div>
+      <span class="badge badge-low" style="margin-top: 0.5rem;">Download</span>
+    </a>
+    <a href="/templates/canonical_soc_telemetry_bundle.zip" class="stat-card" style="text-decoration: none; padding: 1rem; align-items: center; text-align: center; border-color: var(--accent-indigo);">
+      <div style="font-weight: 700; color: var(--accent-indigo); font-size: 0.95rem; margin-bottom: 0.25rem;">Full Bundle (.zip)</div>
+      <div style="font-size: 0.75rem; color: var(--text-muted);">All CSVs pre-packed</div>
+      <span class="badge" style="margin-top: 0.5rem; background: var(--accent-secondary-bg); color: var(--accent-indigo); border: 1px solid var(--accent-indigo);">Download ZIP</span>
+    </a>
+  </div>
+</div>
+
+<!-- Bottom Section: Registered Entities League & Batch Audit History -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
+  <!-- Registered Entities List -->
+  <div class="card">
+    <div class="card-title">
+      <span>Currently Registered Entities ({{ all_entities|length }})</span>
+      <a href="/" class="btn btn-secondary" style="font-size: 0.78rem; padding: 0.3rem 0.6rem;">View Portfolio Rankings</a>
+    </div>
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>Entity ID</th>
+            <th>Name</th>
+            <th>Sector</th>
+            <th>Tier</th>
+            <th style="text-align: right;">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ent in all_entities %}
+          <tr>
+            <td><a href="/entity/{{ ent.entity_id }}" style="font-family: var(--font-mono); color: var(--accent-blue); font-weight: 700;">{{ ent.entity_id }}</a></td>
+            <td style="font-size: 0.88rem;">{{ ent.name }}</td>
+            <td><span class="badge" style="background: var(--bg-hover);">{{ ent.sector }}</span></td>
+            <td style="color: var(--text-secondary); font-size: 0.85rem;">{{ ent.size_band }}</td>
+            <td style="text-align: right;">
+              <form method="post" action="/upload/delete-entity/{{ ent.entity_id }}" style="margin: 0; display: inline;" onsubmit="return confirm('Permanently delete entity {{ ent.entity_id }} and all its data? This will recalculate the portfolio.');">
+                <button type="submit" class="btn btn-danger" style="padding: 0.25rem 0.6rem; font-size: 0.74rem;">
+                  Delete
+                </button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Recent Ingestion Batches Audit -->
+  <div class="card">
+    <div class="card-title">
+      <span>Recent Batch Audit History (SHA-256 Chained)</span>
+      <a href="/runs" class="btn btn-secondary" style="font-size: 0.78rem; padding: 0.3rem 0.6rem;">Full Audit Trail</a>
+    </div>
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>Batch ID</th>
+            <th>Timestamp</th>
+            <th>Action</th>
+            <th>State Hash</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for b in recent_batches %}
+          <tr>
+            <td><code style="color: var(--accent-blue);">{{ b.log_id }}</code></td>
+            <td style="font-size: 0.82rem; color: var(--text-secondary);">{{ b.ts }}</td>
+            <td><span class="badge badge-low">{{ b.action }}</span></td>
+            <td><span class="hash-pill">{{ b.curr_hash[:16] }}...</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Quick Demo Launcher -->
+    <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
+      <div style="font-weight: 700; margin-bottom: 0.5rem; color: var(--text-primary); font-size: 0.9rem;">Quick Demo Launcher</div>
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
+        <span style="font-size: 0.82rem; color: var(--text-muted);">Re-evaluate canonical 10-CSE benchmark dataset or re-execute scoring across all entities:</span>
+        <form method="post" action="/upload/trigger-demo">
+          <button type="submit" class="btn btn-secondary" style="font-size: 0.82rem;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M23 4v6h-6M1 20v-6h6"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+            Run Full Assessment Pipeline
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function updateFileList(input) {
+  const list = document.getElementById('file-list');
+  if (input.files.length > 0) {
+    let html = '<div style="background: var(--bg-hover); padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-color);">' +
+               '<strong style="color: var(--accent-blue);">Selected ' + input.files.length + ' file(s) for ingestion:</strong><ul style="margin-top: 0.35rem; padding-left: 1.25rem;">';
+    for (let i = 0; i < input.files.length; i++) {
+      html += '<li>' + input.files[i].name + ' <span style="color: var(--text-muted);">(' + Math.round(input.files[i].size / 1024) + ' KB)</span></li>';
+    }
+    html += '</ul></div>';
+    list.innerHTML = html;
+  }
+}
+
+function toggleCustomSector(selectElem) {
+  const wrapper = document.getElementById('other_sector_wrapper');
+  const input = document.getElementById('custom_sector_input');
+  if (selectElem.value === 'Other') {
+    wrapper.style.display = 'block';
+    input.required = true;
+    input.focus();
+  } else {
+    wrapper.style.display = 'none';
+    input.required = false;
+  }
+}
+</script>
+{% endblock %}

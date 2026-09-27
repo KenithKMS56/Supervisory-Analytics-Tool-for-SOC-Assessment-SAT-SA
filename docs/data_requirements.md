@@ -1,0 +1,125 @@
+# SAT-SA Data Requirements & Ingestion Schema
+
+> **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
+
+This document specifies the canonical data structures, mandatory and optional telemetric attributes, and per-rule data dependencies required by **SAT-SA**.
+
+---
+
+## 0. Ingestion Sources: CSV, JSON, SQLite Exports, and Local APIs
+
+`satsa.ingest.adapters.SourceAdapter` supports four source shapes, matching PS requirement #2's
+list (CSV/JSON/DB exports and APIs):
+
+- `read_csv(path)` / `read_json(path)`: file-based batch exports (used by the `/upload` drag-and-drop
+  wizard and `satsa ingest`).
+- `read_sqlite(path, table_name)`: a table from a SQLite database export.
+- `read_api(endpoint_config)`: a JSON REST API response. This is the API path: it pulls from a
+  **local** REST endpoint only. `endpoint_config["url"]` is validated against an allow-list of
+  loopback hostnames (`127.0.0.1`, `localhost`, `::1`) and the call is refused with `ValueError`
+  before any socket opens if it resolves to anything else -- this is what keeps the adapter
+  consistent with SAT-SA's air-gapped guarantee (`tests/test_offline.py`). In a real deployment,
+  `url` would point at an entity's own on-prem/local API reachable within the air-gapped network
+  boundary (e.g. a self-hosted ticketing system's REST interface on the entity's internal LAN), never
+  at the public internet. For tests and offline demos, `endpoint_config["fixture_path"]` reads a
+  local JSON file that simulates the API's response body instead, exercising the identical parsing
+  path with zero network I/O. See `config/mappings/cse_api_ticketing.yaml` for a worked example
+  mapping a REST-exposed ticketing system's fields to the canonical `case_record` schema.
+
+---
+
+## 1. Canonical Schema Specifications
+
+SAT-SA standardizes multi-source operational telemetries into 8 canonical relational entities:
+
+### 1.1 `Entity` (Master Profile)
+| Field Name | Type | Constraint | Description |
+|---|---|---|---|
+| `entity_id` | String | PK, Mandatory | Unique identifier (e.g., `CSE-01`, `CSE-02`). |
+| `name` | String | Mandatory | Full organizational name. |
+| `sector` | String | Mandatory | Critical sector (`power`, `banking`, `telecom`, `transport`, `oil_and_gas`). |
+| `size_band` | String | Mandatory | Relative operational scale (`small`, `medium`, `large`). |
+| `soc_model` | String | Optional | Operating model (`internal`, `hybrid`, `managed_mssp`). |
+| `timezone` | String | Optional | Local operational timezone (default `UTC`). |
+| `declared_shift_hours` | String | Optional | Operational shift windows (e.g., `09:00-18:00` or `24x7`). |
+
+### 1.2 `Alert` (Security Telemetry)
+| Field Name | Type | Constraint | Description |
+|---|---|---|---|
+| `entity_id` | String | Mandatory | Foreign key to `Entity`. |
+| `alert_id` | String | PK, Mandatory | Unique alert record ID. |
+| `rule_id` | String | Mandatory | Source detection rule or signature identifier. |
+| `category` | String | Mandatory | Threat categorization (normalized to MITRE or standard taxonomy). |
+| `severity_orig` | String | Optional | Ingested severity label. |
+| `severity_final` | String | Mandatory | Standardized severity (`low`, `medium`, `high`, `critical`). |
+| `asset_id` | String | Optional | Target device or asset affected. |
+| `created_at` | Timestamp | Mandatory | Alert generation timestamp (UTC). |
+| `acknowledged_at` | Timestamp | Optional | First examiner acknowledgment timestamp. |
+| `first_touch_at` | Timestamp | Optional | Timestamp of initial investigation step. |
+| `closed_at` | Timestamp | Optional | Alert closure timestamp. |
+| `closed_by` | String | Optional | HMAC-pseudonymised analyst ID. |
+| `closed_by_type` | String | Mandatory | Actor type (`human` or `soar`). |
+| `playbook_id` | String | Optional | Identifier of automated response playbook. |
+| `disposition` | String | Mandatory | Resolution outcome (`true_positive`, `false_positive`, `benign`, `unknown`). |
+| `status` | String | Mandatory | Operational state (`open`, `in_progress`, `closed`). |
+
+### 1.3 `Case` (ITSM / Case Management)
+| Field Name | Type | Constraint | Description |
+|---|---|---|---|
+| `entity_id` | String | Mandatory | Foreign key to `Entity`. |
+| `case_id` | String | PK, Mandatory | Incident or investigation case number. |
+| `severity` | String | Mandatory | Case severity. |
+| `status` | String | Mandatory | Lifecycle state (`open`, `in_progress`, `resolved`, `closed`). |
+| `owner` | String | Optional | Lead assigned analyst (pseudonymised). |
+| `opened_at` | Timestamp | Mandatory | Case creation timestamp. |
+| `closed_at` | Timestamp | Optional | Case resolution timestamp. |
+
+### 1.4 `WorkflowEvent` (Lifecycle Audit Trail)
+| Field Name | Type | Constraint | Description |
+|---|---|---|---|
+| `entity_id` | String | Mandatory | Foreign key to `Entity`. |
+| `ref_type` | String | Mandatory | Target record type (`alert` or `case`). |
+| `ref_id` | String | Mandatory | Target record identifier. |
+| `ts` | Timestamp | Mandatory | Action timestamp. |
+| `actor` | String | Mandatory | Pseudonymised analyst handle or system daemon. |
+| `action` | String | Mandatory | Lifecycle transition (`triage`, `investigate`, `escalate`, `contain`, `close`). |
+| `from_status` | String | Optional | Prior state. |
+| `to_status` | String | Optional | Resulting state. |
+| `note_len` | Integer | Optional | Character count of investigator notes. |
+
+### 1.5 Supporting Tables
+- `asset`: Inventory master list (`asset_id`, `asset_type`, `criticality` 1–5, `monitored_flag`, `owner_unit`).
+- `escalation`: Escalation events (`esc_id`, `ref_id`, `escalated_at`, `from_role`, `to_role`, `acknowledged_at`, `outcome`).
+- `closure`: Detailed resolution records (`ref_id`, `reason_code`, `disposition`, `comment_norm_hash`, `comment_shingles`).
+- `log_source_daily`: Daily aggregate event volumes (`asset_id`, `source_type`, `date`, `event_count`).
+- `declared_kpi`: Quarterly entity self-attestations (`period`, `metric_name`, `severity`, `declared_value`).
+- `external_report`: Mandatory statutory regulatory filings (`report_id`, `case_id`, `reported_at`, `regulatory_body`).
+
+---
+
+## 2. Per-Rule Data Dependencies
+
+The table below details the canonical tables required for each supervisory detection rule. If a mandatory dependency is absent, SAT-SA gracefully marks the rule as *Skipped due to insufficient data* in the Data Quality report:
+
+| Rule ID | Rule Name | Primary Table | Secondary Dependencies |
+|---|---|---|---|
+| **EG01** | Fast Closures Without Investigation | `alert` | `workflow_event` |
+| **EG02** | Triage Without Action | `alert` | `workflow_event` |
+| **EG03** | Missing Escalations | `alert` | `escalation`, `case` |
+| **EG04** | Template Closure Comments | `closure` | `alert` |
+| **EG05** | Repeat Alerts No Root Cause | `alert` | `remediation`, `asset` |
+| **EG06** | Metric Gaming & SLA Distortions | `alert` | `sla_policy`, `workflow_event` |
+| **EG07** | Analyst Implausibility | `workflow_event` | `entity` |
+| **EG08** | Escalation Without Follow-Through | `escalation` | `sla_policy`, `case` |
+| **EG09** | Backlog & Aging Accumulation | `case` | `workflow_event`, `sla_policy` |
+| **EG10** | KPI Reconciliation Gap | `alert` | `declared_kpi` |
+| **EG11** | Disposition Extremes | `alert` | `remediation` |
+| **EG12** | Workflow Non-Conformance | `workflow_event` | `alert`, `case` |
+| **NS01** | Silent Critical Assets | `asset` | `log_source_daily`, `alert` |
+| **NS02** | Missing Alert Categories | `alert` | `detection_rule` |
+| **NS03** | Unexpected Low/Flat Activity | `alert` | `log_source_daily` |
+| **NS04** | Missing Records & Sequence Gaps | `alert` | `case`, `workflow_event` |
+| **NS05** | Inactive Rule Coverage | `detection_rule` | `alert` |
+| **NS06** | Inventory vs Telemetry | `asset` | `alert`, `log_source_daily` |
+| **NS07** | Absent External Reporting | `case` | `alert`, `external_report` |
+| **NS08** | Submission Completeness | `alert` | `dq_issues` |

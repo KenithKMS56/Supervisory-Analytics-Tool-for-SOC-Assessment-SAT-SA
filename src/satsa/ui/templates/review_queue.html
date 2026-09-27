@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+
+{% block title %}Review Queue | Supervisory Sampling{% endblock %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>Prioritised Supervisory Review Queue</h1>
+    <p>Scientifically stratified queue: <strong>70% Top-Risk indicators</strong> combined with <strong>30% Stratified Random controls</strong> for lift benchmarking.</p>
+  </div>
+  <div class="header-actions">
+    <a href="/reports/export/queue-csv" class="btn btn-secondary">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+      </svg>
+      Export Queue (CSV)
+    </a>
+  </div>
+</div>
+
+<!-- Queue Stats Strip -->
+{% set top_risk_count = 0 %}
+{% set random_count = 0 %}
+{% set confirmed_count = 0 %}
+{% for item in queue_items %}
+  {% if item.is_random %}{% set random_count = random_count + 1 %}{% else %}{% set top_risk_count = top_risk_count + 1 %}{% endif %}
+  {% if item.examiner_status == 'confirmed' %}{% set confirmed_count = confirmed_count + 1 %}{% endif %}
+{% endfor %}
+
+<div class="stats-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 2rem;">
+  <div class="stat-card">
+    <div class="stat-label">Total Queue Candidates</div>
+    <div class="stat-value" style="color: var(--accent-blue);">{{ queue_items|length }}</div>
+    <div class="stat-desc">Stratified supervisory inquest pool</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Top-Risk Quota (70%)</div>
+    <div class="stat-value" style="color: var(--risk-crit);">{{ top_risk_count }}</div>
+    <div class="stat-desc">High accumulated anomaly weight</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Stratified Controls (30%)</div>
+    <div class="stat-value" style="color: var(--accent-indigo);">{{ random_count }}</div>
+    <div class="stat-desc">Zero-bias baseline verification</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Examiner Confirmed</div>
+    <div class="stat-value" style="color: var(--risk-low);">{{ confirmed_count }}</div>
+    <div class="stat-desc">Substantiated operational defects</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">
+    <span>Examination Queue Records</span>
+    <span style="font-size: 0.85rem; color: var(--text-secondary);">Review samples to confirm execution gaps or negative space</span>
+  </div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr>
+          <th>Record ID</th>
+          <th>Entity</th>
+          <th>Type</th>
+          <th>Sampling Class</th>
+          <th>Severity</th>
+          <th>Priority Score</th>
+          <th>Selection Reason & Tracing</th>
+          <th>Examiner Disposition</th>
+          <th style="min-width: 220px;">Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in queue_items %}
+        <tr>
+          <td><code style="color: var(--accent-blue);">{{ item.record_id }}</code></td>
+          <td><strong>{{ item.entity_id }}</strong></td>
+          <td><span class="badge" style="background-color: var(--bg-hover);">{{ item.record_type|upper }}</span></td>
+          <td>
+            {% if item.is_random %}
+              <span class="badge" style="background-color: var(--accent-secondary-bg); color: var(--accent-indigo); border: 1px solid var(--accent-secondary-border);">Random Control</span>
+            {% else %}
+              <span class="badge badge-crit">Top-Risk</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if item.severity == 'critical' %}
+              <span class="badge badge-crit">Critical</span>
+            {% elif item.severity == 'high' %}
+              <span class="badge badge-high">High</span>
+            {% elif item.severity == 'medium' %}
+              <span class="badge badge-mod">Medium</span>
+            {% else %}
+              <span class="badge badge-low">Low</span>
+            {% endif %}
+          </td>
+          <td><strong style="font-size: 1.05rem;">{{ item.score }}</strong></td>
+          <td style="font-size: 0.82rem; color: var(--text-secondary); max-width: 320px; line-height: 1.4;">{{ item.selection_reason }}</td>
+          <td>
+            {% if item.examiner_status == 'confirmed' %}
+              <span class="badge badge-crit">Confirmed Defect</span>
+            {% elif item.examiner_status == 'not_an_issue' %}
+              <span class="badge badge-low">Benign Context</span>
+            {% elif item.examiner_status == 'needs_more_data' %}
+              <span class="badge badge-mod">Needs Data</span>
+            {% else %}
+              <span class="badge" style="background-color: var(--bg-hover); color: var(--text-muted);">Pending Review</span>
+            {% endif %}
+          </td>
+          <td style="min-width: 230px; white-space: nowrap;">
+            {% set identity = get_identity(request) %}
+            {% if identity and identity.role in ('examiner', 'supervisor', 'admin') %}
+            <form action="/api/v1/feedback" method="POST" style="display: flex; gap: 0.5rem; align-items: center; margin: 0;">
+              <input type="hidden" name="queue_id" value="{{ item.queue_id }}">
+              <select name="status" class="form-control" style="padding: 0.35rem 0.5rem; font-size: 0.78rem; width: 145px; min-width: 145px; flex-shrink: 0;">
+                <option value="confirmed" {% if item.examiner_status == 'confirmed' %}selected{% endif %}>Confirm Defect</option>
+                <option value="not_an_issue" {% if item.examiner_status == 'not_an_issue' %}selected{% endif %}>Benign Issue</option>
+                <option value="needs_more_data" {% if item.examiner_status == 'needs_more_data' %}selected{% endif %}>Request Data</option>
+              </select>
+              <button type="submit" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.78rem; font-weight: 600; min-width: 55px; flex-shrink: 0; justify-content: center;">Save</button>
+            </form>
+            {% else %}
+            <a href="/login?next=/queue" style="font-size: 0.78rem;">Log in to log a disposition</a>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="9" style="text-align: center; color: var(--text-muted); padding: 2rem;">No items currently in review queue. Run an assessment to generate queue records.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

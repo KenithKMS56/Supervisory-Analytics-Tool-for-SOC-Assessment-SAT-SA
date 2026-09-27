@@ -1,0 +1,34 @@
+# SAT-SA Systemic (Cross-Entity) Correlation Detector Configuration
+#
+# Governs satsa.rules.systemic.SystemicCorrelationDetector, which looks ACROSS
+# entities rather than within one: if >= min_entity_count entities sharing the
+# same soc_provider (a specific MSSP/vendor, distinct from the coarser
+# soc_model category) all trigger the SAME rule_id in the same assessment run,
+# that is surfaced as a distinct "systemic gap" finding -- separate from the
+# individual per-entity finding cards -- because it points at a shared-vendor
+# or shared-process root cause rather than any one entity's own negligence.
+
+systemic:
+  # Minimum number of distinct entities under the same shared attribute value
+  # that must trigger the same rule before it is surfaced as systemic.
+  min_entity_count: 3
+
+  # The canonical-entity field used to group entities for correlation.
+  # Currently only "soc_provider" is supported.
+  shared_attribute: soc_provider
+
+  # soc_provider values that represent "no external shared vendor" and should
+  # never be correlated on (an in-house SOC sharing a rule with another
+  # in-house SOC is not evidence of a shared-vendor problem).
+  excluded_attribute_values:
+    - internal
+
+  # Rule IDs excluded from systemic correlation because they are known to
+  # fire near-universally in the current synthetic dataset for reasons
+  # unrelated to any shared vendor (see docs/validation.md's note on EG10/
+  # EG12/NS05), so correlating on them would produce a misleading "systemic"
+  # finding covering nearly the whole portfolio rather than a genuine signal.
+  excluded_rule_ids:
+    - NS05
+    - EG12
+    - EG10

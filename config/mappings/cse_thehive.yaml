@@ -1,0 +1,36 @@
+# TheHive 5 Case & Alert JSON/NDJSON Mapping
+format: "json"
+entity_id: "CSE-03"
+timezone: "UTC"
+timestamp_format: "epoch_ms"
+
+column_mappings:
+  alert_id: "_id"
+  rule_id: "sourceRef"
+  category: "type"
+  severity_orig: "severity"
+  severity_final: "severity"
+  asset_id: "artefacts.data"
+  created_at: "createdAt"
+  acknowledged_at: "startDate"
+  closed_at: "endDate"
+  closed_by: "owner"
+  closed_by_type: "ownerType"
+  status: "status"
+  disposition: "resolutionStatus"
+
+value_mappings:
+  severity:
+    1: "low"
+    2: "medium"
+    3: "high"
+    4: "critical"
+  status:
+    "New": "open"
+    "InProgress": "open"
+    "Resolved": "closed"
+    "Deleted": "closed"
+  disposition:
+    "TruePositive": "true_positive"
+    "FalsePositive": "false_positive"
+    "Indeterminate": "unknown"

@@ -1,0 +1,509 @@
+{% extends "admin_base.html" %}
+
+{% block title %}Dashboard Overview{% endblock %}
+
+{% block content %}
+<div class="header-section" style="margin-bottom: 1.5rem;">
+  <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 1.5rem; flex-wrap: wrap;">
+    <div style="display: flex; align-items: center; gap: 1rem;">
+      <div class="brand-logo-wrap" title="0xZenith Security Operations">
+        <img src="/static/0xzenith-logo.png" alt="0xZ" class="brand-logo-img">
+      </div>
+      <div>
+        <h1 style="font-size: clamp(1.6rem, 3vw, 2.2rem); font-weight: 400; letter-spacing: -0.04em; margin: 0 0 0.35rem; color: var(--admin-text-primary);">
+          NCIIPC Administration Overview
+        </h1>
+        <p style="font-size: 0.88rem; color: var(--admin-text-secondary); margin: 0;">
+          National Cyber Resilience Oversight &bull; Centralized control plane for Critical Sector Entities, Organisations, and SAT-SA user identities.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- SAT-SA Style Pill Action Controls -->
+  <div class="action-pills-row">
+    <a href="/users/create" class="btn-admin-pill btn-admin-pill-accent">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+      </svg>
+      Provision User
+    </a>
+    <a href="/organisations" class="btn-admin-pill">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="4" y="2" width="16" height="20" rx="2" ry="2"></rect>
+        <line x1="9" y1="22" x2="9" y2="22.01"></line>
+        <line x1="15" y1="22" x2="15" y2="22.01"></line>
+      </svg>
+      Organisations ({{ stats.total_organisations }})
+    </a>
+    <a href="/cses" class="btn-admin-pill">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+      </svg>
+      Entities ({{ stats.total_cses }})
+    </a>
+    <a href="/audit" class="btn-admin-pill">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+      </svg>
+      Audit Trail
+    </a>
+    <a href="http://localhost:8001/portfolio" target="_blank" rel="noopener noreferrer" class="btn-admin-pill" style="border-color: var(--accent-primary); color: var(--accent-primary);">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="7" y1="17" x2="17" y2="7"></line>
+        <polyline points="7 7 17 7 17 17"></polyline>
+      </svg>
+      Launch SAT-SA (:8001)
+    </a>
+  </div>
+</div>
+
+<!-- Core Metrics Grid (Matching SAT-SA Portfolio Cards) -->
+<div class="stats-grid">
+  <!-- 1. Organisations -->
+  <div class="stat-card-satsa">
+    <div class="stat-top">
+      <span class="stat-label">Organisations Under Supervision</span>
+      <div class="stat-icon-circle" style="color: var(--accent-primary); border-color: rgba(255, 107, 0, 0.3); background: rgba(255, 107, 0, 0.1);">
+        🏛
+      </div>
+    </div>
+    <div class="stat-value" style="color: var(--accent-primary);">
+      {{ stats.total_organisations }}
+    </div>
+    <div class="stat-subtext">Across 6 Critical Infrastructure Sectors</div>
+  </div>
+
+  <!-- 2. Critical Sector Entities -->
+  <div class="stat-card-satsa">
+    <div class="stat-top">
+      <span class="stat-label">Critical Sector Entities</span>
+      <div class="stat-icon-circle" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.1);">
+        🛡
+      </div>
+    </div>
+    <div class="stat-value" style="color: #ef4444;">
+      {{ stats.total_cses }}
+    </div>
+    <div class="stat-subtext">Active CSEs reporting security evidence</div>
+  </div>
+
+  <!-- 3. Active Users -->
+  <div class="stat-card-satsa">
+    <div class="stat-top">
+      <span class="stat-label">Active User Identities</span>
+      <div class="stat-icon-circle" style="color: #f59e0b; border-color: rgba(245, 158, 11, 0.3); background: rgba(245, 158, 11, 0.1);">
+        👥
+      </div>
+    </div>
+    <div class="stat-value" style="color: #f59e0b;">
+      {{ stats.active_users }}
+    </div>
+    <div class="stat-subtext">Authoritative provisioned SAT-SA credentials</div>
+  </div>
+
+  <!-- 4. Blocked Accounts -->
+  <div class="stat-card-satsa">
+    <div class="stat-top">
+      <span class="stat-label">Blocked / Revoked Accounts</span>
+      <div class="stat-icon-circle" style="color: var(--accent-primary); border-color: rgba(255, 107, 0, 0.3); background: rgba(255, 107, 0, 0.1);">
+        🔒
+      </div>
+    </div>
+    <div class="stat-value" style="color: {% if stats.blocked_users > 0 %}#ef4444{% else %}var(--accent-primary){% endif %};">
+      {{ stats.blocked_users }}
+    </div>
+    <div class="stat-subtext">Perimeter-denied identities &amp; revoked tokens</div>
+  </div>
+</div>
+
+<!-- Double Panel: Live SAT-SA Activity Stream & Active Operators -->
+<div style="display: grid; grid-template-columns: 1.4fr 1fr; gap: 1.5rem; margin-top: 1rem; margin-bottom: 1.5rem;">
+  
+  <!-- Left: Real-Time Operational Telemetry Stream -->
+  <div class="admin-card" style="border: 1px solid rgba(255, 107, 0, 0.45); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);">
+    <div class="card-header" style="border-bottom: 1px solid var(--admin-border); padding-bottom: 0.85rem;">
+      <div style="display: flex; align-items: center; gap: 0.65rem;">
+        <span class="status-indicator-dot" id="liveStreamDot" style="background: #22c55e; box-shadow: 0 0 10px #22c55e;"></span>
+        <h3 style="margin: 0; font-size: 1.05rem; font-weight: 600; color: var(--admin-text-primary);">
+          Live SAT-SA Operational Activity
+        </h3>
+      </div>
+      <div style="display: flex; align-items: center; gap: 0.5rem;">
+        <span class="topbar-badge" id="telemetryStatusBadge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); font-size: 0.7rem; padding: 2px 8px; border-radius: 9999px;">
+          ● STREAMING
+        </span>
+      </div>
+    </div>
+    
+    <div class="live-activity-stream" id="liveActivityStream" style="padding-top: 0.5rem;">
+      {% if stats.live_events %}
+        {% for ev in stats.live_events %}
+        <div class="live-event-item" data-event-id="{{ ev.event_id }}">
+          <div class="live-event-left">
+            <span class="badge {% if ev.event_type == 'USER_LOGIN' %}badge-event-login{% elif ev.event_type == 'USER_LOGOUT' %}badge-event-logout{% elif ev.event_type == 'ASSESSMENT_UPLOAD' %}badge-event-upload{% elif 'ASSESSMENT' in ev.event_type %}badge-event-assess{% elif 'FINDING' in ev.event_type %}badge-event-finding{% elif 'REPORT' in ev.event_type %}badge-event-report{% elif 'BLOCKED' in ev.event_type %}badge-event-blocked{% else %}badge-role{% endif %}" style="font-size: 0.68rem; font-weight: 700;">
+              {{ ev.event_type }}
+            </span>
+            <span class="live-event-actor">{{ ev.actor }}</span>
+            <span class="live-event-summary">
+              {% if ev.event_type == 'USER_LOGIN' %}
+                logged in{% if ev.role %} as <span style="color: var(--accent-blue);">{{ ev.role }}</span>{% endif %}
+              {% elif ev.event_type == 'USER_LOGOUT' %}
+                logged out of session
+              {% elif ev.event_type == 'ASSESSMENT_UPLOAD' %}
+                uploaded assessment batch{% if ev.entity_id %} for {{ ev.entity_id }}{% endif %}
+              {% elif ev.event_type == 'ASSESSMENT_STARTED' %}
+                started supervisory assessment execution
+              {% elif ev.event_type == 'ASSESSMENT_COMPLETED' %}
+                completed assessment run ({{ ev.details.findings_count or '0' }} findings)
+              {% elif ev.event_type == 'FINDING_VIEWED' %}
+                inspected finding <span style="font-family: 'JetBrains Mono', monospace; color: #c084fc;">{{ ev.details.rule_id or ev.details.finding_id }}</span>
+              {% elif ev.event_type == 'REPORT_GENERATED' %}
+                generated supervisory {{ ev.details.report or 'audit' }} report
+              {% elif ev.event_type == 'REPORT_DOWNLOADED' %}
+                downloaded {{ ev.details.report or 'artifact' }}
+              {% elif ev.event_type == 'ACCOUNT_BLOCKED' %}
+                <span style="color: #f87171; font-weight: 600;">account blocked &amp; sessions revoked</span>
+              {% elif ev.event_type == 'ROLE_CHANGED' %}
+                role updated to {{ ev.details.new_role }}
+              {% elif ev.event_type == 'CSE_CHANGED' %}
+                reassigned to CSE {{ ev.details.new_cse }}
+              {% else %}
+                {{ ev.event_type.replace('_', ' ').lower() }}
+              {% endif %}
+            </span>
+            {% if ev.entity_id and ev.event_type not in ('USER_LOGIN', 'ACCOUNT_BLOCKED') %}
+              <span style="font-size: 0.66rem; padding: 1px 5px; border-radius: 4px; background: rgba(59, 130, 246, 0.12); color: var(--accent-blue); font-family: 'JetBrains Mono', monospace;">{{ ev.entity_id }}</span>
+            {% endif %}
+          </div>
+          <span class="live-event-time">{{ ev.ts[11:19] }}</span>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div id="noEventsNotice" style="padding: 2.5rem; text-align: center; color: var(--admin-text-muted); font-size: 0.85rem;">
+          Waiting for live SAT-SA operational activity...
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Right: Active Online Operators & Scoped CSEs -->
+  <div class="admin-card">
+    <div class="card-header" style="border-bottom: 1px solid var(--admin-border); padding-bottom: 0.85rem;">
+      <div style="display: flex; align-items: center; gap: 0.6rem;">
+        <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 8px #22c55e;"></span>
+        <h3 style="margin: 0; font-size: 1.05rem; font-weight: 600; color: var(--admin-text-primary);">
+          Active Operators
+        </h3>
+      </div>
+      <span class="topbar-badge" id="onlineCountBadge" style="background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); font-size: 0.72rem; padding: 2px 8px; border-radius: 9999px;">
+        {{ stats.online_operators|length }} Active
+      </span>
+    </div>
+
+    <div class="online-operators-list" id="onlineOperatorsList" style="padding-top: 0.5rem;">
+      {% if stats.online_operators %}
+        {% for op in stats.online_operators %}
+        <div class="online-operator-card" id="operatorCard-{{ op.username }}">
+          <div class="online-operator-info">
+            <span class="status-indicator-dot {% if op.status == 'BLOCKED' or op.is_blocked %}blocked{% endif %}"></span>
+            <div>
+              <div style="display: flex; align-items: center; gap: 0.45rem;">
+                <strong style="font-size: 0.86rem; color: var(--admin-text-primary);">{{ op.username }}</strong>
+                <span class="badge badge-role" style="font-size: 0.65rem; padding: 1px 6px;">{{ op.role }}</span>
+              </div>
+              <div style="font-size: 0.74rem; color: var(--admin-text-secondary); margin-top: 2px;">
+                {% if op.cse_id %}
+                  Scoped: <span style="color: var(--accent-blue); font-weight: 600;">{{ op.cse_id }}</span>
+                {% elif op.org_id %}
+                  Org: <span style="color: var(--admin-text-primary);">{{ op.org_name or op.org_id }}</span>
+                {% else %}
+                  Global Oversight
+                {% endif %}
+              </div>
+            </div>
+          </div>
+          
+          <div style="display: flex; align-items: center; gap: 0.4rem;">
+            <span style="font-size: 0.68rem; font-weight: 600; color: #4ade80; background: rgba(34, 197, 94, 0.1); padding: 2px 7px; border-radius: 9999px; border: 1px solid rgba(34, 197, 94, 0.25);">
+              ● ONLINE
+            </span>
+            <form method="post" action="/users/{{ op.username }}/block" style="margin: 0; display: inline;" onsubmit="return confirm('Immediately revoke session and block {{ op.username }}?');">
+              <button type="submit" class="btn-admin-pill" style="font-size: 0.68rem; padding: 2px 8px; border-color: rgba(239, 68, 68, 0.4); color: #ef4444; background: transparent;" title="Revoke Session &amp; Block">
+                Revoke
+              </button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div id="noOperatorsNotice" style="padding: 2.5rem; text-align: center; color: var(--admin-text-muted); font-size: 0.85rem;">
+          No active operator sessions currently connected.
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+
+<!-- Lower Grid: Administrative Audit & System Logs -->
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;">
+  
+  <!-- Left: Recent Administrative Activity -->
+  <div class="admin-card">
+    <div class="card-header" style="border-bottom: 1px solid var(--admin-border);">
+      <div style="display: flex; align-items: center; gap: 0.6rem;">
+        <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent-primary); box-shadow: 0 0 8px var(--accent-primary);"></span>
+        <h3 style="margin: 0; font-size: 1.05rem; font-weight: 600;">Recent Administrative Audit</h3>
+      </div>
+      <a href="/audit" class="btn-admin-pill" style="font-size: 0.72rem; padding: 0.25rem 0.75rem;">View Full Audit &rarr;</a>
+    </div>
+    {% if stats.recent_admin_activity %}
+    <table class="admin-table">
+      <thead>
+        <tr>
+          <th>Time (UTC)</th>
+          <th>Action</th>
+          <th>Actor</th>
+          <th>Target</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in stats.recent_admin_activity %}
+        <tr>
+          <td style="font-family: 'JetBrains Mono', monospace; font-size: 0.74rem; color: var(--admin-text-secondary);">
+            {{ log.ts[:19].replace('T', ' ') }}
+          </td>
+          <td>
+            <span class="badge badge-role-admin" style="font-size: 0.68rem;">{{ log.action }}</span>
+          </td>
+          <td style="font-weight: 600;">{{ log.actor }}</td>
+          <td style="color: var(--accent-blue); font-family: 'JetBrains Mono', monospace; font-size: 0.78rem;">
+            {{ log.target or '—' }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div style="padding: 2.5rem; text-align: center; color: var(--admin-text-muted);">
+      No administrative changes recorded yet.
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Right: Architecture & Air-Gapped Supervisory Status -->
+  <div class="admin-card">
+    <div class="card-header" style="border-bottom: 1px solid var(--admin-border);">
+      <div style="display: flex; align-items: center; gap: 0.6rem;">
+        <span class="pulse-dot"></span>
+        <h3 style="margin: 0; font-size: 1.05rem; font-weight: 600;">Perimeter &amp; Identity Link</h3>
+      </div>
+      <span class="topbar-badge" style="background: rgba(255, 107, 0, 0.15); color: var(--accent-primary); border: 1px solid rgba(255, 107, 0, 0.3); font-size: 0.7rem; padding: 2px 8px; border-radius: 9999px;">Linked :8000 &harr; :8001</span>
+    </div>
+    <div style="padding: 1.25rem; font-size: 0.85rem; line-height: 1.6; color: var(--admin-text-secondary);">
+      <p style="margin: 0 0 0.85rem;">
+        The <strong>NCIIPC Administration Portal (:8000)</strong> acts as the authoritative provisioning plane for SAT-SA (:8001). Users, CSE scope assignments, and administrative blocks applied here propagate instantly via shared SQLite telemetry.
+      </p>
+      <div style="display: flex; flex-direction: column; gap: 0.5rem; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; background: var(--admin-surface-subtle); padding: 0.85rem; border-radius: 8px; border: 1px solid var(--admin-border);">
+        <div style="display: flex; justify-content: space-between;">
+          <span>Admin Authority:</span>
+          <strong style="color: var(--accent-primary);">Active (:8000)</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span>SAT-SA Workspace:</span>
+          <strong style="color: #4ade80;">Active (:8001)</strong>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span>Shared Store:</span>
+          <strong style="color: var(--accent-blue);">data/satsa.db [WAL mode]</strong>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  (function initLiveTelemetryStream() {
+    var maxEventId = 0;
+    // Determine existing max event id from DOM
+    document.querySelectorAll('.live-event-item').forEach(function(el) {
+      var id = parseInt(el.getAttribute('data-event-id'), 10);
+      if (id && id > maxEventId) maxEventId = id;
+    });
+
+    var streamContainer = document.getElementById('liveActivityStream');
+    var noEventsNotice = document.getElementById('noEventsNotice');
+    var onlineList = document.getElementById('onlineOperatorsList');
+    var onlineCount = document.getElementById('onlineCountBadge');
+    var statusBadge = document.getElementById('telemetryStatusBadge');
+    var streamDot = document.getElementById('liveStreamDot');
+
+    function renderEventHTML(ev) {
+      var badgeClass = 'badge-role';
+      var textSummary = '';
+      if (ev.event_type === 'USER_LOGIN') {
+        badgeClass = 'badge-event-login';
+        textSummary = 'logged in' + (ev.role ? ' as <span style="color: var(--accent-blue);">' + ev.role + '</span>' : '');
+      } else if (ev.event_type === 'USER_LOGOUT') {
+        badgeClass = 'badge-event-logout';
+        textSummary = 'logged out of session';
+      } else if (ev.event_type === 'ASSESSMENT_UPLOAD') {
+        badgeClass = 'badge-event-upload';
+        textSummary = 'uploaded assessment batch' + (ev.entity_id ? ' for ' + ev.entity_id : '');
+      } else if (ev.event_type === 'ASSESSMENT_STARTED') {
+        badgeClass = 'badge-event-assess';
+        textSummary = 'started supervisory assessment execution';
+      } else if (ev.event_type === 'ASSESSMENT_COMPLETED') {
+        badgeClass = 'badge-event-assess';
+        var findings = ev.details && ev.details.findings_count !== undefined ? ev.details.findings_count : '0';
+        textSummary = 'completed assessment run (' + findings + ' findings)';
+      } else if (ev.event_type === 'FINDING_VIEWED') {
+        badgeClass = 'badge-event-finding';
+        var rule = (ev.details && (ev.details.rule_id || ev.details.finding_id)) || 'Finding';
+        textSummary = 'inspected finding <span style="font-family: \'JetBrains Mono\', monospace; color: #c084fc;">' + rule + '</span>';
+      } else if (ev.event_type === 'REPORT_GENERATED') {
+        badgeClass = 'badge-event-report';
+        var rep = (ev.details && ev.details.report) || 'audit';
+        textSummary = 'generated supervisory ' + rep + ' report';
+      } else if (ev.event_type === 'REPORT_DOWNLOADED') {
+        badgeClass = 'badge-event-report';
+        var rep = (ev.details && ev.details.report) || 'artifact';
+        textSummary = 'downloaded ' + rep;
+      } else if (ev.event_type === 'ACCOUNT_BLOCKED') {
+        badgeClass = 'badge-event-blocked';
+        textSummary = '<span style="color: #f87171; font-weight: 600;">account blocked &amp; sessions revoked</span>';
+      } else if (ev.event_type === 'ROLE_CHANGED') {
+        badgeClass = 'badge-role';
+        textSummary = 'role updated to ' + (ev.details ? ev.details.new_role : '');
+      } else if (ev.event_type === 'CSE_CHANGED') {
+        badgeClass = 'badge-role';
+        textSummary = 'reassigned to CSE ' + (ev.details ? ev.details.new_cse : '');
+      } else {
+        textSummary = ev.event_type.replace(/_/g, ' ').toLowerCase();
+      }
+
+      var timeStr = ev.ts ? ev.ts.substr(11, 8) : '';
+      var entityBadge = (ev.entity_id && ev.event_type !== 'USER_LOGIN' && ev.event_type !== 'ACCOUNT_BLOCKED')
+        ? '<span style="font-size: 0.66rem; padding: 1px 5px; border-radius: 4px; background: rgba(59, 130, 246, 0.12); color: var(--accent-blue); font-family: \'JetBrains Mono\', monospace;">' + ev.entity_id + '</span>'
+        : '';
+
+      return '<div class="live-event-item" data-event-id="' + ev.event_id + '">' +
+        '<div class="live-event-left">' +
+          '<span class="badge ' + badgeClass + '" style="font-size: 0.68rem; font-weight: 700;">' + ev.event_type + '</span>' +
+          '<span class="live-event-actor">' + ev.actor + '</span>' +
+          '<span class="live-event-summary">' + textSummary + '</span>' +
+          entityBadge +
+        '</div>' +
+        '<span class="live-event-time">' + timeStr + '</span>' +
+      '</div>';
+    }
+
+    function renderOnlineOperators(operators) {
+      if (!onlineList) return;
+      if (!operators || operators.length === 0) {
+        onlineList.innerHTML = '<div style="padding: 2.5rem; text-align: center; color: var(--admin-text-muted); font-size: 0.85rem;">No active operator sessions currently connected.</div>';
+        if (onlineCount) onlineCount.textContent = '0 Active';
+        return;
+      }
+      if (onlineCount) onlineCount.textContent = operators.length + ' Active';
+      var html = '';
+      operators.forEach(function(op) {
+        var isBlocked = op.status === 'BLOCKED' || op.is_blocked;
+        var dotClass = isBlocked ? 'blocked' : '';
+        var scopeText = op.cse_id 
+          ? 'Scoped: <span style="color: var(--accent-blue); font-weight: 600;">' + op.cse_id + '</span>'
+          : (op.org_id ? 'Org: <span style="color: var(--admin-text-primary);">' + (op.org_name || op.org_id) + '</span>' : 'Global Oversight');
+
+        html += '<div class="online-operator-card" id="operatorCard-' + op.username + '">' +
+          '<div class="online-operator-info">' +
+            '<span class="status-indicator-dot ' + dotClass + '"></span>' +
+            '<div>' +
+              '<div style="display: flex; align-items: center; gap: 0.45rem;">' +
+                '<strong style="font-size: 0.86rem; color: var(--admin-text-primary);">' + op.username + '</strong>' +
+                '<span class="badge badge-role" style="font-size: 0.65rem; padding: 1px 6px;">' + op.role + '</span>' +
+              '</div>' +
+              '<div style="font-size: 0.74rem; color: var(--admin-text-secondary); margin-top: 2px;">' + scopeText + '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div style="display: flex; align-items: center; gap: 0.4rem;">' +
+            '<span style="font-size: 0.68rem; font-weight: 600; color: #4ade80; background: rgba(34, 197, 94, 0.1); padding: 2px 7px; border-radius: 9999px; border: 1px solid rgba(34, 197, 94, 0.25);">● ONLINE</span>' +
+            '<form method="post" action="/users/' + op.username + '/block" style="margin: 0; display: inline;" onsubmit="return confirm(\'Immediately revoke session and block ' + op.username + '?\');">' +
+              '<button type="submit" class="btn-admin-pill" style="font-size: 0.68rem; padding: 2px 8px; border-color: rgba(239, 68, 68, 0.4); color: #ef4444; background: transparent;" title="Revoke Session &amp; Block">Revoke</button>' +
+            '</form>' +
+          '</div>' +
+        '</div>';
+      });
+      onlineList.innerHTML = html;
+    }
+
+    function processIncoming(data) {
+      if (data.events && data.events.length > 0) {
+        if (noEventsNotice) {
+          noEventsNotice.remove();
+          noEventsNotice = null;
+        }
+        data.events.forEach(function(ev) {
+          if (ev.event_id > maxEventId) {
+            maxEventId = ev.event_id;
+            var div = document.createElement('div');
+            div.innerHTML = renderEventHTML(ev);
+            var newEl = div.firstElementChild;
+            if (streamContainer) {
+              streamContainer.insertBefore(newEl, streamContainer.firstChild);
+            }
+          }
+        });
+      }
+      if (data.online_users) {
+        renderOnlineOperators(data.online_users);
+      }
+    }
+
+    // Polling stream (ultra-resilient fallback + primary sync)
+    function pollStream() {
+      fetch('/api/activity/stream?since_id=' + maxEventId, { credentials: 'same-origin' })
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          if (data && data.events) {
+            processIncoming(data);
+          }
+        })
+        .catch(function(err) {});
+    }
+
+    // Connect WebSocket if supported
+    var wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var wsUrl = wsProto + '//' + window.location.host + '/ws/activity';
+    var ws = null;
+    try {
+      ws = new WebSocket(wsUrl);
+      ws.onmessage = function(evt) {
+        try {
+          var payload = JSON.parse(evt.data);
+          processIncoming(payload);
+        } catch(e) {}
+      };
+      ws.onopen = function() {
+        if (statusBadge) statusBadge.textContent = '● LIVE (WS)';
+      };
+      ws.onerror = function() {
+        // Fall back gracefully to polling
+        setInterval(pollStream, 1500);
+      };
+      ws.onclose = function() {
+        setInterval(pollStream, 1500);
+      };
+    } catch(e) {
+      setInterval(pollStream, 1500);
+    }
+
+    // Also run quick poll every 2.5 seconds to guarantee 100% sync
+    setInterval(pollStream, 2500);
+  })();
+</script>
+{% endblock %}
+

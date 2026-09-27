@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>SAT-SA Detector-Implementation Correctness Report</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; color: #1e293b; line-height: 1.6; max-width: 1000px; margin: auto; padding: 20px; }
+    h1, h2, h3 { color: #0f172a; }
+    .badge { display: inline-block; padding: 4px 8px; border-radius: 4px; font-weight: 700; font-size: 0.8rem; background: #dcfce7; color: #15803d; }
+    .card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 25px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; margin-bottom: 12px; }
+    th, td { border: 1px solid #cbd5e1; padding: 10px 14px; text-align: left; }
+    th { background: #f1f5f9; }
+    .footer { margin-top: 50px; padding-top: 15px; border-top: 2px solid #e2e8f0; font-size: 0.85rem; color: #64748b; text-align: center; }
+    .notice { color: #b91c1c; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <h1>SAT-SA Detector-Implementation Correctness Report</h1>
+  <div class="notice">Indicators requiring supervisory review; not a compliance determination.</div>
+  <p>Run ID: <code>RUN-20260925111515531894-d9a74b92</code> | Methodology: Deterministic SQL & Robust Statistics (No AI/ML)</p>
+
+  <div class="card">
+    <h2>Detector-Implementation Correctness Summary</h2>
+    <table>
+      <thead><tr><th>Metric</th><th>Score</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Entity Rank Precision@7</strong></td><td>100.0%</td><td><span class="badge">PASS</span></td></tr>
+        <tr><td><strong>Injected Defect Recall</strong></td><td>100.0%</td><td><span class="badge">PASS</span></td></tr>
+        <tr><td><strong>Defect Precision</strong></td><td>100.0%</td><td><span class="badge">PASS</span></td></tr>
+        <tr><td><strong>Spearman Rank Stability (±20%)</strong></td><td>1.0000</td><td><span class="badge">PASS</span></td></tr>
+        <tr><td><strong>Audit Chain Verification</strong></td><td>Audit chain verified successfully (5 entries intact).</td><td><span class="badge">PASS</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Review-Effort Lift Factor</h2>
+    <table>
+      <thead><tr><th>Budget</th><th>Records Checked</th><th>Defects Discovered</th><th>Queue Hit Rate</th><th>Lift Factor</th></tr></thead>
+      <tbody>
+        <tr><td><strong>1%</strong></td><td>162</td><td>13</td><td>8.0%</td><td><strong>5.97x</strong></td></tr><tr><td><strong>2%</strong></td><td>324</td><td>18</td><td>5.6%</td><td><strong>4.13x</strong></td></tr><tr><td><strong>5%</strong></td><td>810</td><td>18</td><td>2.2%</td><td><strong>1.65x</strong></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="footer">
+    <div>National Critical Information Infrastructure Protection Centre (NCIIPC)</div>
+    <div>Fully Offline & Deterministic Supervisory Analytics Engine</div>
+  </div>
+</body>
+</html>

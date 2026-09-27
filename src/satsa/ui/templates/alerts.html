@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+
+{% block title %}Alert Explorer{% endblock %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>National SOC Alert Telemetry Explorer</h1>
+    <p>Cross-entity deep audit stream queried directly from DuckDB partitioned Parquet storage.</p>
+  </div>
+  <div class="header-actions">
+    <a href="/reports/export/findings-csv" class="btn btn-secondary">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+      </svg>
+      Export Filtered CSV
+    </a>
+  </div>
+</div>
+
+<!-- Modern Stat Cards Grid -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">Total Telemetric Alerts</span>
+      <div class="stat-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+        </svg>
+      </div>
+    </div>
+    <div class="stat-value" style="color: var(--accent-blue);">{{ "{:,}".format(total_alerts) if total_alerts is number else total_alerts }}</div>
+    <div class="stat-desc">Ingested across {{ all_entities|length }} Critical Sector Entities</div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">Critical / High Severity</span>
+      <div class="stat-icon" style="background: var(--risk-crit-bg); color: var(--risk-crit); border-color: var(--risk-crit-border);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+          <line x1="12" y1="9" x2="12" y2="13"></line>
+          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+      </div>
+    </div>
+    <div class="stat-value" style="color: var(--risk-crit);">{{ "{:,}".format(high_crit_count) if high_crit_count is number else high_crit_count }}</div>
+    <div class="stat-desc">Requiring mandatory tier-2 escalation</div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">SOAR Automated Closures</span>
+      <div class="stat-icon" style="background: var(--accent-secondary-bg); color: var(--accent-indigo); border-color: var(--accent-secondary-border);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect>
+          <rect x="9" y="9" width="6" height="6"></rect>
+          <line x1="9" y1="1" x2="9" y2="4"></line>
+          <line x1="15" y1="1" x2="15" y2="4"></line>
+          <line x1="9" y1="20" x2="9" y2="23"></line>
+          <line x1="15" y1="20" x2="15" y2="23"></line>
+          <line x1="20" y1="9" x2="23" y2="9"></line>
+          <line x1="20" y1="14" x2="23" y2="14"></line>
+          <line x1="1" y1="9" x2="4" y2="9"></line>
+          <line x1="1" y1="14" x2="4" y2="14"></line>
+        </svg>
+      </div>
+    </div>
+    <div class="stat-value" style="color: var(--accent-indigo);">{{ "{:,}".format(soar_count) if soar_count is number else soar_count }}</div>
+    <div class="stat-desc">High-velocity playbook resolutions</div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">False Positive Rate</span>
+      <div class="stat-icon" style="background: var(--risk-mod-bg); color: var(--risk-mod); border-color: var(--risk-mod-border);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <path d="M12 6v6l4 2"></path>
+        </svg>
+      </div>
+    </div>
+    <div class="stat-value" style="color: var(--risk-mod);">{{ fp_rate }}%</div>
+    <div class="stat-desc">Portfolio-wide disposition baseline</div>
+  </div>
+</div>
+
+<!-- Modern Filter Card & Query Engine -->
+<div class="filter-card">
+  <div class="filter-header">
+    <div class="filter-title">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-blue);">
+        <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+      </svg>
+      <span>Telemetric Filter & Query Engine</span>
+    </div>
+    <span class="filter-badge">Showing {{ alerts|length }} Sample Records</span>
+  </div>
+
+  <form method="get" action="/alerts" class="filter-row">
+    <div class="search-input-wrapper">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"></circle>
+        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+      </svg>
+      <input type="text" name="q" value="{{ q }}" placeholder="Search by Alert ID, Asset ID, or Rule..." class="form-control">
+    </div>
+
+    <select name="entity" class="form-control">
+      <option value="">All Entities ({{ all_entities|length }})</option>
+      {% for ent in all_entities %}
+        <option value="{{ ent }}" {% if entity_filter == ent %}selected{% endif %}>{{ ent }}</option>
+      {% endfor %}
+    </select>
+
+    <select name="severity" class="form-control">
+      <option value="">All Severities</option>
+      <option value="critical" {% if sev_filter == 'critical' %}selected{% endif %}>Critical Severity</option>
+      <option value="high" {% if sev_filter == 'high' %}selected{% endif %}>High Severity</option>
+      <option value="medium" {% if sev_filter == 'medium' %}selected{% endif %}>Medium Severity</option>
+      <option value="low" {% if sev_filter == 'low' %}selected{% endif %}>Low Severity</option>
+    </select>
+
+    <select name="actor_type" class="form-control">
+      <option value="">All Closure Actors</option>
+      <option value="human" {% if actor_filter == 'human' %}selected{% endif %}>Human Analyst</option>
+      <option value="soar" {% if actor_filter == 'soar' %}selected{% endif %}>SOAR Playbook</option>
+    </select>
+
+    <div class="filter-actions">
+      <button type="submit" class="btn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+        </svg>
+        Filter
+      </button>
+
+      {% if q or entity_filter or sev_filter or actor_filter %}
+      <a href="/alerts" class="btn btn-secondary" title="Clear all active filters">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"></line>
+          <line x1="6" y1="6" x2="18" y2="18"></line>
+        </svg>
+        Reset
+      </a>
+      {% endif %}
+    </div>
+  </form>
+
+  <!-- Active Filter Tags -->
+  {% if q or entity_filter or sev_filter or actor_filter %}
+  <div class="active-filters">
+    <span style="color: var(--text-muted); font-weight: 600;">Active Filters:</span>
+    {% if q %}
+      <span class="filter-chip">Query: "<strong>{{ q }}</strong>" <a href="/alerts?entity={{ entity_filter }}&severity={{ sev_filter }}&actor_type={{ actor_filter }}">&times;</a></span>
+    {% endif %}
+    {% if entity_filter %}
+      <span class="filter-chip">Entity: <strong>{{ entity_filter }}</strong> <a href="/alerts?q={{ q }}&severity={{ sev_filter }}&actor_type={{ actor_filter }}">&times;</a></span>
+    {% endif %}
+    {% if sev_filter %}
+      <span class="filter-chip">Severity: <strong>{{ sev_filter|capitalize }}</strong> <a href="/alerts?q={{ q }}&entity={{ entity_filter }}&actor_type={{ actor_filter }}">&times;</a></span>
+    {% endif %}
+    {% if actor_filter %}
+      <span class="filter-chip">Actor: <strong>{{ actor_filter|upper }}</strong> <a href="/alerts?q={{ q }}&entity={{ entity_filter }}&severity={{ sev_filter }}">&times;</a></span>
+    {% endif %}
+    <a href="/alerts" style="color: var(--accent-blue); text-decoration: none; margin-left: 0.5rem; font-weight: 600;">Clear All</a>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Modern Records Table -->
+<div class="card" style="padding: 0; overflow: hidden;">
+  <div style="padding: 1.25rem 1.5rem; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+    <div>
+      <h2 style="font-size: 1.1rem; margin-bottom: 0.2rem;">Raw Operational Alert Stream</h2>
+      <p style="color: var(--text-secondary); font-size: 0.82rem;">Direct vectorized Parquet scan with microsecond filter pushdowns</p>
+    </div>
+    <span style="font-family: var(--font-mono); font-size: 0.8rem; color: var(--accent-secondary); background: var(--accent-secondary-bg); padding: 0.35rem 0.75rem; border-radius: 6px; border: 1px solid var(--accent-secondary-border);">
+      DUCKDB VECTORIZED
+    </span>
+  </div>
+
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr>
+          <th>Alert ID</th>
+          <th>Entity</th>
+          <th>Rule / Signature</th>
+          <th>Severity</th>
+          <th>Disposition</th>
+          <th>Actor Type</th>
+          <th>Created At (UTC)</th>
+          <th>Duration (MTTR)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in alerts %}
+        <tr>
+          <td><code style="background: var(--surface-sunken); padding: 0.25rem 0.5rem; border-radius: 4px; border: 1px solid var(--border-color); font-size: 0.8rem;">{{ a.alert_id }}</code></td>
+          <td>
+            <strong><a href="/entity/{{ a.entity_id }}" style="color: var(--accent-blue); text-decoration: none; font-weight: 700;">{{ a.entity_id }}</a></strong>
+          </td>
+          <td><span class="hash-pill">{{ a.rule_id }}</span></td>
+          <td>
+            <span class="badge {% if a.severity_final == 'critical' %}badge-crit{% elif a.severity_final == 'high' %}badge-high{% elif a.severity_final == 'medium' %}badge-mod{% else %}badge-low{% endif %}">
+              {{ a.severity_final }}
+            </span>
+          </td>
+          <td>
+            <div style="display: flex; align-items: center; gap: 0.45rem;">
+              <span style="width: 8px; height: 8px; border-radius: 50%; background-color: {% if a.disposition == 'true_positive' %}var(--risk-crit){% elif a.disposition == 'false_positive' %}var(--text-tertiary){% else %}var(--accent-primary){% endif %};"></span>
+              <span style="font-size: 0.85rem; color: {% if a.disposition == 'true_positive' %}var(--risk-crit){% elif a.disposition == 'false_positive' %}var(--text-secondary){% else %}var(--accent-primary){% endif %};">
+                {{ a.disposition|replace('_', ' ')|capitalize }}
+              </span>
+            </div>
+          </td>
+          <td>
+            {% if a.closed_by_type == 'soar' %}
+              <span class="badge" style="background: var(--accent-secondary-bg); color: var(--accent-secondary); border: 1px solid var(--accent-secondary); display: inline-flex; align-items: center; gap: 0.35rem;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect>
+                  <rect x="9" y="9" width="6" height="6"></rect>
+                </svg>
+                SOAR
+              </span>
+            {% else %}
+              <span class="badge" style="background: var(--risk-low-bg); color: var(--risk-low); border: 1px solid var(--risk-low-border); display: inline-flex; align-items: center; gap: 0.35rem;">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                  <circle cx="12" cy="7" r="4"></circle>
+                </svg>
+                Human
+              </span>
+            {% endif %}
+          </td>
+          <td style="font-size: 0.85rem; color: var(--text-secondary); font-family: var(--font-mono);">{{ a.created_at }}</td>
+          <td>
+            <span style="font-size: 0.85rem; font-weight: 600; color: {% if a.duration_str == 'In Progress' %}var(--risk-mod){% else %}var(--text-primary){% endif %};">
+              {{ a.duration_str }}
+            </span>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="8" style="text-align: center; color: var(--text-muted); padding: 3.5rem 1rem;">
+            <div style="display: flex; flex-direction: column; align-items: center; gap: 0.75rem;">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color: var(--text-tertiary);">
+                <circle cx="11" cy="11" r="8"></circle>
+                <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                <line x1="8" y1="11" x2="14" y2="11"></line>
+              </svg>
+              <div style="font-size: 1rem; font-weight: 600; color: var(--text-primary);">No telemetric records matched your search filter</div>
+              <p style="font-size: 0.85rem; color: var(--text-secondary); max-width: 400px;">Try adjusting your query, selecting a different entity, or clearing the active filters.</p>
+              <a href="/alerts" class="btn btn-secondary" style="margin-top: 0.5rem;">Reset All Filters</a>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination Controls -->
+  {% if total_matching > 0 %}
+  <div style="display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.5rem; background: var(--surface-sunken); border-top: 1px solid var(--border-color); flex-wrap: wrap; gap: 0.75rem;">
+    <div style="font-size: 0.82rem; color: var(--text-secondary);">
+      Showing <strong>{{ start_item }}</strong> &ndash; <strong>{{ end_item }}</strong> of <strong>{{ "{:,}".format(total_matching) if total_matching is number else total_matching }}</strong> records (Page {{ page }} of {{ total_pages }})
+    </div>
+    <div style="display: flex; gap: 0.35rem; align-items: center;">
+      {% if page > 1 %}
+        <a href="/alerts?q={{ q }}&entity={{ entity_filter }}&severity={{ sev_filter }}&actor_type={{ actor_filter }}&page={{ page - 1 }}" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">&larr; Prev</a>
+      {% else %}
+        <span class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; opacity: 0.35; cursor: not-allowed;">&larr; Prev</span>
+      {% endif %}
+
+      {% for p in range(1, total_pages + 1) %}
+        {% if p == page %}
+          <span class="btn" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; font-weight: 700;">{{ p }}</span>
+        {% elif p <= 4 or p == total_pages or (p >= page - 1 and p <= page + 1) %}
+          <a href="/alerts?q={{ q }}&entity={{ entity_filter }}&severity={{ sev_filter }}&actor_type={{ actor_filter }}&page={{ p }}" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">{{ p }}</a>
+        {% elif p == 5 and total_pages > 6 %}
+          <span style="color: var(--text-muted); padding: 0 0.15rem;">...</span>
+        {% endif %}
+      {% endfor %}
+
+      {% if page < total_pages %}
+        <a href="/alerts?q={{ q }}&entity={{ entity_filter }}&severity={{ sev_filter }}&actor_type={{ actor_filter }}&page={{ page + 1 }}" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.8rem;">Next &rarr;</a>
+      {% else %}
+        <span class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.8rem; opacity: 0.35; cursor: not-allowed;">Next &rarr;</span>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

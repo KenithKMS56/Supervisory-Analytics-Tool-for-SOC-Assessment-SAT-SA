@@ -1,0 +1,495 @@
+{% extends "base.html" %}
+
+{% block title %}Portfolio Assessment{% endblock %}
+
+{% block content %}
+<div class="header-section" style="margin-bottom: 1.5rem;">
+  <div class="header-title">
+    <h1>Supervisory Entity Risk Portfolio</h1>
+    <p>Oversight posture across Critical Sector Entities for assessment period: <strong>{{ period }}</strong></p>
+  </div>
+  <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: nowrap;">
+    <a href="/reports/portfolio/html" target="_blank" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+        <polyline points="14 2 14 8 20 8"></polyline>
+      </svg>
+      Dossier (HTML)
+    </a>
+    <a href="/reports/export/findings-csv" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+      </svg>
+      Findings CSV
+    </a>
+    <a href="/docs" target="_blank" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="16 18 22 12 16 6"></polyline>
+        <polyline points="8 6 2 12 8 18"></polyline>
+      </svg>
+      REST API Docs
+    </a>
+    <a href="/queue" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem; border-color: var(--accent-primary); color: var(--accent-primary);">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>
+        <rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect>
+      </svg>
+      Review Queue ({{ queue_count }})
+    </a>
+  </div>
+</div>
+
+{% if current_identity and current_identity.cse_id %}
+<div style="margin-bottom: 1.5rem; display: flex; align-items: center; justify-content: space-between; background: var(--surface); border-left: 4px solid var(--accent-blue); padding: 0.85rem 1.25rem; border-radius: var(--radius-sm); border: 1px solid var(--border); border-left-width: 4px;">
+  <div style="display: flex; align-items: center; gap: 0.85rem;">
+    <span class="badge" style="background: rgba(59,130,246,0.15); color: var(--accent-blue); font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 0.85rem; padding: 0.25rem 0.6rem;">{{ current_identity.cse_id }}</span>
+    <div>
+      <div style="font-weight: 600; font-size: 0.9rem;">Authoritative Scope: {{ current_identity.org_name or current_identity.org_id or 'Critical Sector Entity' }}</div>
+      <div style="font-size: 0.78rem; color: var(--text-muted);">Operator: <strong>{{ current_identity.username }}</strong> ({{ current_identity.role }}) &bull; Enforced boundary: designated entity records under NCIIPC oversight.</div>
+    </div>
+  </div>
+  <a href="/entity/{{ current_identity.cse_id }}" class="btn btn-secondary" style="font-size: 0.8rem; padding: 0.4rem 0.85rem;">View Assigned Profile &rarr;</a>
+</div>
+{% endif %}
+
+<!-- Core Metrics Grid -->
+<div class="stats-grid">
+  <div class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">Entities Under Supervision</span>
+      <div class="stat-icon">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+          <circle cx="9" cy="7" r="4"></circle>
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+        </svg>
+      </div>
+    </div>
+    <div class="stat-value" style="color: var(--accent-blue);">{{ entities|length }}</div>
+    <div class="stat-desc">Critical Infrastructure Sectors</div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">Execution Gaps Flagged</span>
+      <div class="stat-icon" style="background: var(--risk-crit-bg); color: var(--risk-crit); border-color: var(--risk-crit-border);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+        </svg>
+      </div>
+    </div>
+    <div class="stat-value" style="color: var(--risk-crit);">{{ total_eg }}</div>
+    <div class="stat-desc">SLA Gaming, Rubber-Stamping, Template Notes</div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">Negative Space Anomalies</span>
+      <div class="stat-icon" style="background: var(--risk-mod-bg); color: var(--risk-mod); border-color: var(--risk-mod-border);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"></line>
+        </svg>
+      </div>
+    </div>
+    <div class="stat-value" style="color: var(--risk-mod);">{{ total_ns }}</div>
+    <div class="stat-desc">Silent Crown Jewels, Missing Tactics, Blind Spots</div>
+  </div>
+
+  <div class="stat-card">
+    <div class="stat-top">
+      <span class="stat-label">Supervisory Priority Queue</span>
+      <div class="stat-icon" style="background: var(--accent-secondary-bg); color: var(--accent-indigo); border-color: var(--accent-secondary-border);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="8" y1="6" x2="21" y2="6"></line>
+          <line x1="8" y1="12" x2="21" y2="12"></line>
+          <line x1="8" y1="18" x2="21" y2="18"></line>
+          <line x1="3" y1="6" x2="3.01" y2="6"></line>
+          <line x1="3" y1="12" x2="3.01" y2="12"></line>
+          <line x1="3" y1="18" x2="3.01" y2="18"></line>
+        </svg>
+      </div>
+    </div>
+    <div class="stat-value" style="color: var(--accent-indigo);">{{ queue_count }}</div>
+    <div class="stat-desc">Risk-Prioritised + Stratified Samples</div>
+  </div>
+</div>
+
+{% if systemic_findings %}
+<!-- Cross-Entity Systemic Correlation Findings (satsa.rules.systemic) -->
+<div class="card" style="border-color: var(--accent-red, #b91c1c);">
+  <div class="card-title">
+    <span>
+      Systemic / Cross-Entity Findings
+      <span class="tooltip-hint">❓
+        <span class="tooltip-text">Looks ACROSS entities rather than within one: when 3 or more entities sharing the same third-party SOC provider all trigger the identical rule in this run, that is surfaced here as a distinct systemic gap, separate from the individual per-entity finding cards, because the likely root cause is the shared vendor's process rather than any one entity's own negligence.</span>
+      </span>
+    </span>
+    <span style="font-size: 0.82rem; color: var(--text-secondary);">{{ systemic_findings | length }} systemic pattern(s) detected this run</span>
+  </div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr>
+          <th>Shared Provider</th>
+          <th>Rule</th>
+          <th>Entities Affected</th>
+          <th>Severity</th>
+          <th>Rationale</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for sf in systemic_findings %}
+        <tr>
+          <td><strong>{{ sf.shared_value }}</strong></td>
+          <td><code>{{ sf.rule_id }}</code></td>
+          <td>
+            {% for eid in sf.entity_ids %}
+            <a href="/entity/{{ eid }}">{{ eid }}</a>{% if not loop.last %}, {% endif %}
+            {% endfor %}
+            <span style="color: var(--text-muted);">({{ sf.entity_count }})</span>
+          </td>
+          <td><span class="badge badge-{{ 'crit' if sf.severity in ('critical','high') else 'mod' }}">{{ sf.severity | capitalize }}</span></td>
+          <td style="font-size: 0.82rem; max-width: 420px;">{{ sf.rationale }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<!-- Multi-Period Trajectory Trend Chart -->
+<div class="card">
+  <div class="card-title">
+    <span>
+      Multi-Period Risk Trajectory Trend Analysis
+      <span class="tooltip-hint">❓
+        <span class="tooltip-text">Tracks the trajectory of entity Composite Risk Indices across REAL historical assessment runs (entity_scores persisted per run_id/period). Entities with fewer than 2 historical runs are omitted rather than padded with synthesized points -- run multiple assessment periods to build up trend history.</span>
+      </span>
+    </span>
+    <span style="font-size: 0.82rem; color: var(--text-secondary);">
+      {% if trend_periods %}{{ trend_periods | join(' &bull; ') | safe }}{% else %}No historical runs recorded yet{% endif %}
+    </span>
+  </div>
+  {% if not trend_has_data %}
+  <div style="padding: 1.5rem; text-align: center; color: var(--text-secondary); font-size: 0.9rem;">
+    Insufficient historical data: no entity yet has 2 or more real assessment runs.
+    Trigger the demo re-seed or run <code>satsa run --period &lt;label&gt;</code> across multiple periods to build up genuine trend history.
+  </div>
+  {% else %}
+  <div id="trajectoryChart" style="width: 100%; height: 300px;"></div>
+  {% endif %}
+</div>
+
+<!-- 8-Domain Heatmap -->
+<div class="card">
+  <div class="card-title">
+    <span>
+      8-Domain Supervisory Heatmap
+      <span class="tooltip-hint">❓
+        <span class="tooltip-text">Calculated via probabilistic Noisy-OR aggregation: combines independent rule violation indicators per capability domain without assuming linear summation.</span>
+      </span>
+    </span>
+    <span style="font-size: 0.82rem; color: var(--text-secondary);">Sequential risk scale: 0 (No Risk) &bull; Low &bull; Medium &bull; Elevated &bull; High &bull; Critical</span>
+  </div>
+  <div id="portfolioHeatmap" style="width: 100%; height: 350px;"></div>
+</div>
+
+<!-- Ranked Entities Table -->
+<div class="card">
+  <div class="card-title">
+    <span>
+      Supervisory Priority League (Ranked by Composite Risk Index)
+      <span class="tooltip-hint">❓
+        <span class="tooltip-text">Weighted sum of 8 capability domain scores plus a breadth factor for distinct rules triggered. Invariant to minor threshold variations.</span>
+      </span>
+    </span>
+    <button id="actionFilterBtn" onclick="toggleActionFilter()" class="badge badge-crit" style="cursor: pointer; font-size: 0.78rem; transition: background-color 150ms ease-out, color 150ms ease-out; border: 1px solid var(--risk-crit-border); padding: 0.35rem 0.75rem;">
+      <span id="actionBtnText">🔍 {{ critical_count }} Entities Require Action (Click to Filter)</span>
+    </button>
+  </div>
+
+  <div class="table-responsive">
+    <table id="priorityTable">
+      <thead>
+        <tr>
+          <th>Rank</th>
+          <th>Entity ID</th>
+          <th>Entity Name</th>
+          <th>Sector</th>
+          <th>Size Band</th>
+          <th>Risk Index</th>
+          <th>Risk Band</th>
+          <th>Distinct Rules</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in ranked_entities %}
+        <tr data-action-required="{% if e.risk_index >= 25 %}true{% else %}false{% endif %}">
+          <td><strong>#{{ loop.index }}</strong></td>
+          <td><a href="/entity/{{ e.entity_id }}" style="color: var(--accent-link); font-weight: 600;">{{ e.entity_id }}</a></td>
+          <td>{{ e.name }}</td>
+          <td><span class="badge" style="background-color: var(--bg-hover);">{{ e.sector }}</span></td>
+          <td>{{ e.size_band }}</td>
+          <td><strong style="font-size: 1.05rem; color: {% if e.risk_index >= 50 %}var(--risk-crit){% elif e.risk_index >= 25 %}var(--risk-mod){% else %}var(--risk-low){% endif %}; font-family: var(--font-mono);">{{ e.risk_index }}</strong></td>
+          <td>
+            {% if e.risk_index >= 50 %}
+              <span class="badge badge-crit">{{ e.risk_band }}</span>
+            {% elif e.risk_index >= 25 %}
+              <span class="badge badge-mod">{{ e.risk_band }}</span>
+            {% else %}
+              <span class="badge badge-low">{{ e.risk_band }}</span>
+            {% endif %}
+          </td>
+          <td>
+            <span style="font-size: 0.85rem;">{{ e.distinct_rules }}</span>
+            {% if e.eg_count or e.ns_count %}
+              <span style="font-size: 0.75rem; color: var(--text-muted); margin-left: 0.35rem;">({{ e.eg_count }} Gaps, {{ e.ns_count }} Blind Spots)</span>
+            {% endif %}
+          </td>
+          <td>
+            <a href="/entity/{{ e.entity_id }}" class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.8rem;">Profile</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Helper to determine initial ECharts theme
+  const getInitialChartTheme = () => (document.documentElement.getAttribute('data-theme') === 'dark' ? 'satsa-dark' : 'satsa-light');
+  let currentChartTheme = getInitialChartTheme();
+  const isDarkInit = currentChartTheme === 'satsa-dark';
+  const initTextColor = isDarkInit ? '#9a9a9a' : '#64748b';
+  const initBorderColor = isDarkInit ? 'rgba(255, 255, 255, 0.12)' : '#e2e8f0';
+  const initSplitColor = isDarkInit ? 'rgba(255, 255, 255, 0.06)' : '#f1f5f9';
+
+  // 1. Heatmap Chart
+  const heatDom = document.getElementById('portfolioHeatmap');
+  let heatChart = echarts.init(heatDom, currentChartTheme, { backgroundColor: 'transparent' });
+  
+  const entities = {{ heatmap_entities | tojson }};
+  const domains = {{ heatmap_domains | tojson }};
+  const heatData = {{ heatmap_data | tojson }};
+
+  function getHeatmapVisualMapPieces(isDark) {
+    if (isDark) {
+      return [
+        { value: 0, label: '0 (None)', color: '#22262e' },
+        { gt: 0, lte: 25, label: '1–25 (Low)', color: '#3f4f16' },
+        { gt: 25, lte: 50, label: '25–50 (Medium)', color: '#856f14' },
+        { gt: 50, lte: 75, label: '50–75 (Elevated)', color: '#ad5717' },
+        { gt: 75, lte: 90, label: '75–90 (High)', color: '#bf381d' },
+        { gt: 90, lte: 100, label: '90–100 (Critical)', color: '#b91c1c' }
+      ];
+    } else {
+      return [
+        { value: 0, label: '0 (None)', color: '#EEF1F3' },
+        { gt: 0, lte: 25, label: '1–25 (Low)', color: '#D8EA76' },
+        { gt: 25, lte: 50, label: '25–50 (Medium)', color: '#F6D343' },
+        { gt: 50, lte: 75, label: '50–75 (Elevated)', color: '#EB7B20' },
+        { gt: 75, lte: 90, label: '75–90 (High)', color: '#E3441B' },
+        { gt: 90, lte: 100, label: '90–100 (Critical)', color: '#DC2626' }
+      ];
+    }
+  }
+
+  function getHeatmapSeriesLabel(isDark) {
+    return {
+      show: true,
+      formatter: function (params) {
+        const v = params.value ? params.value[2] : 0;
+        if (isDark) {
+          return '{light|' + v + '}';
+        }
+        return v > 50 ? '{light|' + v + '}' : '{dark|' + v + '}';
+      },
+      rich: {
+        light: {
+          color: '#ffffff',
+          fontWeight: 600,
+          fontSize: 11,
+          fontFamily: 'Inter, sans-serif'
+        },
+        dark: {
+          color: '#0f172a',
+          fontWeight: 600,
+          fontSize: 11,
+          fontFamily: 'Inter, sans-serif'
+        }
+      }
+    };
+  }
+
+  const heatOption = {
+    tooltip: {
+      position: 'top',
+      formatter: function (p) {
+        return '<strong>' + (entities[p.value[1]] || '') + '</strong><br/>' + (domains[p.value[0]] || '') + ': <strong>' + p.value[2] + '</strong>';
+      }
+    },
+    grid: { height: '68%', top: '8%', bottom: '22%' },
+    xAxis: { type: 'category', data: domains, splitArea: { show: true } },
+    yAxis: { type: 'category', data: entities, splitArea: { show: true } },
+    visualMap: {
+      type: 'piecewise',
+      orient: 'horizontal',
+      left: 'center',
+      bottom: '1%',
+      itemWidth: 16,
+      itemHeight: 12,
+      itemGap: 12,
+      pieces: getHeatmapVisualMapPieces(isDarkInit),
+      textStyle: { color: initTextColor, fontSize: 11, fontFamily: 'Inter, sans-serif' }
+    },
+    series: [{
+      name: 'Domain Risk Score',
+      type: 'heatmap',
+      data: heatData,
+      label: getHeatmapSeriesLabel(isDarkInit),
+      itemStyle: {
+        borderWidth: 1.5,
+        borderColor: isDarkInit ? '#0a0a0c' : '#ffffff'
+      },
+      emphasis: {
+        itemStyle: { borderColor: '#B7D334', borderWidth: 2 }
+      }
+    }]
+  };
+  heatChart.setOption(heatOption);
+
+  // 2. Trajectory Trend Line Chart
+  const trendDom = document.getElementById('trajectoryChart');
+  let trendChart = null;
+  let trendOption = null;
+
+  if (trendDom) {
+    trendChart = echarts.init(trendDom, currentChartTheme, { backgroundColor: 'transparent' });
+
+    const trendPeriods = {{ trend_periods | tojson }};
+    const rawSeries = {{ trend_series | tojson }};
+
+    const formattedSeries = rawSeries
+      .filter((s) => !s.insufficient_history && s.data && s.data.length)
+      .map((s, idx) => {
+        const colors = ['#B7D334', '#ffb829', '#15846e', '#ff4d4f', '#38bdf8', '#bdbdbd'];
+        return {
+          name: s.name,
+          type: 'line',
+          smooth: true,
+          connectNulls: false,
+          data: s.data,
+          lineStyle: { width: 2.2 },
+          symbolSize: 6,
+          color: colors[idx % colors.length]
+        };
+      });
+
+    trendOption = {
+      tooltip: { trigger: 'axis' },
+      legend: {
+        top: '0%',
+        textStyle: { color: initTextColor, fontSize: 12 }
+      },
+      grid: { left: '3%', right: '4%', bottom: '3%', top: '15%', containLabel: true },
+      xAxis: {
+        type: 'category',
+        boundaryGap: false,
+        data: trendPeriods,
+        axisLine: { lineStyle: { color: initBorderColor } },
+        axisLabel: { color: initTextColor }
+      },
+      yAxis: {
+        type: 'value',
+        name: 'Risk Index',
+        nameTextStyle: { color: initTextColor },
+        axisLine: { lineStyle: { color: initBorderColor } },
+        splitLine: { lineStyle: { color: initSplitColor } },
+        axisLabel: { color: initTextColor }
+      },
+      series: formattedSeries
+    };
+    trendChart.setOption(trendOption);
+  }
+
+  function updateChartsTheme(themeName) {
+    const isDark = themeName === 'dark';
+    const chartTheme = isDark ? 'satsa-dark' : 'satsa-light';
+    const textColor = isDark ? '#9a9a9a' : '#64748b';
+    const borderColor = isDark ? 'rgba(255, 255, 255, 0.12)' : '#e2e8f0';
+    const splitColor = isDark ? 'rgba(255, 255, 255, 0.06)' : '#f1f5f9';
+
+    if (heatChart) {
+      heatChart.dispose();
+      heatChart = echarts.init(heatDom, chartTheme, { backgroundColor: 'transparent' });
+      heatOption.visualMap.textStyle = { color: textColor, fontSize: 11, fontFamily: 'Inter, sans-serif' };
+      heatOption.visualMap.pieces = getHeatmapVisualMapPieces(isDark);
+      heatOption.series[0].label = getHeatmapSeriesLabel(isDark);
+      heatOption.series[0].itemStyle.borderColor = isDark ? '#0a0a0c' : '#ffffff';
+      heatChart.setOption(heatOption);
+    }
+    if (trendDom && trendChart && trendOption) {
+      trendChart.dispose();
+      trendChart = echarts.init(trendDom, chartTheme, { backgroundColor: 'transparent' });
+      trendOption.legend.textStyle = { color: textColor, fontSize: 12 };
+      trendOption.xAxis.axisLine.lineStyle.color = borderColor;
+      trendOption.xAxis.axisLabel.color = textColor;
+      trendOption.yAxis.axisLine.lineStyle.color = borderColor;
+      trendOption.yAxis.splitLine.lineStyle.color = splitColor;
+      trendOption.yAxis.axisLabel.color = textColor;
+      trendOption.yAxis.nameTextStyle = { color: textColor };
+      trendChart.setOption(trendOption);
+    }
+  }
+
+  window.addEventListener('satsa-theme-change', (e) => {
+    updateChartsTheme(e.detail && e.detail.theme);
+  });
+
+  // 3. Toggle Action Required Filter
+  let actionFilterActive = false;
+  function toggleActionFilter() {
+    actionFilterActive = !actionFilterActive;
+    const rows = document.querySelectorAll('#priorityTable tbody tr');
+    const btn = document.getElementById('actionFilterBtn');
+    const btnText = document.getElementById('actionBtnText');
+
+    rows.forEach(r => {
+      const req = r.getAttribute('data-action-required') === 'true';
+      if (actionFilterActive) {
+        if (req) {
+          r.style.display = '';
+          r.style.backgroundColor = 'var(--risk-crit-bg)';
+        } else {
+          r.style.display = 'none';
+        }
+      } else {
+        r.style.display = '';
+        r.style.backgroundColor = '';
+      }
+    });
+
+    if (actionFilterActive) {
+      btn.style.background = 'var(--risk-crit)';
+      btn.style.color = '#fff';
+      btnText.innerText = 'Showing Action Entities Only (Click to Show All)';
+    } else {
+      btn.style.background = 'var(--risk-crit-bg)';
+      btn.style.color = 'var(--risk-crit)';
+      btnText.innerText = '🔍 {{ critical_count }} Entities Require Action (Click to Filter)';
+    }
+  }
+
+  window.addEventListener('resize', () => {
+    if (typeof heatChart !== 'undefined') heatChart.resize();
+    if (typeof trendChart !== 'undefined') trendChart.resize();
+  });
+</script>
+{% endblock %}

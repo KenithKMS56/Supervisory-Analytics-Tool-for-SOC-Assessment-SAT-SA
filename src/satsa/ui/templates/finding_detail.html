@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block title %}Finding: {{ card.title }}{% endblock %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>{{ card.title }}</h1>
+    <p>Entity: <a href="/entity/{{ card.entity_id }}" style="color: var(--accent-blue);"><strong>{{ card.entity_id }}</strong></a> | Rule: <strong>{{ card.rule_id }} (v{{ card.rule_version }})</strong> | Domain: <strong>{{ card.domain }}</strong></p>
+  </div>
+  <div>
+    <a href="/entity/{{ card.entity_id }}" class="btn btn-secondary">&larr; Back to Profile</a>
+  </div>
+</div>
+
+<div class="grid-4">
+  <div class="stat-box">
+    <div class="stat-val" style="color: {% if card.score > 70 %}var(--risk-crit){% else %}var(--risk-mod){% endif %};">
+      {{ card.score }}
+    </div>
+    <div class="stat-lbl">Indicator Score (0-100)</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-val">{{ (card.confidence * 100)|round(0) }}%</div>
+    <div class="stat-lbl">Statistical Confidence</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-val">{{ card.severity|upper }}</div>
+    <div class="stat-lbl">Finding Severity</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-val">{{ card.evidence_records|length }}</div>
+    <div class="stat-lbl">Evidence Records</div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">
+    <span>Supervisory Indicator Summary</span>
+  </div>
+  <div style="font-size: 1.05rem; line-height: 1.6; margin-bottom: 1rem;">
+    {{ card.rationale }}
+  </div>
+  <div style="background-color: var(--bg-hover); padding: 1rem; border-radius: 6px; border-left: 4px solid var(--accent-blue);">
+    <strong>Statutory Notice:</strong> {{ card.statutory_wording }}
+  </div>
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <div class="card-title">
+      <span>Suggested Examiner Verification Procedure</span>
+    </div>
+    <p style="font-size: 0.95rem; line-height: 1.6; color: var(--text-primary);">
+      {{ card.examiner_check }}
+    </p>
+    <div style="margin-top: 1rem;">
+      <h4 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Limitations</h4>
+      <p style="font-size: 0.85rem; color: var(--text-muted);">{{ card.limitations }}</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">
+      <span>Possible Legitimate Explanations (Confounders)</span>
+    </div>
+    <ul style="padding-left: 1.25rem; font-size: 0.9rem; line-height: 1.6; color: var(--text-secondary);">
+      {% for expl in card.benign_explanations %}
+        <li>{{ expl }}</li>
+      {% else %}
+        <li>No standard benign exemptions documented for this rule pattern.</li>
+      {% endfor %}
+    </ul>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-title">
+    <span>Evidence Traceability Table ({{ card.evidence_records|length }} records)</span>
+  </div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Record Identifier</th>
+          <th>Evidence Details</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ev in card.evidence_records %}
+        <tr>
+          <td><span class="badge" style="background-color: var(--bg-hover);">{{ ev.record_type }}</span></td>
+          <td><strong style="color: var(--accent-blue);">{{ ev.record_id }}</strong></td>
+          <td>
+            <code style="font-size: 0.85rem; color: var(--text-secondary);">
+              {% for k, v in ev.items() %}
+                {% if k not in ['record_type', 'record_id'] %}
+                  {{ k }}={{ v }} &nbsp;
+                {% endif %}
+              {% endfor %}
+            </code>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

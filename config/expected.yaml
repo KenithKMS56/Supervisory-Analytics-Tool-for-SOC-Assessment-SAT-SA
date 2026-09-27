@@ -1,0 +1,79 @@
+# SAT-SA Expected Patterns and Workflow Baselines
+# Expected alert categories per asset type/sector, and required workflow steps.
+
+expected_categories_by_asset_type:
+  scada_controller:
+    - "Unauthorized Access"
+    - "Policy Violation"
+    - "Command and Control"
+  core_banking_server:
+    - "Credential Access"
+    - "Privilege Escalation"
+    - "Data Exfiltration"
+    - "Unauthorized Access"
+  telecom_switch:
+    - "Denial of Service"
+    - "Unauthorized Access"
+    - "Suspicious Activity"
+  domain_controller:
+    - "Credential Access"
+    - "Lateral Movement"
+    - "Privilege Escalation"
+  workstation:
+    - "Phishing"
+    - "Malware"
+  perimeter_firewall:
+    - "Denial of Service"
+    - "Command and Control"
+    - "Suspicious Activity"
+
+expected_categories_by_sector:
+  power:
+    - "Unauthorized Access"
+    - "Command and Control"
+    - "Policy Violation"
+    - "Malware"
+  banking:
+    - "Credential Access"
+    - "Data Exfiltration"
+    - "Phishing"
+    - "Privilege Escalation"
+    - "Lateral Movement"
+  telecom:
+    - "Denial of Service"
+    - "Suspicious Activity"
+    - "Unauthorized Access"
+    - "Data Exfiltration"
+  oil_and_gas:
+    - "Malware"
+    - "Unauthorized Access"
+    - "Command and Control"
+  transport:
+    - "Denial of Service"
+    - "Malware"
+    - "Unauthorized Access"
+
+required_workflow_steps:
+  critical:
+    - "triage"
+    - "investigate"
+    - "escalate"
+    - "contain"
+    - "close"
+  high:
+    - "triage"
+    - "investigate"
+    - "contain"
+    - "close"
+  medium:
+    - "triage"
+    - "investigate"
+    - "close"
+  low:
+    - "triage"
+    - "close"
+
+mandatory_external_reporting:
+  critical_true_positives:
+    recipient: "NCIIPC / CERT-In"
+    max_window_hours: 6

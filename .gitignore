@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+data/generated/
+data/parquet/
+data/satsa.db
+data/*.db
+.satsa_salt
+reports/
+*.log
