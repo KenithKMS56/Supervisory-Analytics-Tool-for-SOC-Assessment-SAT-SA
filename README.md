@@ -382,7 +382,8 @@ satsa benchmark --data-dir data
 # Generate comprehensive PDF dossiers for all entities:
 satsa report --entity all --format pdf --output-dir reports/2026-Q1
 
-# Export signed rule configuration pack:
+# Export signed rule configuration pack (requires SATSA_RULEPACK_SECRET, >= 32 chars;
+# there is no built-in key -- see docs/deployment_ops.md Section 3):
 satsa rules export -c config -o dist/nciipc_rules_v1.tar.gz
 ```
 

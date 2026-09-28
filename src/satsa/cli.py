@@ -503,6 +503,22 @@ rules_app = typer.Typer(help="Manage signed supervisory rule packs")
 app.add_typer(rules_app, name="rules")
 
 
+SECRET_HELP = (
+    "HMAC signing secret (>= 32 chars). Defaults to the SATSA_RULEPACK_SECRET environment "
+    "variable; there is NO built-in key and the command refuses to run without one."
+)
+
+
+def _make_signer(secret: str | None):
+    from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
+
+    try:
+        return RulePackSigner(secret=secret)
+    except RulePackKeyError as e:
+        console.print(f"[bold red][!] {e}[/bold red]")
+        raise typer.Exit(code=1) from None
+
+
 @rules_app.command("export")
 def rules_export_cmd(
     config_dir: str = typer.Option("config", "--config-dir", "-c", help="Source config directory"),
@@ -510,12 +526,12 @@ def rules_export_cmd(
         "dist/rule_pack_v1.tar.gz", "--output", "-o", help="Output archive path"
     ),
     version: str = typer.Option("1.0.0", "--version", "-v", help="Rule pack version"),
-    secret: str = typer.Option("SATSA_RULEPACK_NCIIPC_2026", "--secret", help="Signing secret"),
+    secret: str | None = typer.Option(
+        None, "--secret", envvar="SATSA_RULEPACK_SECRET", show_envvar=True, help=SECRET_HELP
+    ),
 ) -> None:
     """Export and sign supervisory rules and configuration."""
-    from satsa.bundle.rules_signer import RulePackSigner
-
-    signer = RulePackSigner(default_secret=secret)
+    signer = _make_signer(secret)
     out = signer.export_rule_pack(config_dir=config_dir, output_path=output_path, version=version)
     console.print(
         f"[bold green][+] Rule pack signed and exported:[/bold green] [cyan]{out}[/cyan] (version {version})"
@@ -529,24 +545,25 @@ def rules_import_cmd(
     db_path: str = typer.Option(
         "data/satsa.db", "--db-path", help="Path to SQLite metadata database"
     ),
-    secret: str = typer.Option("SATSA_RULEPACK_NCIIPC_2026", "--secret", help="Signing secret"),
+    secret: str | None = typer.Option(
+        None, "--secret", envvar="SATSA_RULEPACK_SECRET", show_envvar=True, help=SECRET_HELP
+    ),
 ) -> None:
     """Verify cryptographic signature and checksums before importing rule pack."""
-    from satsa.bundle.rules_signer import RulePackSigner
     from satsa.store.sqlite import SQLiteStore
 
+    signer = _make_signer(secret)
     sqlite_store = SQLiteStore(db_path)
-    signer = RulePackSigner(default_secret=secret)
     try:
         res = signer.import_rule_pack(
-            archive_path, target_config_dir=target_dir, sqlite_store=sqlite_store
+            archive_path, target_config_dir=target_dir, sqlite_store=sqlite_store, actor="cli:rules"
         )
         console.print(
             f"[bold green][+] Rule pack verified and imported successfully:[/bold green] {res}"
         )
     except (ValueError, PermissionError, FileNotFoundError, OSError) as e:
         console.print(f"[bold red][!] Rule pack import failed:[/bold red] {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     finally:
         sqlite_store.close()
 
