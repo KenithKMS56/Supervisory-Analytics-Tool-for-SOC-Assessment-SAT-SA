@@ -1,3 +1,4 @@
+![CI](https://github.com/KenithKMS56/Supervisory-Analytics-Tool-for-SOC-Assessment-SAT-SA/actions/workflows/test.yml/badge.svg?branch=hardening/sih26157)
 # SAT-SA: Supervisory Analytics Tool for SOC Assessment
 **National Critical Information Infrastructure Protection Centre (NCIIPC)**
 
