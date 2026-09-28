@@ -9,6 +9,28 @@ import polars as pl
 from satsa.security import require_entity_id
 
 
+# Tables holding one record per entity (keyed by entity_id) rather than an
+# append-only stream of events.
+KEYED_BY_ENTITY = frozenset({"entity"})
+
+
+def _upsert_entity_row(frames: list[pl.DataFrame]) -> pl.DataFrame:
+    """Collapse all versions of an entity's record into one row, newest-wins per column.
+
+    Appending then de-duplicating on the whole row (as fact tables do) kept one
+    row per distinct VERSION of an entity, so re-ingesting an entity with any
+    changed or missing attribute left several rows, and which one DuckDB's
+    `INSERT OR REPLACE` kept on load was arbitrary -- e.g. a later partial record
+    with soc_provider=NULL could silently erase the entity's MSSP and break the
+    cross-entity systemic finding. Here, for each column, the latest non-null
+    value wins; a null never overwrites an earlier value.
+    """
+    combined = pl.concat(frames, how="diagonal_relaxed")
+    return combined.group_by("entity_id", maintain_order=True).agg(
+        pl.all().drop_nulls().last()
+    )
+
+
 class DuckDBStore:
     """Manages DuckDB queries and partitioned Parquet files for analytics."""
 
@@ -222,8 +244,12 @@ class DuckDBStore:
                 ent_dir.mkdir(parents=True, exist_ok=True)
                 file_path = ent_dir / "data.parquet"
 
-                # If file exists, append/combine
-                if file_path.exists():
+                if table_name in KEYED_BY_ENTITY:
+                    # Dimension table: exactly one row per entity (see _upsert_entity_row).
+                    frames = [pl.read_parquet(file_path)] if file_path.exists() else []
+                    _upsert_entity_row([*frames, ent_df]).write_parquet(file_path)
+                # Fact tables: if file exists, append/combine
+                elif file_path.exists():
                     try:
                         existing = pl.read_parquet(file_path)
                         combined = pl.concat([existing, ent_df], how="diagonal_relaxed").unique()
