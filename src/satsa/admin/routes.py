@@ -14,14 +14,14 @@ import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from satsa.admin.rbac import can_access_admin_portal
 from satsa.auth.identities import LOGIN_LOCKOUT_MINUTES, LOGIN_MAX_FAILURES, verify_passphrase
 from satsa.security import is_valid_username
-from satsa.store.sqlite import SQLiteStore
+from satsa.store.sqlite import LIVE_EVENTS_MAX_LIMIT, SQLiteStore
 
 # Setup Jinja2 template environment for admin portal
 _ADMIN_DIR = Path(__file__).resolve().parent
@@ -861,10 +861,16 @@ async def admin_audit_view(request: Request, operator: dict[str, Any] = Depends(
 
 @router.get("/api/activity/stream")
 async def admin_activity_stream(
-    request: Request, since_id: int = 0, limit: int = 50, operator: dict[str, Any] = Depends(require_admin_operator)
+    request: Request,
+    since_id: int = Query(0, ge=0, description="Return events with event_id > since_id"),
+    limit: int = Query(50, ge=1, le=LIVE_EVENTS_MAX_LIMIT),
+    operator: dict[str, Any] = Depends(require_admin_operator),
 ) -> JSONResponse:
-    """Telemetry stream endpoint providing real-time SAT-SA operational events and online operators."""
+    """Admin activity feed polling endpoint: SAT-SA operator events newer than since_id.
 
+    Monitors SAT-SA's own operators (logins, report downloads, account actions),
+    not CSE security data. Parameters are range-checked (422 on bad input).
+    """
     store = get_store(request)
     events = store.get_live_events(since_id=since_id, limit=limit)
     online_users = store.get_online_operators()
@@ -879,9 +885,12 @@ async def admin_activity_stream(
 
 
 @router.get("/api/activity/recent")
-async def admin_activity_recent(request: Request, limit: int = 30, operator: dict[str, Any] = Depends(require_admin_operator)) -> JSONResponse:
-    """Fetch the most recent operational events."""
-
+async def admin_activity_recent(
+    request: Request,
+    limit: int = Query(30, ge=1, le=LIVE_EVENTS_MAX_LIMIT),
+    operator: dict[str, Any] = Depends(require_admin_operator),
+) -> JSONResponse:
+    """Most recent admin activity feed events and currently signed-in operators."""
     store = get_store(request)
     events = store.get_live_events(since_id=0, limit=limit)
     online_users = store.get_online_operators()
