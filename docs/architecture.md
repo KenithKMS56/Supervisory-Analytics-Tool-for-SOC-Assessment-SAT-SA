@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-The **Supervisory Analytics Tool for SOC Assessment (SAT-SA)** is an air-gapped, fully deterministic analytical engine designed for the **National Critical Information Infrastructure Protection Centre (NCIIPC)**. It continuously assesses the operational execution quality and surveillance coverage of Security Operations Centres (SOCs) across Critical Sector Entities (CSEs) without relying on artificial intelligence or black-box machine learning.
+The **Supervisory Analytics Tool for SOC Assessment (SAT-SA)** is an air-gapped, fully deterministic analytical engine designed for the **National Critical Information Infrastructure Protection Centre (NCIIPC)**. It assesses the operational execution quality and surveillance coverage of Security Operations Centres (SOCs) across Critical Sector Entities (CSEs) at each periodic assessment cycle, from the batch submissions the CSEs provide, without relying on artificial intelligence or black-box machine learning.
 
 ---
 
@@ -61,14 +61,14 @@ flowchart TD
 ## 3. Data Flow & Dual Storage Design
 
 1. **Ingestion & Privacy Pipeline:**
-   - Raw telemetric batches are read by source adapters (`SplunkAdapter`, `ServiceNowAdapter`, `TheHiveAdapter`).
+   - Periodic submission batches are read by source adapters (`SplunkAdapter`, `ServiceNowAdapter`, `TheHiveAdapter`).
    - `TaxonomyNormaliser` maps source-specific field names and severity labels into canonical schemas (`Alert`, `Case`, `WorkflowEvent`, `Escalation`, `Closure`, `Asset`).
    - `HMAC-SHA256` pseudonymises human analyst handles using a local 32-byte secret salt.
    - Deterministic regular expressions redact IPv4, IPv6, email addresses, hostnames, and card-like numbers. Text closures are converted to 4-shingle hashes to detect repetitive templates without preserving sensitive prose.
    - Batches failing schema validation or timestamp monotonicity are flagged in `dq_issues`.
 
 2. **Columnar Parquet Store (DuckDB):**
-   - High-volume telemetric tables (`alert`, `workflow_event`, `log_source_daily`, `asset`) are stored on disk as partitioned Parquet files (`parquet/{table}/entity_id={entity}/data.parquet`).
+   - High-volume submission tables (`alert`, `workflow_event`, `log_source_daily`, `asset`) are stored on disk as partitioned Parquet files (`parquet/{table}/entity_id={entity}/data.parquet`).
    - DuckDB executes partition-pruned, vectorized analytical scans, achieving >10M rows/second aggregation without row-level Python loops.
 
 3. **Cryptographic State Store (SQLite):**

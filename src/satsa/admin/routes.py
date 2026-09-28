@@ -855,7 +855,7 @@ async def admin_audit_view(request: Request, operator: dict[str, Any] = Depends(
 
 
 # =========================================================================
-# Live Activity & Telemetry Endpoints
+# Admin Activity Feed (operator session monitor) Endpoints
 # =========================================================================
 
 
@@ -899,7 +899,7 @@ async def admin_activity_recent(
 
 @router.websocket("/ws/activity")
 async def admin_activity_websocket(websocket: WebSocket) -> None:
-    """WebSocket endpoint pushing near-real-time operational telemetry to Admin Dashboard."""
+    """Admin activity feed over WebSocket: pushes new SAT-SA operator events (admin session required)."""
     store: SQLiteStore = websocket.app.state.store
     # Same authorization as every other admin route: a valid, unblocked admin
     # session with an administrator role. Otherwise refuse the handshake

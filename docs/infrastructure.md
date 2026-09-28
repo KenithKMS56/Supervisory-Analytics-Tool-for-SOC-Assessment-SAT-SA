@@ -68,4 +68,4 @@ The supervisory requirement specifies completing a full 6-month assessment acros
 | SQLite State (`satsa.db`) | 200,000 records | N/A | **~45 MB** |
 | **Total Storage Required** | — | ~2.7 GB | **~438 MB** |
 
-*Even with 10 million total telemetric events, SAT-SA requires less than 1 GB of storage per assessment cycle, making it ideal for self-contained air-gapped forensic laptops and low-profile appliances.*
+*Even with 10 million submitted event records, SAT-SA requires less than 1 GB of storage per assessment cycle, making it ideal for self-contained air-gapped forensic laptops and low-profile appliances.*

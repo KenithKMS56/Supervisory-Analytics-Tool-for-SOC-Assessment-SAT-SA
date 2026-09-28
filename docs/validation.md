@@ -51,7 +51,7 @@ Ground truth injects 11 distinct operational execution gaps and negative space d
 - **CSE-10 (Transport Small):** Total nighttime logging collapse (zero 24x7 coverage) and mid-period volume drop $\to$ **NS03**.
 
 ### 1.2 Clean Baselines & Controlled Confounders (Negative Cases)
-- **Clean Baselines (CSE-01, CSE-04, CSE-06):** Entities operating with disciplined triage, timely escalations, balanced dispositions, and consistent 24x7 telemetry.
+- **Clean Baselines (CSE-01, CSE-04, CSE-06):** Entities operating with disciplined triage, timely escalations, balanced dispositions, and consistent 24x7 logging.
 - **Confounder 1 (SOAR Automation):** High-velocity closures executed by automated playbooks (`closed_by_type='soar'`). Validates that fast triage algorithms are not misflagged as human rubber-stamping.
 - **Confounder 2 (Small Entity Scale):** CSE-08 has lower absolute alert volumes. Validates that robust statistics correctly group by size band rather than falsely flagging small entities as volume collapses.
 

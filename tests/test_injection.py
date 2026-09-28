@@ -203,7 +203,7 @@ def test_templates_allow_list(admin_client, name):
 
 def test_templates_legit(admin_client):
     assert admin_client.get("/templates/alerts.csv").status_code == 200
-    assert admin_client.get("/templates/canonical_soc_telemetry_bundle.zip").status_code == 200
+    assert admin_client.get("/templates/canonical_soc_submission_bundle.zip").status_code == 200
 
 
 @pytest.mark.parametrize("payload", MALICIOUS_IDS)
