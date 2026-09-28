@@ -205,14 +205,14 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 
 | Metric | Result | Target | Status |
 | :--- | :--- | :--- | :--- |
-| **Injected Defect Recall** (primary, unambiguous dataset) | **100.0%** (11/11 defects caught) | $\ge 90.0\%$ | Meets target |
+| **Injected Defect Recall** (primary, unambiguous dataset) | **100.0%** (13/13 defects caught) | $\ge 90.0\%$ | Meets target |
 | **Entity Rank Precision@7** (primary, unambiguous dataset) | **100.0%** (top-7 entities ranked accurately) | $\ge 85.0\%$ | Meets target |
 | **False-Alarm Precision** (primary, unambiguous dataset) | **100.0%** (0 false hits on clean entities) | $\ge 95.0\%$ | Meets target |
 | **Stress Scenario Defect Precision** (harder, ambiguous dataset) | **~60.0%** (2 false positives on noisy clean entity) | n/a -- reported for transparency | Genuinely imperfect |
-| **Review-Effort Lift** (primary dataset) | **16.60x** over random sampling | $\ge 5.00x$ | Meets target |
+| **Review-Effort Lift** (primary dataset) | **5.97x** at a 1% audit budget (4.13x at 2%, 1.65x at 5%). *Corrected from a stale 16.60x -- see docs/hardening_log.md.* | $\ge 5.00x$ | Meets target at the 1% budget only |
 | **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ perturbations) | $\ge 0.9000$ | Meets target |
 | **DuckDB Scan Throughput** | **10,623,549 rows/second** | $\ge 1,000,000$ | Measured, exceeds target |
-| **Automated Test Suite** | **94 passed, 0 failed** (100% passing across analytics, rules, RBAC, admin activity feed, and Docker) | 100% passing | Verified |
+| **Automated Test Suite** | **596 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.11 and 3.13 from a clean clone | 100% passing | Verified |
 
 ---
 
@@ -429,7 +429,7 @@ satsa/
 │   └── ui/                      # Server-rendered Jinja2 templates & static assets
 │       ├── static/              # SAT-SA CSS stylesheets and vendored echarts.min.js
 │       └── templates/           # Clean, responsive HTML templates for all 10 tabs
-├── tests/                       # Complete pytest test suite (94 production tests)
+├── tests/                       # Complete pytest test suite (596 passing tests)
 │   ├── test_admin_portal.py     # NCIIPC Admin Portal routes & CRUD verification
 │   ├── test_admin_satsa_integration.py # E2E Admin-to-SATSA provisioning & scoping
 │   ├── test_admin_activity_feed.py # Admin activity feed (operator session monitor) verification

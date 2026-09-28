@@ -51,11 +51,11 @@ Open your browser to `http://127.0.0.1:8000`.
 
 ---
 
-### [1:35 - 1:50] Step 5: Prioritized Review Queue & 16.6x Lift
+### [1:35 - 1:50] Step 5: Prioritized Review Queue & ~6x Lift
 1. **Action:** Click **Review Queue** in top navbar (`/queue`).
 2. **Presenter Script:**
    > *"Rather than reviewing millions of logs, the examiner uses our mathematically stratified Review Queue: 70% top-risk alerts combined with 30% stratified random controls.
-   > In empirical validation, auditing just 1% of alerts through this queue yields a 16.60x discovery lift over standard random sampling. Examiners can mark audit dispositions directly with one click."*
+   > In empirical validation, auditing just 1% of alerts through this queue finds 5.97 times as many injected defects as random sampling of the same size (on our synthetic validation dataset). Examiners can mark audit dispositions directly with one click."*
 
 ### [1:50 - 2:10] Step 6: Blinded Supervisory Review (Cognitive Bias Mitigation)
 1. **Action:** Click **Blind Review** in top navbar (`/blind-review`).
