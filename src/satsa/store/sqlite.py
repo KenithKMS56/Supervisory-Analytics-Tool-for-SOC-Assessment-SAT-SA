@@ -4,6 +4,9 @@ import datetime as _dt
 import hashlib
 import json
 import sqlite3
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -70,6 +73,22 @@ def compute_chain_hash(alg: str, payload: str) -> str:
     raise ValueError(f"Unknown audit hash algorithm: {alg!r}")
 
 
+# Audit appends must be serialized: the web app opens a new connection per
+# request, so two concurrent appends could otherwise read the same previous hash
+# and fork the chain (a false tamper report later). A process-wide lock per
+# database file serializes threads (including threads sharing one connection);
+# BEGIN IMMEDIATE takes SQLite's write lock before the previous hash is read,
+# serializing writers in other processes too.
+_CHAIN_LOCKS: dict[str, threading.Lock] = {}
+_CHAIN_LOCKS_GUARD = threading.Lock()
+
+
+def _chain_lock_for(db_path: Path) -> threading.Lock:
+    key = str(db_path.resolve())
+    with _CHAIN_LOCKS_GUARD:
+        return _CHAIN_LOCKS.setdefault(key, threading.Lock())
+
+
 @dataclass(frozen=True)
 class ChainVerification:
     ok: bool
@@ -122,6 +141,19 @@ class SQLiteStore:
             self._init_tables()
             self.seed_default_identities()
         self._ensure_migrations()
+
+    @contextmanager
+    def _serialized_chain_write(self) -> Iterator[sqlite3.Cursor]:
+        """Hold the chain lock and an IMMEDIATE transaction around read-prev + insert."""
+        with _chain_lock_for(self.db_path):
+            cur = self.conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
+            try:
+                yield cur
+            except BaseException:
+                cur.execute("ROLLBACK")
+                raise
+            cur.execute("COMMIT")
 
     def _ensure_migrations(self) -> None:
         """Idempotent schema upgrades applied on every open (cheap: IF NOT EXISTS / column checks)."""
@@ -395,21 +427,23 @@ class SQLiteStore:
     # --- Audit Log with Cryptographic Hash Chaining ---
 
     def append_audit(self, action: str, actor: str, details: dict[str, Any]) -> AuditLogEntry:
-        """Append an entry to the audit log, hash-chained to the previous entry (SHA3-256)."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT curr_hash FROM audit_log ORDER BY rowid DESC LIMIT 1")
-        row = cursor.fetchone()
-        prev_hash = row["curr_hash"] if row else self.GENESIS_HASH
+        """Append an entry to the audit log, hash-chained to the previous entry (SHA3-256).
 
-        ts_now = utc_now_iso()
-        log_id = hashlib.sha256(f"{action}_{actor}_{prev_hash}_{ts_now}".encode()).hexdigest()[:16]
+        Serialized (process lock + BEGIN IMMEDIATE) so concurrent writers can't fork the chain.
+        """
         details_json = json.dumps(details, sort_keys=True)
+        with self._serialized_chain_write() as cursor:
+            cursor.execute("SELECT curr_hash FROM audit_log ORDER BY rowid DESC LIMIT 1")
+            row = cursor.fetchone()
+            prev_hash = row["curr_hash"] if row else self.GENESIS_HASH
 
-        payload = f"{log_id}:{ts_now}:{action}:{actor}:{details_json}:{prev_hash}"
-        curr_hash = compute_chain_hash(HASH_ALG_CURRENT, payload)
-
-        with self.conn:
-            self.conn.execute(
+            ts_now = utc_now_iso()
+            log_id = hashlib.sha256(
+                f"{action}_{actor}_{prev_hash}_{ts_now}".encode()
+            ).hexdigest()[:16]
+            payload = f"{log_id}:{ts_now}:{action}:{actor}:{details_json}:{prev_hash}"
+            curr_hash = compute_chain_hash(HASH_ALG_CURRENT, payload)
+            cursor.execute(
                 """
                 INSERT INTO audit_log (log_id, ts, action, actor, details_json, prev_hash, curr_hash, hash_alg)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1341,22 +1375,22 @@ class SQLiteStore:
     def append_admin_audit(
         self, action: str, actor: str, target: str | None = None, details: dict[str, Any] | None = None
     ) -> AuditLogEntry:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT curr_hash FROM admin_audit_log ORDER BY rowid DESC LIMIT 1")
-        row = cursor.fetchone()
-        prev_hash = row["curr_hash"] if row else self.GENESIS_HASH
-
-        ts_now = utc_now_iso()
-        log_id = hashlib.sha256(f"admin_{action}_{actor}_{prev_hash}_{ts_now}".encode()).hexdigest()[:16]
         details_clean = details or {}
         # Security: Remove any potential password field
         details_clean = {k: v for k, v in details_clean.items() if "pass" not in k.lower()}
         details_json = json.dumps(details_clean, sort_keys=True)
-        payload = f"{log_id}:{ts_now}:{action}:{actor}:{target or ''}:{details_json}:{prev_hash}"
-        curr_hash = compute_chain_hash(HASH_ALG_CURRENT, payload)
+        with self._serialized_chain_write() as cursor:
+            cursor.execute("SELECT curr_hash FROM admin_audit_log ORDER BY rowid DESC LIMIT 1")
+            row = cursor.fetchone()
+            prev_hash = row["curr_hash"] if row else self.GENESIS_HASH
 
-        with self.conn:
-            self.conn.execute(
+            ts_now = utc_now_iso()
+            log_id = hashlib.sha256(
+                f"admin_{action}_{actor}_{prev_hash}_{ts_now}".encode()
+            ).hexdigest()[:16]
+            payload = f"{log_id}:{ts_now}:{action}:{actor}:{target or ''}:{details_json}:{prev_hash}"
+            curr_hash = compute_chain_hash(HASH_ALG_CURRENT, payload)
+            cursor.execute(
                 """
                 INSERT INTO admin_audit_log (log_id, ts, action, actor, target, details_json, prev_hash, curr_hash, hash_alg)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
