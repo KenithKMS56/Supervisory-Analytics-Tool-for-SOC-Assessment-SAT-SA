@@ -60,6 +60,9 @@ def parse_utc(ts: str) -> _dt.datetime:
 # rows (tail truncation) -- use `satsa audit head` to record an external
 # checkpoint and `satsa audit verify --checkpoint-*` to compare against it.
 
+# Upper bound on events returned by one activity-feed query.
+LIVE_EVENTS_MAX_LIMIT = 200
+
 HASH_ALG_LEGACY = "sha256"
 HASH_ALG_CURRENT = "sha3_256"
 
@@ -1549,7 +1552,17 @@ class SQLiteStore:
             return cur.lastrowid
 
     def get_live_events(self, since_id: int = 0, limit: int = 50) -> list[dict[str, Any]]:
-        """Fetch live events newer than since_id, ordered chronologically or reverse-chronological."""
+        """Fetch activity-feed events newer than since_id (oldest first), or the latest `limit`.
+
+        `since_id` must be a non-negative integer (bool and other types are
+        rejected, not coerced); `limit` is clamped to [1, LIVE_EVENTS_MAX_LIMIT].
+        Both are bound as query parameters.
+        """
+        if isinstance(since_id, bool) or not isinstance(since_id, int) or since_id < 0:
+            raise ValueError(f"since_id must be a non-negative integer, got {since_id!r}")
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise ValueError(f"limit must be an integer, got {limit!r}")
+        limit = max(1, min(limit, LIVE_EVENTS_MAX_LIMIT))
         cur = self.conn.cursor()
         if since_id > 0:
             cur.execute(
