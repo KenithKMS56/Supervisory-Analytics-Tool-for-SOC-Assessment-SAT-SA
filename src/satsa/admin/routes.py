@@ -11,10 +11,21 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -752,9 +763,9 @@ async def admin_organisation_create(
             url=f"/organisations?message=Organisation+'{org_clean}'+registered+successfully",
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    except Exception as exc:
+    except sqlite3.Error as exc:  # e.g. duplicate org_id
         return RedirectResponse(
-            url=f"/organisations?error=Failed+to+register+organisation:+{str(exc)}",
+            url=f"/organisations?error=Failed+to+register+organisation:+{exc!s}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -820,9 +831,9 @@ async def admin_cse_create(
             url=f"/cses?message=Critical+Sector+Entity+'{cse_clean}'+registered+successfully",
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    except Exception as exc:
+    except sqlite3.Error as exc:  # e.g. duplicate cse_id / unknown org
         return RedirectResponse(
-            url=f"/cses?error=Failed+to+register+CSE:+{str(exc)}",
+            url=f"/cses?error=Failed+to+register+CSE:+{exc!s}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -930,5 +941,5 @@ async def admin_activity_websocket(websocket: WebSocket) -> None:
                 online_users = store.get_online_operators()
                 await websocket.send_json({"events": new_events, "online_users": online_users})
             await asyncio.sleep(1.0)
-    except (WebSocketDisconnect, Exception):
-        pass
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        return  # client disconnected

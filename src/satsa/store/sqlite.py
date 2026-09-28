@@ -6,7 +6,7 @@ import json
 import sqlite3
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -123,12 +123,11 @@ class SQLiteStore:
             isolation_level=None,
         )
         self.conn.row_factory = sqlite3.Row
-        try:
+        # Best effort: e.g. WAL is unavailable on some network filesystems.
+        with suppress(sqlite3.Error):
             self.conn.execute("PRAGMA journal_mode=WAL;")
             self.conn.execute("PRAGMA busy_timeout=30000;")
             self.conn.execute("PRAGMA synchronous=NORMAL;")
-        except Exception:
-            pass
 
         # Fast schema check: only run DDL migrations/seeding if schema is missing or incomplete
         cur = self.conn.cursor()
@@ -633,7 +632,7 @@ class SQLiteStore:
         cutoff = (now or _dt.datetime.now(_dt.UTC)) - _dt.timedelta(minutes=window_minutes)
         cur = self.conn.cursor()
         cur.execute(
-            f"SELECT action, ts FROM {table} WHERE actor = ? AND action IN (?, ?) "  # noqa: S608 (table is allow-listed)
+            f"SELECT action, ts FROM {table} WHERE actor = ? AND action IN (?, ?) "
             "ORDER BY rowid DESC LIMIT 200",
             (username, fail_action, success_action),
         )
@@ -971,7 +970,6 @@ class SQLiteStore:
         concordance_score: float,
     ) -> None:
         """Save a blinded examiner assessment record and log to audit trail."""
-        from datetime import UTC, datetime
 
         now = utc_now_iso()
         with self.conn:
@@ -1325,7 +1323,6 @@ class SQLiteStore:
         return dict(row) if row else None
 
     def list_admin_users(self) -> list[dict[str, Any]]:
-        import datetime
 
         now_iso = utc_now_iso()
         cur = self.conn.cursor()
@@ -1352,7 +1349,6 @@ class SQLiteStore:
         return [dict(r) for r in cur.fetchall()]
 
     def update_user_last_login(self, username: str) -> None:
-        import datetime
 
         now_iso = utc_now_iso()
         with self.conn:
@@ -1469,7 +1465,7 @@ class SQLiteStore:
             d = dict(r)
             try:
                 d["details"] = json.loads(d["details_json"])
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 d["details"] = {}
             result.append(d)
         return result
@@ -1483,7 +1479,6 @@ class SQLiteStore:
         return False, result.message
 
     def get_admin_overview_stats(self) -> dict[str, Any]:
-        import datetime
 
         now_iso = utc_now_iso()
         cur = self.conn.cursor()
@@ -1526,7 +1521,7 @@ class SQLiteStore:
             d = dict(r)
             try:
                 d["details"] = json.loads(d["details_json"])
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 d["details"] = {}
             recent_admin.append(d)
 
@@ -1544,7 +1539,7 @@ class SQLiteStore:
             d = dict(r)
             try:
                 d["details"] = json.loads(d["details_json"])
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 d["details"] = {}
             recent_user.append(d)
 
@@ -1572,7 +1567,6 @@ class SQLiteStore:
         is_admin: bool = False,
     ) -> int:
         """Record an operator event for the Admin Portal's activity feed (non-authoritative; see ADR-006)."""
-        import datetime
         now = utc_now_iso()
         details_json = json.dumps(details or {})
         with self.conn:
@@ -1583,7 +1577,9 @@ class SQLiteStore:
                 """,
                 (now, event_type, actor, role, entity_id, details_json, 1 if is_admin else 0),
             )
-            return cur.lastrowid
+            event_id = cur.lastrowid
+        assert event_id is not None  # always set after a successful INSERT
+        return event_id
 
     def get_live_events(self, since_id: int = 0, limit: int = 50) -> list[dict[str, Any]]:
         """Fetch activity-feed events newer than since_id (oldest first), or the latest `limit`.
@@ -1592,10 +1588,12 @@ class SQLiteStore:
         rejected, not coerced); `limit` is clamped to [1, LIVE_EVENTS_MAX_LIMIT].
         Both are bound as query parameters.
         """
-        if isinstance(since_id, bool) or not isinstance(since_id, int) or since_id < 0:
-            raise ValueError(f"since_id must be a non-negative integer, got {since_id!r}")
+        if isinstance(since_id, bool) or not isinstance(since_id, int):
+            raise TypeError(f"since_id must be an integer, got {since_id!r}")
+        if since_id < 0:
+            raise ValueError(f"since_id must be non-negative, got {since_id!r}")
         if isinstance(limit, bool) or not isinstance(limit, int):
-            raise ValueError(f"limit must be an integer, got {limit!r}")
+            raise TypeError(f"limit must be an integer, got {limit!r}")
         limit = max(1, min(limit, LIVE_EVENTS_MAX_LIMIT))
         cur = self.conn.cursor()
         if since_id > 0:
@@ -1624,7 +1622,7 @@ class SQLiteStore:
             row = dict(r)
             try:
                 row["details"] = json.loads(row["details_json"])
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 row["details"] = {}
             events.append(row)
         if since_id == 0:
@@ -1633,7 +1631,6 @@ class SQLiteStore:
 
     def get_online_operators(self) -> list[dict[str, Any]]:
         """Get distinct users with active non-expired sessions, including their assigned CSE/Org."""
-        import datetime
         now = utc_now_iso()
         cur = self.conn.cursor()
         cur.execute(

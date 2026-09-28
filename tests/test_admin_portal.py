@@ -15,11 +15,11 @@ Covers:
 
 import tempfile
 from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
 from satsa.admin.app import app as admin_app
-from satsa.api.routes import app as satsa_app
 from satsa.auth.identities import verify_passphrase
 from satsa.store.sqlite import SQLiteStore
 
@@ -295,6 +295,7 @@ def test_cryptographic_audit_trail_and_chain_verification(authenticated_admin_cl
 def test_server_side_cse_boundary_enforcement():
     """Users scoped to one CSE cannot access other CSE data in SAT-SA."""
     from fastapi import HTTPException
+
     from satsa.auth.session import Identity, require_cse_access
 
     # 1. CSE-scoped identity

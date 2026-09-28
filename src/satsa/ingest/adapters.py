@@ -123,7 +123,7 @@ class SourceAdapter:
             timeout = float(endpoint_config.get("timeout_seconds", 5.0))
             req = urllib.request.Request(url, headers=headers, method="GET")
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     payload = json.loads(resp.read().decode("utf-8"))
             except urllib.error.URLError as e:
                 raise ValueError(f"read_api: failed to reach local endpoint '{url}': {e}") from e

@@ -1,12 +1,8 @@
 """Tests for the Admin Portal's activity feed (operator session monitor of SAT-SA's own users)."""
 
 import pytest
-from starlette.testclient import TestClient
 
-from satsa.admin.routes import router as admin_router
-from satsa.api.routes import app as satsa_app
 from satsa.store.sqlite import SQLiteStore
-from fastapi import FastAPI
 
 
 @pytest.fixture

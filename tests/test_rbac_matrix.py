@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from route_utils import served_http_routes, served_websocket_paths
 from starlette.websockets import WebSocketDisconnect
 
 import satsa.api.routes as satsa_routes
@@ -25,8 +26,6 @@ from satsa.admin.app import app as admin_app
 from satsa.admin.routes import ADMIN_COOKIE_NAME
 from satsa.api.routes import app as satsa_app
 from satsa.store.sqlite import SQLiteStore
-
-from route_utils import served_http_routes, served_websocket_paths
 
 ROLES = ("anonymous", "examiner", "supervisor", "admin")
 PUBLIC = "PUBLIC"
@@ -273,9 +272,8 @@ def test_admin_rbac(route, role, admin_env):
 @pytest.mark.parametrize("role", ["anonymous", "examiner", "supervisor"])
 def test_admin_websocket_refuses_non_admin(role, admin_env):
     client = _admin_client(admin_env, role)
-    with pytest.raises(WebSocketDisconnect) as exc:
-        with client.websocket_connect("/ws/activity"):
-            pass
+    with pytest.raises(WebSocketDisconnect) as exc, client.websocket_connect("/ws/activity"):
+        pass
     assert exc.value.code == 1008
 
 

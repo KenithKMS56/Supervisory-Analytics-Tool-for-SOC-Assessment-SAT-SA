@@ -18,13 +18,12 @@ from pathlib import Path
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from route_utils import iter_routes
 
 from satsa.admin.app import app as admin_app
 from satsa.admin.routes import ADMIN_COOKIE_NAME
 from satsa.api.routes import app as satsa_app
 from satsa.store.sqlite import SQLiteStore
-
-from route_utils import iter_routes
 
 LOOPBACK_NAMES = {"localhost", "localhost.localdomain", "ip6-localhost", ""}
 
@@ -175,15 +174,15 @@ def test_every_get_route_is_offline_and_healthy(socket_guard, monkeypatch):
 ASSET_ROOTS = [Path("src/satsa/ui"), Path("src/satsa/admin")]
 VENDORED = {"echarts.min.js"}
 URL_PATTERNS = [
-    re.compile(r"""(?:src|href|action)\s*=\s*["']\s*(https?://[^"'\s>]+)""", re.I),
-    re.compile(r"""url\(\s*["']?\s*(https?://[^)"'\s]+)""", re.I),
-    re.compile(r"""@import\s+(?:url\()?\s*["']?(https?://[^)"'\s;]+)""", re.I),
-    re.compile(r"""fetch\(\s*["'](https?://[^"']+)""", re.I),
+    re.compile(r"""(?:src|href|action)\s*=\s*["']\s*(https?://[^"'\s>]+)""", re.IGNORECASE),
+    re.compile(r"""url\(\s*["']?\s*(https?://[^)"'\s]+)""", re.IGNORECASE),
+    re.compile(r"""@import\s+(?:url\()?\s*["']?(https?://[^)"'\s;]+)""", re.IGNORECASE),
+    re.compile(r"""fetch\(\s*["'](https?://[^"']+)""", re.IGNORECASE),
 ]
 
 
 def _external(url: str) -> bool:
-    host = re.sub(r"^https?://", "", url, flags=re.I).split("/")[0].split(":")[0]
+    host = re.sub(r"^https?://", "", url, flags=re.IGNORECASE).split("/")[0].split(":")[0]
     return not _is_loopback(host)
 
 
