@@ -6,7 +6,7 @@
 <div class="page-header">
   <div class="page-title">
     <h2>Administrative Cryptographic Audit Trail</h2>
-    <p>Tamper-evident, forward-secure SHA-256 chained audit log of all identity and supervisory events.</p>
+    <p>Tamper-evident, hash-chained audit log (SHA3-256; legacy SHA-256 entries still verify) of all identity and supervisory events.</p>
   </div>
   <div style="display: flex; gap: 0.5rem; align-items: center;">
     {% if chain_valid %}
@@ -30,7 +30,7 @@
   <div class="card-header">
     <h3>Audit Records</h3>
     <span style="font-size: 0.75rem; color: var(--admin-text-muted);">
-      Each record binds <code style="font-family:'JetBrains Mono',monospace;">SHA-256(prev_hash + timestamp + actor + action + target + details)</code>
+      Each record binds <code style="font-family:'JetBrains Mono',monospace;">SHA3-256(prev_hash + timestamp + actor + action + target + details)</code>
     </span>
   </div>
 

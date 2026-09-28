@@ -13,7 +13,7 @@ This document records architectural decisions, context, rationale, and alternati
 - **Alternatives Considered:** Pure SQLite (insufficient performance for 5M+ rows), PostgreSQL (requires external daemon, violating simple offline air-gap deployment).
 
 ## ADR-003: Pure-Python and Local Vendored Assets for Offline Guarantee
-- **Decision:** Vendor Apache ECharts locally in `src/satsa/ui/static/echarts.min.js`. All HTML templates render without external fonts or CDN stylesheets. PDF generation uses `reportlab` (pure Python).
+- **Decision:** Vendor Apache ECharts locally in `src/satsa/ui/static/echarts.min.js`. All HTML templates render without external fonts or CDN stylesheets. PDF generation uses `reportlab` (pure Python). (Correction during the hardening pass: three templates did load Google Fonts, contrary to this ADR; those links were removed and `tests/test_offline_hardening.py` now statically scans every template/static file and sweeps every GET route under a socket guard, so the claim is enforced rather than asserted.)
 - **Reason:** Hard constraint requires SAT-SA to function in an air-gapped environment with no internet access.
 - **Alternatives Considered:** CDN references with local cache fallback. Rejected because external network lookups would violate the strict air-gap test.
 
