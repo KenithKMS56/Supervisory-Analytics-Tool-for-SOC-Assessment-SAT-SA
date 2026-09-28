@@ -8,7 +8,6 @@ import polars as pl
 
 from satsa.security import require_entity_id
 
-
 # Tables holding one record per entity (keyed by entity_id) rather than an
 # append-only stream of events.
 KEYED_BY_ENTITY = frozenset({"entity"})

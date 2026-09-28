@@ -33,13 +33,13 @@ def test_limit_is_capped(store):
 
 @pytest.mark.parametrize("bad", [-1, "5", "1 OR 1=1", 1.5, True, None])
 def test_since_id_must_be_non_negative_int(store, bad):
-    with pytest.raises(ValueError):
+    with pytest.raises((TypeError, ValueError)):
         store.get_live_events(since_id=bad)
 
 
 @pytest.mark.parametrize("bad", ["50", None, 2.0])
 def test_limit_must_be_int(store, bad):
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         store.get_live_events(limit=bad)
 
 

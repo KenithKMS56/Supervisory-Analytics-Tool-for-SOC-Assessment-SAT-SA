@@ -20,7 +20,11 @@ from satsa.rules.systemic import SystemicCorrelationDetector
 from satsa.scoring.runner import AssessmentRunner
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
-from satsa.synth.generator import SYSTEMIC_MSSP_GROUP, SYSTEMIC_MSSP_PROVIDER, SyntheticDataGenerator
+from satsa.synth.generator import (
+    SYSTEMIC_MSSP_GROUP,
+    SYSTEMIC_MSSP_PROVIDER,
+    SyntheticDataGenerator,
+)
 
 
 @pytest.fixture(scope="module")

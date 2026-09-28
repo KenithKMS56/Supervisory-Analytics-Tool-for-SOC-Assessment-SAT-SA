@@ -170,13 +170,13 @@ def test_read_api_against_live_loopback_server():
     response_body = json.dumps({"tickets": [{"ticket_id": "TCK-LIVE-001"}]}).encode()
 
     class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802
+        def do_GET(self):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(response_body)
 
-        def log_message(self, format, *args):  # noqa: A002
+        def log_message(self, format, *args):
             pass
 
     server = HTTPServer(("127.0.0.1", 0), Handler)

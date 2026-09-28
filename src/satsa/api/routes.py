@@ -258,11 +258,9 @@ async def handle_login(
         return generic_error
 
     identity_row = sqlite_store.get_identity(uname)
-    ok = bool(identity_row) and verify_passphrase(
+    if identity_row is None or not verify_passphrase(
         password, identity_row["pass_salt"], identity_row["pass_hash"]
-    )
-
-    if not ok:
+    ):
         sqlite_store.append_audit(
             action="login_failed", actor=actor, details={"reason": "bad_credentials"}
         )

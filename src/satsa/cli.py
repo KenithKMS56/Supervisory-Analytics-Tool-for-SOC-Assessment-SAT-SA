@@ -375,7 +375,6 @@ def validate_stress_cmd(
 
     See src/satsa/synth/stress.py and docs/validation.md Section 2A for the methodology.
     """
-    import shutil
     import tempfile
     from pathlib import Path
 

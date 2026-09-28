@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import random
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +55,12 @@ STRESS_SEED_DEFAULT = 9901
 _BASE_TIME = datetime(2026, 1, 5, 9, 0, 0)
 _RULE_IDS = [f"DET-{i:03d}" for i in range(1, 13)]
 
+
+def _required_ts(ts: datetime | None) -> datetime:
+    """Workflow events need a timestamp; the alerts they derive from always set it here."""
+    if ts is None:
+        raise ValueError("stress generator produced an alert without the required timestamp")
+    return ts
 
 def _make_closure_hash(text: str) -> str:
     return hashlib.sha256(text.lower().strip().encode()).hexdigest()[:16]
@@ -200,7 +206,7 @@ def _build_stress02(
                     entity_id=entity_id,
                     ref_type="alert",
                     ref_id=alert.alert_id,
-                    ts=alert.closed_at,
+                    ts=_required_ts(alert.closed_at),
                     actor=f"STRESS_ANALYST_{i % 3}",
                     action="close",
                     from_status="open",
@@ -226,7 +232,7 @@ def _build_stress02(
                     entity_id=entity_id,
                     ref_type="alert",
                     ref_id=alert.alert_id,
-                    ts=alert.acknowledged_at,
+                    ts=_required_ts(alert.acknowledged_at),
                     actor=f"STRESS_ANALYST_{i % 3}",
                     action="investigate",
                     from_status="open",
@@ -303,7 +309,7 @@ def _build_stress03(rng: random.Random) -> tuple[list[Alert], list[Closure], lis
                 entity_id=entity_id,
                 ref_type="alert",
                 ref_id=alert.alert_id,
-                ts=alert.acknowledged_at,
+                ts=_required_ts(alert.acknowledged_at),
                 actor=f"STRESS_ANALYST_{i % 4}",
                 action="investigate",
                 from_status="open",
@@ -374,7 +380,7 @@ def generate_stress_dataset(seed: int = STRESS_SEED_DEFAULT) -> tuple[dict[str, 
     ground_truth = GroundTruth(
         version="1.0.0-stress",
         seed=seed,
-        created_at=datetime.now().isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
         entities={e.entity_id: {"name": e.name, "sector": e.sector, "size": e.size_band} for e in entities},
         defects=[defect1, *defects2],
         clean_entities=["STRESS-03"],
