@@ -1673,14 +1673,90 @@ async def view_rules_catalog(
     )
 
 
+# Every threshold the Tuning page can change. Each entry maps 1:1 to a key the
+# rule reads via self.params.get(key, default) (enforced by
+# tests/test_config_drift.py); labels describe the rule's REAL logic. The form
+# field for an entry is named "<RULE>__<key>", e.g. "EG04__max_comment_hash_share".
+TUNABLE_PARAMS: list[dict[str, Any]] = [
+    {"rule": "EG01", "key": "fast_share_threshold", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01,
+     "label": "EG01 - min share of closures faster than peer p5",
+     "help": "Flag when more than this share of human-closed High/Critical alerts close faster than the portfolio p5 close time with <= 1 workflow event."},
+    {"rule": "EG01", "key": "min_fast_count", "type": "int", "min": 1, "max": 100000, "step": 1,
+     "label": "EG01 - min number of such fast closures",
+     "help": "Minimum count of fast, minimally-worked closures required before EG01 can fire."},
+    {"rule": "EG04", "key": "max_comment_hash_share", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01,
+     "label": "EG04 - max share of closures in repeated-comment groups",
+     "help": "Flag when more than this share of human-closed alerts carry a closure comment whose normalized hash repeats at least the group size below."},
+    {"rule": "EG04", "key": "min_hash_group_size", "type": "int", "min": 2, "max": 100000, "step": 1,
+     "label": "EG04 - min repeats for a comment-hash group",
+     "help": "A normalized comment hash counts as boilerplate only if it repeats at least this many times."},
+    {"rule": "EG05", "key": "min_repeat_count", "type": "int", "min": 2, "max": 100000, "step": 1,
+     "label": "EG05 - min repeats of an all-benign (asset, rule) pair",
+     "help": "An (asset, rule) pair counts when it fired at least this many times and was always closed false-positive/benign."},
+    {"rule": "EG05", "key": "min_unaddressed_pairs", "type": "int", "min": 1, "max": 100000, "step": 1,
+     "label": "EG05 - min unremediated repeat pairs",
+     "help": "Flag when at least this many such pairs have no linked remediation ticket."},
+    {"rule": "EG10", "key": "mttr_gap_ratio_threshold", "type": "float", "min": 0.0, "max": 100.0, "step": 0.05,
+     "label": "EG10 - max relative gap, empirical vs declared MTTR",
+     "help": "Flag when (empirical - declared) / declared High/Critical MTTR exceeds this ratio (0.60 = 60%)."},
+    {"rule": "NS01", "key": "min_silent_days", "type": "int", "min": 1, "max": 3660, "step": 1,
+     "label": "NS01 - min zero-event days on a critical asset",
+     "help": "Flag monitored critical assets with at least this many days of zero log events (days need not be consecutive)."},
+    {"rule": "NS01", "key": "min_asset_criticality", "type": "int", "min": 1, "max": 5, "step": 1,
+     "label": "NS01 - min asset criticality considered",
+     "help": "Only assets at or above this criticality level are checked."},
+    {"rule": "NS02", "key": "min_peer_entity_count", "type": "int", "min": 1, "max": 100000, "step": 1,
+     "label": "NS02 - entities reporting a category for it to be 'standard'",
+     "help": "A category is expected of every entity when at least this many portfolio entities report it; its complete absence is flagged."},
+    {"rule": "NS03", "key": "max_night_share", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01,
+     "label": "NS03 - max night-time (20:00-08:00) share of alerts",
+     "help": "Flag when the night-time share of an entity's alerts falls below this value."},
+    {"rule": "NS03", "key": "min_alert_volume", "type": "int", "min": 1, "max": 10000000, "step": 1,
+     "label": "NS03 - min alert volume before NS03 applies",
+     "help": "NS03 is only evaluated for entities with at least this many alerts."},
+]
+
+RULES_CONFIG_PATH = Path("config/rules.yaml")
+
+
+def _load_rules_config() -> dict[str, Any]:
+    if not RULES_CONFIG_PATH.exists():
+        return {"rules": {}}
+    return yaml.safe_load(RULES_CONFIG_PATH.read_text(encoding="utf-8")) or {"rules": {}}
+
+
+def _write_rules_config(cfg: dict[str, Any]) -> None:
+    """Write config/rules.yaml, preserving its leading comment header."""
+    header = ""
+    if RULES_CONFIG_PATH.exists():
+        lines = RULES_CONFIG_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
+        for line in lines:
+            if not line.startswith("#"):
+                break
+            header += line
+    RULES_CONFIG_PATH.write_text(
+        header + yaml.dump(cfg, sort_keys=False, width=100), encoding="utf-8"
+    )
+
+
+def _tunable_param_rows(rules_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """TUNABLE_PARAMS annotated with each parameter's current configured value."""
+    rows = []
+    for spec in TUNABLE_PARAMS:
+        current = (
+            rules_cfg.get("rules", {}).get(spec["rule"], {}).get("params", {}).get(spec["key"])
+        )
+        rows.append({**spec, "field": f"{spec['rule']}__{spec['key']}", "value": current})
+    return rows
+
+
 @app.get("/tuning", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_tuning(request: Request, message: str = "") -> Response:
-    config_path = Path("config/rules.yaml")
-    rules_cfg = (
-        yaml.safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
-    )
+    rules_cfg = _load_rules_config()
     config_hash = (
-        hashlib.sha256(config_path.read_bytes()).hexdigest()[:16] if config_path.exists() else "N/A"
+        hashlib.sha256(RULES_CONFIG_PATH.read_bytes()).hexdigest()[:16]
+        if RULES_CONFIG_PATH.exists()
+        else "N/A"
     )
 
     return templates.TemplateResponse(
@@ -1690,6 +1766,7 @@ async def view_tuning(request: Request, message: str = "") -> Response:
             "active_tab": "tuning",
             "message": message,
             "rules_config": rules_cfg,
+            "tunable_params": _tunable_param_rows(rules_cfg),
             "config_hash": config_hash,
         },
     )
@@ -1697,52 +1774,50 @@ async def view_tuning(request: Request, message: str = "") -> Response:
 
 @app.post("/tuning/save")
 async def handle_tuning_save(
-    eg01_threshold: Annotated[int, Form()] = 120,
-    eg04_share: Annotated[float, Form()] = 0.40,
-    eg05_count: Annotated[int, Form()] = 5,
-    eg10_gap: Annotated[float, Form()] = 10.0,
-    ns01_days: Annotated[int, Form()] = 3,
-    ns02_prevalence: Annotated[float, Form()] = 80.0,
-    ns03_z: Annotated[float, Form()] = -2.0,
-    ns07_hours: Annotated[int, Form()] = 6,
+    request: Request,
     identity: Identity = Depends(require_role(*TUNING_ROLES)),
 ) -> Response:
-    config_path = Path("config/rules.yaml")
-    cfg = (
-        yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        if config_path.exists()
-        else {"rules": {}}
-    )
+    """Update rule thresholds in config/rules.yaml and re-run the assessment.
 
-    cfg.setdefault("rules", {})
-    cfg["rules"].setdefault("EG01", {})["threshold_seconds"] = eg01_threshold
-    cfg["rules"].setdefault("EG04", {})["max_comment_hash_share"] = eg04_share
-    cfg["rules"].setdefault("EG05", {})["repeat_count"] = eg05_count
-    cfg["rules"].setdefault("EG10", {})["tolerance_percent"] = eg10_gap
-    cfg["rules"].setdefault("NS01", {})["consecutive_days_zero_events"] = ns01_days
-    cfg["rules"].setdefault("NS02", {})["peer_prevalence_threshold"] = ns02_prevalence
-    cfg["rules"].setdefault("NS03", {})["robust_z_threshold"] = ns03_z
-    cfg["rules"].setdefault("NS07", {})["window_hours"] = ns07_hours
+    Only fields named "<RULE>__<key>" for an entry in TUNABLE_PARAMS are
+    accepted, and each is written to cfg["rules"][RULE]["params"][key] -- the
+    exact place the rule reads it from. Fields that are omitted are left
+    unchanged; out-of-range or non-numeric values are rejected (HTTP 422).
+    """
+    form = await request.form()
+    cfg = _load_rules_config()
+    rules = cfg.setdefault("rules", {})
+    changes: dict[str, dict[str, Any]] = {}
+    for spec in TUNABLE_PARAMS:
+        field = f"{spec['rule']}__{spec['key']}"
+        raw = form.get(field)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            value: float | int = float(str(raw)) if spec["type"] == "float" else int(str(raw))
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"{field} must be a number.") from None
+        if not (spec["min"] <= value <= spec["max"]):
+            raise HTTPException(
+                status_code=422, detail=f"{field} must be between {spec['min']} and {spec['max']}."
+            )
+        params = rules.setdefault(spec["rule"], {}).setdefault("params", {})
+        old = params.get(spec["key"])
+        if old != value:
+            changes[field] = {"old": old, "new": value}
+        params[spec["key"]] = value
 
-    config_path.write_text(yaml.dump(cfg, sort_keys=False), encoding="utf-8")
+    if changes:
+        _write_rules_config(cfg)
 
-    # Re-evaluate
+    # Re-evaluate with the (possibly) updated thresholds
     duckdb_store, sqlite_store = get_stores()
     runner = AssessmentRunner(duckdb_store, sqlite_store)
     res = runner.run_assessment(period="2026-Q1", actor=identity.username)
     sqlite_store.append_audit(
         action="tuning_save",
         actor=identity.username,
-        details={
-            "eg01_threshold": eg01_threshold,
-            "eg04_share": eg04_share,
-            "eg05_count": eg05_count,
-            "eg10_gap": eg10_gap,
-            "ns01_days": ns01_days,
-            "ns02_prevalence": ns02_prevalence,
-            "ns03_z": ns03_z,
-            "ns07_hours": ns07_hours,
-        },
+        details={"changes": changes, "run_id": res.get("run_id")},
     )
     duckdb_store.close()
     sqlite_store.close()

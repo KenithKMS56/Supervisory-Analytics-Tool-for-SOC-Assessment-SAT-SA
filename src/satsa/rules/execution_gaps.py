@@ -58,13 +58,17 @@ class EG01FastClosure(BaseRule):
         if df.is_empty():
             return [], []
 
+        # Tunable: min share of closures faster than peer p5, and min count of such closures.
+        fast_share_threshold = float(self.params.get("fast_share_threshold", 0.15))
+        min_fast_count = int(self.params.get("min_fast_count", 5))
+
         total_n = df.shape[0]
         fast_df = df.filter((df["dur_sec"] < peer_p5) & (df["event_cnt"] <= 1))
         fast_count = fast_df.shape[0]
         share = fast_count / total_n
 
-        if share > 0.15 and fast_count >= 5:
-            score, conf = self.compute_rule_score(share / 0.15, total_n)
+        if share > fast_share_threshold and fast_count >= min_fast_count:
+            score, conf = self.compute_rule_score(share / fast_share_threshold, total_n)
             f_id = f"FND-EG01-{entity_id}-{run_id}"
             sample_ids = fast_df["alert_id"].head(10).to_list()
 
@@ -272,6 +276,10 @@ class EG04TemplateDrivenInvestigations(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
+        # Tunable: max share of human closures in repeated-comment-hash groups, and the
+        # min size of a hash group to count as boilerplate.
+        max_comment_hash_share = float(self.params.get("max_comment_hash_share", 0.25))
+        min_hash_group_size = int(self.params.get("min_hash_group_size", 10))
         sql = """
         SELECT
             c.comment_norm_hash,
@@ -281,10 +289,10 @@ class EG04TemplateDrivenInvestigations(BaseRule):
         JOIN closure c ON a.entity_id = c.entity_id AND a.alert_id = c.ref_id
         WHERE a.entity_id = ? AND a.closed_by_type = 'human'
         GROUP BY c.comment_norm_hash
-        HAVING count(*) >= 10
+        HAVING count(*) >= ?
         ORDER BY repeats DESC
         """
-        df = store.query(sql, [entity_id])
+        df = store.query(sql, [entity_id, min_hash_group_size])
         if df.is_empty():
             return [], []
 
@@ -295,14 +303,16 @@ class EG04TemplateDrivenInvestigations(BaseRule):
         top_repeats = int(df["repeats"].sum())
         repeat_share = top_repeats / max(total_human, 1)
 
-        if repeat_share > 0.25:
-            score, conf = self.compute_rule_score(repeat_share / 0.25, total_human)
+        if repeat_share > max_comment_hash_share:
+            score, conf = self.compute_rule_score(
+                repeat_share / max_comment_hash_share, total_human
+            )
             f_id = f"FND-EG04-{entity_id}-{run_id}"
             sample_ids = df["sample_alert"].head(10).to_list()
 
             rationale = (
                 f"{top_repeats} of {total_human} ({repeat_share:.1%}) human-closed alerts "
-                f"share identical normalized comment hashes repeating >= 10 times."
+                f"share identical normalized comment hashes repeating >= {min_hash_group_size} times."
             )
             finding = Finding(
                 finding_id=f_id,
@@ -350,6 +360,10 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
+        # Tunable: min repeats of an all-benign (asset, rule) pair, and min number of
+        # such unremediated pairs before the entity is flagged.
+        min_repeat_count = int(self.params.get("min_repeat_count", 8))
+        min_unaddressed_pairs = int(self.params.get("min_unaddressed_pairs", 2))
         sql = """
         WITH pairs AS (
             SELECT
@@ -360,7 +374,7 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
             FROM alert
             WHERE entity_id = ?
             GROUP BY asset_id, rule_id
-            HAVING count(*) >= 8 AND count(CASE WHEN disposition IN ('false_positive', 'benign') THEN 1 END) = count(*)
+            HAVING count(*) >= ? AND count(CASE WHEN disposition IN ('false_positive', 'benign') THEN 1 END) = count(*)
         ),
         remediated AS (
             SELECT DISTINCT linked_asset_id, linked_rule_id
@@ -373,15 +387,17 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
         WHERE r.linked_asset_id IS NULL
         ORDER BY p.pair_count DESC
         """
-        df = store.query(sql, [entity_id, entity_id])
+        df = store.query(sql, [entity_id, min_repeat_count, entity_id])
         if df.is_empty():
             return [], []
 
         unaddressed_pairs = df.shape[0]
         total_repeat_alerts = int(df["pair_count"].sum())
 
-        if unaddressed_pairs >= 2:
-            score, conf = self.compute_rule_score(unaddressed_pairs / 2.0, total_repeat_alerts)
+        if unaddressed_pairs >= min_unaddressed_pairs:
+            score, conf = self.compute_rule_score(
+                unaddressed_pairs / float(min_unaddressed_pairs), total_repeat_alerts
+            )
             f_id = f"FND-EG05-{entity_id}-{run_id}"
             sample_records = [
                 f"{row['asset_id']}::{row['rule_id']}" for row in df.head(5).iter_rows(named=True)
@@ -743,9 +759,13 @@ class EG10KPIRadicalGap(BaseRule):
         if dec_mttr == 0.0 or emp_mttr == 0.0:
             return [], []
 
+        # Tunable: flag when empirical MTTR exceeds declared MTTR by more than this ratio.
+        mttr_gap_ratio_threshold = float(self.params.get("mttr_gap_ratio_threshold", 0.60))
         gap_ratio = (emp_mttr - dec_mttr) / max(dec_mttr, 1.0)
-        # If declared is > 60% better than empirical
-        if gap_ratio > 0.60:
+        if gap_ratio > mttr_gap_ratio_threshold:
+            # 0.50 is the score-normalisation constant (distance 1.0 at a 50% gap), kept
+            # separate from the detection threshold so retuning the threshold doesn't
+            # also silently rescale every EG10 score.
             score, conf = self.compute_rule_score(gap_ratio / 0.50, 100)
             f_id = f"FND-EG10-{entity_id}-{run_id}"
 

@@ -165,8 +165,8 @@ def test_ui_tuning_view_and_save():
         save_resp = client.post(
             "/tuning/save",
             data={
-                "eg01_threshold": "150",
-                "eg04_share": "0.45",
+                "EG01__fast_share_threshold": "0.2",
+                "EG04__max_comment_hash_share": "0.45",
             },
             follow_redirects=True,
         )
