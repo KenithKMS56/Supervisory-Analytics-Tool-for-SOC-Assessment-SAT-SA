@@ -36,8 +36,8 @@
 - **Review Queue Prioritisation:** 70% top-risk alerts + 30% stratified random controls to measure lift and catch blindspots.
 - **Empirical Ground-Truth Validation:**
   - **Entity Rank Precision@7:** **100.0%** (all 7 injected entities ranked in top 7; clean entities at bottom).
-  - **Injected Defect Recall:** **100.0%** (11/11 injected defects discovered).
-  - **Review-Effort Lift:** **16.60x** more defects discovered at 1% audit budget vs random sampling.
+  - **Injected Defect Recall:** **100.0%** (13/13 injected defects discovered).
+  - **Review-Effort Lift:** **5.97x** more defects discovered at a 1% audit budget vs random sampling (4.13x at 2%, 1.65x at 5%) on the synthetic dataset.
   - **Ranking Stability:** Spearman $\rho = \mathbf{1.0000}$ under $\pm 20\%$ parameter perturbations.
 
 ---
