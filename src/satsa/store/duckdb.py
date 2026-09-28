@@ -6,6 +6,8 @@ from typing import Any
 import duckdb
 import polars as pl
 
+from satsa.security import require_entity_id
+
 
 class DuckDBStore:
     """Manages DuckDB queries and partitioned Parquet files for analytics."""
@@ -210,6 +212,11 @@ class DuckDBStore:
         if "entity_id" in df.columns:
             entities = df["entity_id"].unique().to_list()
             for entity in entities:
+                # Last-line guard: the entity ID becomes a directory name, so it
+                # must be validated even if an upstream check was missed. (A null
+                # entity_id keeps its pre-existing, path-safe "entity_id=None" dir.)
+                if entity is not None:
+                    require_entity_id(entity)
                 ent_df = df.filter(pl.col("entity_id") == entity)
                 ent_dir = target_dir / f"entity_id={entity}"
                 ent_dir.mkdir(parents=True, exist_ok=True)

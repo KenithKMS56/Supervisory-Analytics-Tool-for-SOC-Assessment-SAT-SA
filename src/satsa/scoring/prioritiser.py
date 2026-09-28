@@ -41,13 +41,13 @@ class ReviewPrioritiser:
                 record_types[rec_id] = ev.record_type
 
         # Query all alerts for this entity to fetch severity and metadata
-        sql_alerts = f"""
+        sql_alerts = """
         SELECT alert_id, severity_final
         FROM alert
-        WHERE entity_id = '{entity_id}'
+        WHERE entity_id = ?
         ORDER BY alert_id ASC
         """
-        df_alerts = store.query(sql_alerts)
+        df_alerts = store.query(sql_alerts, [entity_id])
         alert_sev_map = {
             row["alert_id"]: row["severity_final"] for row in df_alerts.iter_rows(named=True)
         }

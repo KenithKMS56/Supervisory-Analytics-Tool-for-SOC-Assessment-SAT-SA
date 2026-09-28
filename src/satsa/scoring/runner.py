@@ -20,6 +20,7 @@ from satsa.rules.registry import RuleRegistry
 from satsa.rules.systemic import SystemicCorrelationDetector
 from satsa.scoring.prioritiser import ReviewPrioritiser
 from satsa.scoring.scorer import ScoringEngine
+from satsa.security import is_valid_entity_id
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
 
@@ -59,7 +60,16 @@ class AssessmentRunner:
         if df_entities.is_empty():
             return {"status": "error", "message": "No entities found in storage."}
 
-        entities = [Entity(**row) for row in df_entities.iter_rows(named=True)]
+        # Defense in depth: an entity whose ID fails satsa.security.ENTITY_ID_RE
+        # is never handed to any rule (rules bind entity_id as a query parameter,
+        # but a malformed ID must not reach a query at all).
+        all_entities = [Entity(**row) for row in df_entities.iter_rows(named=True)]
+        entities = [e for e in all_entities if is_valid_entity_id(e.entity_id)]
+        skipped_entity_ids = sorted(
+            repr(e.entity_id) for e in all_entities if not is_valid_entity_id(e.entity_id)
+        )
+        if not entities:
+            return {"status": "error", "message": "No entities with valid IDs found in storage."}
         config_hash = hashlib.sha256(self.registry.config_path.read_bytes()).hexdigest()[:16]
         now = datetime.now(UTC)
         # Microsecond precision (plus the period label folded into the hash
@@ -117,6 +127,7 @@ class AssessmentRunner:
             "config_hash": config_hash,
             "code_version": code_version,
             "entities_evaluated": [e.entity_id for e in entities],
+            "entities_skipped_invalid_id": skipped_entity_ids,
             "total_findings": len(all_findings),
             "total_queue_items": len(all_queue_items),
         }

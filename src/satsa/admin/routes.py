@@ -9,16 +9,18 @@ Provides dedicated web control interfaces for:
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Form, Request, status, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Form, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from satsa.admin.rbac import can_access_admin_portal
 from satsa.auth.identities import verify_passphrase
+from satsa.security import is_valid_username
 from satsa.store.sqlite import SQLiteStore
 
 # Setup Jinja2 template environment for admin portal
@@ -61,6 +63,12 @@ def get_current_operator(request: Request) -> dict[str, Any] | None:
         return None
 
     return user
+
+
+def require_valid_username(username: str) -> None:
+    """Reject a {username} path parameter that fails satsa.security.USERNAME_RE (HTTP 400)."""
+    if not is_valid_username(username):
+        raise HTTPException(status_code=400, detail="Invalid username.")
 
 
 def require_operator(request: Request) -> tuple[dict[str, Any] | None, RedirectResponse | None]:
@@ -159,8 +167,11 @@ async def admin_login_post(
         key=ADMIN_COOKIE_NAME,
         value=token,
         httponly=True,
-        samesite="lax",
-        secure=False,  # localhost support
+        # Strict: no admin flow starts from another site, so the session cookie is
+        # never sent on cross-site requests (partial mitigation for missing CSRF tokens).
+        samesite="strict",
+        # Off by default for plain-HTTP localhost; set SATSA_COOKIE_SECURE=1 behind TLS.
+        secure=os.environ.get("SATSA_COOKIE_SECURE", "").lower() in ("1", "true", "yes"),
         max_age=8 * 3600,
     )
     return resp
@@ -435,6 +446,7 @@ async def admin_user_edit_get(request: Request, username: str, error: str | None
     operator, redirect = require_operator(request)
     if redirect:
         return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     user = store.get_user(username)
@@ -474,6 +486,7 @@ async def admin_user_edit_post(
     operator, redirect = require_operator(request)
     if redirect:
         return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     prev_user = store.get_user(username)
@@ -591,6 +604,7 @@ async def admin_user_block(request: Request, username: str) -> Any:
     operator, redirect = require_operator(request)
     if redirect:
         return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     store.set_user_status(username, "BLOCKED")
@@ -616,6 +630,7 @@ async def admin_user_unblock(request: Request, username: str) -> Any:
     operator, redirect = require_operator(request)
     if redirect:
         return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     store.set_user_status(username, "ACTIVE")
@@ -633,6 +648,7 @@ async def admin_user_reset_get(request: Request, username: str, error: str | Non
     operator, redirect = require_operator(request)
     if redirect:
         return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     user = store.get_user(username)
@@ -663,6 +679,7 @@ async def admin_user_reset_post(
     operator, redirect = require_operator(request)
     if redirect:
         return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     user = store.get_user(username)
