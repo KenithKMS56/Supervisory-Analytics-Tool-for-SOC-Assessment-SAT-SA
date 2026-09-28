@@ -71,7 +71,7 @@
         <!-- Username -->
         <td style="font-weight: 600; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem;">
           {{ u.username }}
-          {% if u.is_admin_user %}
+          {% if u.role in ('admin', 'NCIIPC Super Administrator', 'NCIIPC_SUPER_ADMINISTRATOR') %}
             <span title="NCIIPC Control Portal Access" style="font-size: 0.7rem; color: var(--accent-primary); margin-left: 4px;">★</span>
           {% endif %}
         </td>

@@ -25,21 +25,27 @@ identities (`admin`, `supervisor`, `examiner`, documented in `src/satsa/auth/ide
 seeded into a fresh database and MUST be rotated before real deployment via
 `satsa users set-password <username> --role <role>`.
 
-| Role | Primary Responsibilities | Enforced Permissions (server-side, `require_role`) |
+| Role | Primary Responsibilities | Enforced Permissions (server-side, `require_role` / `require_admin_operator`) |
 |---|---|---|
-| **Admin** | System administration & batch maintenance | Same gated actions as Supervisor (ingest, run, tuning, rule-pack export/import), plus intended sole ownership of identity/config administration via the `satsa users` CLI. |
-| **Supervisor** | Sector-wide risk assessment & queue allocation | Ingest telemetry (`/upload`, `/upload/add-entity`, `/upload/trigger-demo`, `POST /api/v1/telemetry/ingest`), trigger assessment runs, calibrate rule thresholds (`/tuning/save`), export/import signed rule packs (`/tuning/export-pack`, `/tuning/import-pack`). |
+| **Admin** | System administration & batch maintenance | Everything a Supervisor can do, plus **sole** access to the NCIIPC Administration Portal (user provisioning, blocking, credential resets, organisation/CSE registries, admin audit trail, admin activity feed). Portal access is derived from the administrator role only; the legacy `is_admin_user` flag no longer grants it. |
+| **Supervisor** | Sector-wide risk assessment & queue allocation | Ingest periodic batches (`/upload`, `/upload/add-entity`, `/upload/trigger-demo`, `POST /api/v1/telemetry/ingest`), trigger assessment runs, calibrate rule thresholds (`/tuning/save`), export/import signed rule packs (`/tuning/export-pack`, `/tuning/import-pack`). **No** Admin Portal access (HTTP 403). |
 | **Examiner** | Operational investigation & evidentiary review | Log review dispositions (`POST /api/v1/feedback`) and submit blinded-review verdicts (`POST /blind-review/submit`). Supervisor and Admin can also perform these. |
 
-**Current scope, stated plainly:** the gate above applies to the specific state-changing routes
-listed (ingest/run/tuning/rule-pack import-export require `admin` or `supervisor`; review
-disposition and blind-review submission require `examiner`, `supervisor`, or `admin`; every
-unauthenticated or wrong-role request to those routes is rejected with HTTP 401/403 and no state
-change occurs). The read-only dashboard views (portfolio, entity profile, alert explorer, rules
-catalog, DQ view, runs & audit) remain open to any local user with network access to the app, by
-design, since the deployment threat model is an air-gapped network where the perimeter -- not this
-page-level ACL -- is the primary control; only the roadmap items below are outstanding, not the
-role separation itself:
+**Current scope, stated plainly:** every route is classified in the explicit permission table in
+`tests/test_rbac_matrix.py`, and a completeness check fails if a new route is added without being
+classified. Public: `/`, `/splash`, `/login`, `/logout`, `/api/session/status` (and static assets).
+Everything else requires a session: anonymous browser page loads are redirected to `/login`;
+anonymous API calls, downloads and all mutating requests get HTTP 401; a signed-in role outside the
+route's allowed set gets HTTP 403 and no state change occurs.
+
+- Read-only dashboard views (portfolio, entity profile, alert explorer, rules catalog, DQ view,
+  runs & audit) require any signed-in identity; entity-level pages additionally enforce the CSE
+  boundary (`require_cse_access`) for CSE-scoped roles.
+- Portfolio-wide data -- the bulk `/api/v1/*` JSON endpoints and the portfolio/CSV exports under
+  `/reports/` -- is limited to the NCIIPC supervisory roles (`examiner`, `supervisor`, `admin`), so a
+  CSE-scoped identity cannot pull other entities' findings.
+
+Remaining gaps, stated plainly:
 
 - No per-route audit trail for *read* access (only state-changing actions are logged to
   `audit_log`, as before).

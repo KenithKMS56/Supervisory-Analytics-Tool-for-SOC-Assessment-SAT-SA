@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from satsa.admin.routes import AdminAuthRequired
 from satsa.admin.routes import router as admin_router
 from satsa.store.sqlite import SQLiteStore
 
@@ -48,6 +49,14 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="admin_static
 
 # Include administrative routes
 app.include_router(admin_router)
+
+
+@app.exception_handler(AdminAuthRequired)
+async def admin_auth_required_handler(request: Request, exc: AdminAuthRequired) -> Response:
+    """Unauthenticated: browser page loads go to /login; API calls and mutations get 401."""
+    if request.method == "GET" and not request.url.path.startswith("/api/"):
+        return RedirectResponse(url="/login", status_code=303)
+    return JSONResponse({"detail": "Authentication required."}, status_code=401)
 
 
 @app.exception_handler(404)
