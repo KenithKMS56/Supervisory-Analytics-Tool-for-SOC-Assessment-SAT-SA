@@ -19,7 +19,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from satsa.admin.rbac import can_access_admin_portal
-from satsa.auth.identities import verify_passphrase
+from satsa.auth.identities import LOGIN_LOCKOUT_MINUTES, LOGIN_MAX_FAILURES, verify_passphrase
 from satsa.security import is_valid_username
 from satsa.store.sqlite import SQLiteStore
 
@@ -142,6 +142,17 @@ async def admin_login_post(
             context={"request": request, "error": ADMIN_LOGIN_FAILED_MESSAGE, "username": username_clean},
             status_code=status.HTTP_401_UNAUTHORIZED,
         )
+
+    recent_failures = store.count_recent_login_failures(
+        username_clean,
+        LOGIN_LOCKOUT_MINUTES,
+        table="admin_audit_log",
+        fail_action="ADMIN_LOGIN_FAIL",
+        success_action="ADMIN_LOGIN",
+    )
+    if recent_failures >= LOGIN_MAX_FAILURES:
+        # Locked: rejected even with the correct passphrase, same generic response.
+        return _deny("ADMIN_LOGIN_LOCKED", "Too many recent failed attempts")
 
     cur = store.conn.cursor()
     cur.execute(

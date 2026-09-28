@@ -232,12 +232,31 @@ async def handle_login(
     next: Annotated[str, Form()] = "/portfolio",
 ) -> Response:
     import urllib.parse
-    from satsa.auth.identities import verify_passphrase
+
+    from satsa.auth.identities import LOGIN_LOCKOUT_MINUTES, LOGIN_MAX_FAILURES, verify_passphrase
 
     uname = username.strip()
     safe_next = next if (next.startswith("/") and not next.startswith("//")) else "/portfolio"
+    # One generic message for unknown user, wrong passphrase AND lockout, so the
+    # response never reveals whether a username exists or is locked.
+    generic_error = RedirectResponse(
+        url=f"/login?error={urllib.parse.quote_plus('Invalid username or passphrase.')}&next={safe_next}",
+        status_code=303,
+    )
 
     _, sqlite_store = get_stores()
+    actor = uname or "unknown"
+    if sqlite_store.count_recent_login_failures(actor, LOGIN_LOCKOUT_MINUTES) >= LOGIN_MAX_FAILURES:
+        # Rejected even if the passphrase is correct; not counted as a new failure,
+        # so the lock expires LOGIN_LOCKOUT_MINUTES after the last real failure.
+        sqlite_store.append_audit(
+            action="login_locked",
+            actor=actor,
+            details={"max_failures": LOGIN_MAX_FAILURES, "window_minutes": LOGIN_LOCKOUT_MINUTES},
+        )
+        sqlite_store.close()
+        return generic_error
+
     identity_row = sqlite_store.get_identity(uname)
     ok = bool(identity_row) and verify_passphrase(
         password, identity_row["pass_salt"], identity_row["pass_hash"]
@@ -245,13 +264,10 @@ async def handle_login(
 
     if not ok:
         sqlite_store.append_audit(
-            action="login_failed", actor=uname or "unknown", details={"reason": "bad_credentials"}
+            action="login_failed", actor=actor, details={"reason": "bad_credentials"}
         )
         sqlite_store.close()
-        err_msg = urllib.parse.quote_plus("Invalid username or passphrase.")
-        return RedirectResponse(
-            url=f"/login?error={err_msg}&next={safe_next}", status_code=303
-        )
+        return generic_error
 
     if identity_row.get("is_blocked") or identity_row.get("status") == "BLOCKED":
         sqlite_store.append_audit(

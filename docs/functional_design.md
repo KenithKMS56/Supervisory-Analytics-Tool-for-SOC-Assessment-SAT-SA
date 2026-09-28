@@ -51,8 +51,11 @@ Remaining gaps, stated plainly:
   `audit_log`, as before).
 - No password-complexity policy or expiry on the local identities beyond what an operator enforces
   via `satsa users set-password`.
-- No lockout/rate-limiting on failed `/login` attempts (failed attempts are recorded as
-  `login_failed` audit entries, but not throttled).
+- Login lockout is per username: 5 failed attempts within 15 minutes (since the last successful
+  login) lock that username on both `/login` and the Admin Portal, even for the correct passphrase,
+  with the same generic error as an unknown user (`login_locked` / `ADMIN_LOGIN_LOCKED` audit
+  entries). There is no per-source-IP rate limiting, so a caller can still lock out a known
+  username (accepted trade-off for an air-gapped, small-user-base deployment).
 
 Every gated action's `audit_log.actor` field is populated from the authenticated session identity
 (`Identity.username`), never from a caller-supplied form field -- see `src/satsa/api/routes.py`
