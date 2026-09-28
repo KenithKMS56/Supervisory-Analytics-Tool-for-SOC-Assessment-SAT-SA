@@ -145,10 +145,19 @@ def test_audit_log_records_real_actor_not_caller_supplied_string():
 
 
 def test_login_failure_is_audited_and_rejected():
+    # Throwaway identity: failed attempts count toward lockout, so never fail
+    # logins against the shared seeded accounts other tests rely on.
+    import uuid
+
+    username = f"audit-fail-{uuid.uuid4().hex[:8]}"
+    store = SQLiteStore("data/satsa.db")
+    store.upsert_identity(username, "examiner", "Throwaway-Passphrase#2026")
+    store.close()
+
     anon = TestClient(app)
     resp = anon.post(
         "/login",
-        data={"username": "admin", "password": "definitely-wrong-password"},
+        data={"username": username, "password": "definitely-wrong-password"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
@@ -160,7 +169,7 @@ def test_login_failure_is_audited_and_rejected():
     row = cur.fetchone()
     store.close()
     assert row is not None
-    assert row["actor"] == "admin"
+    assert row["actor"] == username
 
 
 def test_logout_clears_session():

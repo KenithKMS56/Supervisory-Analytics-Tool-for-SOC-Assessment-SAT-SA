@@ -1,5 +1,6 @@
 """SQLite store for operational state, findings, audit trail, and examiner feedback."""
 
+import datetime as _dt
 import hashlib
 import json
 import sqlite3
@@ -17,6 +18,25 @@ from satsa.models.outputs import (
     ReviewQueueItem,
     Run,
 )
+
+
+def utc_now_iso() -> str:
+    """Current UTC time as ISO-8601 with FIXED microsecond precision.
+
+    datetime.isoformat() omits the fractional part when microsecond == 0, so
+    two timestamps from the same second could differ in length
+    ("...:05+00:00" vs "...:05.000123+00:00") and compare wrongly as strings.
+    Every timestamp this store writes or compares uses this fixed format.
+    """
+    return _dt.datetime.now(_dt.UTC).isoformat(timespec="microseconds")
+
+
+def parse_utc(ts: str) -> _dt.datetime:
+    """Parse a stored ISO timestamp (any precision; naive treated as UTC) to aware UTC."""
+    parsed = _dt.datetime.fromisoformat(ts)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_dt.UTC)
+    return parsed.astimezone(_dt.UTC)
 
 
 class SQLiteStore:
@@ -54,6 +74,20 @@ class SQLiteStore:
         if needs_init:
             self._init_tables()
             self.seed_default_identities()
+        self._ensure_migrations()
+
+    def _ensure_migrations(self) -> None:
+        """Idempotent schema upgrades applied on every open (cheap: IF NOT EXISTS / column checks)."""
+        tables = {
+            r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        with self.conn:
+            # Login-lockout lookups filter audit rows by (actor, action).
+            for table in ("audit_log", "admin_audit_log"):
+                if table in tables:
+                    self.conn.execute(
+                        f"CREATE INDEX IF NOT EXISTS idx_{table}_actor_action ON {table} (actor, action)"
+                    )
 
     def _init_tables(self) -> None:
         """Create tables if not existing."""
@@ -315,7 +349,7 @@ class SQLiteStore:
         details_json = json.dumps(details, sort_keys=True)
         import datetime
 
-        ts_now = datetime.datetime.now(datetime.UTC).isoformat()
+        ts_now = utc_now_iso()
 
         # Compute current hash over all elements including prev_hash
         payload = f"{log_id}:{ts_now}:{action}:{actor}:{details_json}:{prev_hash}".encode()
@@ -366,6 +400,45 @@ class SQLiteStore:
             expected_prev = row["curr_hash"]
 
         return True, f"Audit chain verified successfully ({len(rows)} entries intact)."
+
+    # --- Login lockout (backed by the existing hash-chained audit logs) ---
+
+    _LOGIN_AUDIT_TABLES = frozenset({"audit_log", "admin_audit_log"})
+
+    def count_recent_login_failures(
+        self,
+        username: str,
+        window_minutes: int,
+        *,
+        table: str = "audit_log",
+        fail_action: str = "login_failed",
+        success_action: str = "login",
+        now: _dt.datetime | None = None,
+    ) -> int:
+        """Count `fail_action` rows for `username` within the last `window_minutes`.
+
+        Only failures after the most recent `success_action` count: a successful
+        login resets the counter. Timestamps are parsed and compared as aware
+        UTC datetimes rather than as strings, so rows written with and without
+        fractional seconds (see utc_now_iso) compare correctly.
+        """
+        if table not in self._LOGIN_AUDIT_TABLES:
+            raise ValueError(f"Unsupported audit table: {table}")
+        cutoff = (now or _dt.datetime.now(_dt.UTC)) - _dt.timedelta(minutes=window_minutes)
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT action, ts FROM {table} WHERE actor = ? AND action IN (?, ?) "  # noqa: S608 (table is allow-listed)
+            "ORDER BY rowid DESC LIMIT 200",
+            (username, fail_action, success_action),
+        )
+        failures = 0
+        for row in cur.fetchall():
+            if row["action"] == success_action:
+                break
+            if parse_utc(row["ts"]) < cutoff:
+                break
+            failures += 1
+        return failures
 
     # --- Auth: Identities & Sessions (local, offline RBAC) ---
 
@@ -438,7 +511,7 @@ class SQLiteStore:
                 INSERT INTO sessions (session_hash, username, role, created_at, expires_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (session_hash, username, role, now.isoformat(), expires_at.isoformat()),
+                (session_hash, username, role, now.isoformat(timespec="microseconds"), expires_at.isoformat(timespec="microseconds")),
             )
         return raw_token
 
@@ -694,7 +767,7 @@ class SQLiteStore:
         """Save a blinded examiner assessment record and log to audit trail."""
         from datetime import UTC, datetime
 
-        now = datetime.now(UTC).isoformat()
+        now = utc_now_iso()
         with self.conn:
             self.conn.execute(
                 """
@@ -1048,7 +1121,7 @@ class SQLiteStore:
     def list_admin_users(self) -> list[dict[str, Any]]:
         import datetime
 
-        now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+        now_iso = utc_now_iso()
         cur = self.conn.cursor()
         cur.execute(
             """
@@ -1075,7 +1148,7 @@ class SQLiteStore:
     def update_user_last_login(self, username: str) -> None:
         import datetime
 
-        now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+        now_iso = utc_now_iso()
         with self.conn:
             self.conn.execute("UPDATE identities SET last_login = ? WHERE username = ?", (now_iso, username))
 
@@ -1093,7 +1166,7 @@ class SQLiteStore:
                 INSERT INTO admin_sessions (session_hash, username, role, created_at, expires_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (session_hash, username, role, now.isoformat(), expires_at.isoformat()),
+                (session_hash, username, role, now.isoformat(timespec="microseconds"), expires_at.isoformat(timespec="microseconds")),
             )
         return raw_token
 
@@ -1145,7 +1218,7 @@ class SQLiteStore:
         details_json = json.dumps(details_clean, sort_keys=True)
         import datetime
 
-        ts_now = datetime.datetime.now(datetime.UTC).isoformat()
+        ts_now = utc_now_iso()
         payload = f"{log_id}:{ts_now}:{action}:{actor}:{target or ''}:{details_json}:{prev_hash}".encode()
         curr_hash = hashlib.sha256(payload).hexdigest()
 
@@ -1221,7 +1294,7 @@ class SQLiteStore:
     def get_admin_overview_stats(self) -> dict[str, Any]:
         import datetime
 
-        now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+        now_iso = utc_now_iso()
         cur = self.conn.cursor()
 
         cur.execute("SELECT COUNT(*) FROM organisations")
@@ -1309,7 +1382,7 @@ class SQLiteStore:
     ) -> int:
         """Record a live operational event for real-time telemetry between SAT-SA and NCIIPC Admin."""
         import datetime
-        now = datetime.datetime.now(datetime.UTC).isoformat()
+        now = utc_now_iso()
         details_json = json.dumps(details or {})
         with self.conn:
             cur = self.conn.execute(
@@ -1360,7 +1433,7 @@ class SQLiteStore:
     def get_online_operators(self) -> list[dict[str, Any]]:
         """Get distinct users with active non-expired sessions, including their assigned CSE/Org."""
         import datetime
-        now = datetime.datetime.now(datetime.UTC).isoformat()
+        now = utc_now_iso()
         cur = self.conn.cursor()
         cur.execute(
             """

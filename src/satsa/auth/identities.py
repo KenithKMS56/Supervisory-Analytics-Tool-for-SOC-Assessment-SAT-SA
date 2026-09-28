@@ -15,6 +15,12 @@ ROLES: tuple[str, ...] = ("admin", "supervisor", "examiner")
 PBKDF2_ITERATIONS = 200_000
 PBKDF2_ALGO = "sha256"
 
+# Login lockout: after LOGIN_MAX_FAILURES failed attempts for a username within
+# LOGIN_LOCKOUT_MINUTES (and since its last successful login), further attempts
+# are rejected -- even with the correct passphrase -- until the window passes.
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_MINUTES = 15
+
 # Demo/default identities seeded into a fresh database so the offline demo
 # is usable out of the box. These are intentionally documented (see
 # docs/functional_design.md, Section 2) as CHANGE-ME credentials: a real
