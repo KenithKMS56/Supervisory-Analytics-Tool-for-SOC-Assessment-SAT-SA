@@ -202,13 +202,18 @@ def test_user_blocking_and_immediate_session_revocation(authenticated_admin_clie
     # 5. Check that active session is immediately revoked
     assert temp_db.get_session(token) is None
 
-    # 6. Attempt login at admin portal with blocked credentials -> denied
+    # 6. Attempt login at admin portal with blocked credentials -> denied with the
+    # SAME generic 401 as an unknown user (no blocked-account enumeration); the
+    # distinct reason is still recorded in the admin audit chain.
     admin_login_resp = authenticated_admin_client.post(
         "/login",
         data={"username": "user_to_block", "password": "UserPass#2026"},
     )
-    assert admin_login_resp.status_code == 403
-    assert "Account is blocked" in admin_login_resp.text
+    assert admin_login_resp.status_code == 401
+    assert "Invalid administrative credentials" in admin_login_resp.text
+    assert "blocked" not in admin_login_resp.text.lower()
+    blocked_audit = temp_db.list_admin_audit_logs(action="ADMIN_LOGIN_BLOCKED", actor="user_to_block")
+    assert blocked_audit
 
     # 7. Unblock user
     unblock_resp = authenticated_admin_client.post(

@@ -23,6 +23,7 @@ from satsa.auth.session import (
     SESSION_COOKIE_NAME,
     Identity,
     get_current_identity,
+    require_authenticated,
     require_cse_access,
     require_role,
 )
@@ -44,6 +45,10 @@ INGEST_RUN_ROLES = ("admin", "supervisor")
 TUNING_ROLES = ("admin", "supervisor")
 RULEPACK_ROLES = ("admin", "supervisor")
 REVIEW_ROLES = ("examiner", "supervisor", "admin")
+# Portfolio-wide data (bulk JSON APIs, portfolio/CSV exports) spans every
+# entity, so it is limited to NCIIPC supervisory roles; CSE-scoped identities
+# (SOC Analyst, CSE Viewer, ...) are denied rather than shown other CSEs' data.
+SUPERVISORY_READ_ROLES = ("examiner", "supervisor", "admin")
 
 app = FastAPI(
     title="SAT-SA Supervisory API",
@@ -65,39 +70,42 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["get_identity"] = get_current_identity
 
 
+# Paths anyone may reach without a session. Everything else requires one; the
+# route's own dependency then enforces the specific role (see the RBAC table
+# in tests/test_rbac_matrix.py, which must list every route).
+PUBLIC_PATHS = {"/", "/login", "/logout", "/splash", "/api/session/status", "/openapi.json"}
+PUBLIC_PREFIXES = ("/static/", "/docs")
+# Non-page GET endpoints (JSON APIs and file downloads): an anonymous request
+# gets 401 rather than a login redirect.
+NON_PAGE_PREFIXES = ("/api/", "/reports/", "/templates/", "/tuning/export-pack")
+
+
+def _is_public_path(path: str) -> bool:
+    return path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
+
+
 @app.middleware("http")
 async def enforce_auth_middleware(request: Request, call_next):
+    """Reject anonymous requests to every non-public path.
+
+    Anonymous browser page loads (GET on an HTML view) are redirected to
+    /login; anonymous API calls, downloads and all mutating requests get 401.
+    Authenticated requests pass through to the route, whose dependency
+    (require_authenticated / require_role) enforces the allowed roles.
+    """
     path = request.url.path
-
-    # Unconditional public endpoints
-    if (
-        path.startswith("/static")
-        or path in ("/login", "/logout", "/splash")
-        or path.startswith("/docs")
-        or path.startswith("/openapi.json")
-        or path.startswith("/redoc")
-    ):
+    if _is_public_path(path):
         return await call_next(request)
 
-    # Root endpoint "/" handles its own branch (splash if unauth, portfolio if auth)
-    if path == "/":
-        return await call_next(request)
+    if get_current_identity(request) is None:
+        if request.method == "GET" and not path.startswith(NON_PAGE_PREFIXES):
+            import urllib.parse
 
-    # REST APIs: let them pass through to their handlers (or require_role dependencies)
-    if path.startswith("/api/"):
-        return await call_next(request)
-
-    # Endpoints with specific require_role tests that expect HTTP 401
-    if path in ("/tuning/save", "/tuning/export-pack"):
-        return await call_next(request)
-
-    # For all UI views (/portfolio, /alerts, /queue, /upload, /entity, /blind-review, etc.)
-    identity = get_current_identity(request)
-    if not identity:
-        import urllib.parse
-
-        encoded_next = urllib.parse.quote_plus(str(request.url.path))
-        return RedirectResponse(url=f"/login?next={encoded_next}", status_code=303)
+            encoded_next = urllib.parse.quote_plus(path)
+            return RedirectResponse(url=f"/login?next={encoded_next}", status_code=303)
+        return JSONResponse(
+            {"detail": "Authentication required. Please log in at /login."}, status_code=401
+        )
 
     return await call_next(request)
 
@@ -351,7 +359,7 @@ async def view_splash(request: Request) -> Response:
 
 
 @app.get("/", response_class=HTMLResponse)
-@app.get("/portfolio", response_class=HTMLResponse)
+@app.get("/portfolio", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_portfolio(request: Request) -> Response:
     identity = get_current_identity(request)
     if identity is None:
@@ -546,7 +554,7 @@ async def view_portfolio(request: Request) -> Response:
     )
 
 
-@app.get("/entity/{entity_id}", response_class=HTMLResponse)
+@app.get("/entity/{entity_id}", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_entity_profile(request: Request, entity_id: str) -> Response:
     require_valid_entity_id(entity_id)
     identity = get_current_identity(request)
@@ -651,7 +659,7 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
     )
 
 
-@app.get("/finding/{finding_id}", response_class=HTMLResponse)
+@app.get("/finding/{finding_id}", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_finding_detail(request: Request, finding_id: str) -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -660,6 +668,13 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
     if not f_row:
         sqlite_store.close()
         raise HTTPException(status_code=404, detail="Finding not found")
+    viewer = get_current_identity(request)
+    if viewer:
+        try:
+            require_cse_access(f_row["entity_id"], viewer)
+        except HTTPException:
+            sqlite_store.close()
+            raise
 
     cur.execute(
         "SELECT record_type, record_id, details_json FROM finding_evidences WHERE finding_id = ?",
@@ -713,7 +728,7 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
     )
 
 
-@app.get("/queue", response_class=HTMLResponse)
+@app.get("/queue", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_review_queue(request: Request) -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -733,7 +748,7 @@ async def view_review_queue(request: Request) -> Response:
     )
 
 
-@app.get("/dq", response_class=HTMLResponse)
+@app.get("/dq", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_dq_coverage(request: Request) -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -769,8 +784,8 @@ async def view_dq_coverage(request: Request) -> Response:
     )
 
 
-@app.get("/audit", response_class=HTMLResponse)
-@app.get("/runs", response_class=HTMLResponse)
+@app.get("/audit", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
+@app.get("/runs", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_runs_audit(request: Request) -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -802,7 +817,7 @@ async def view_runs_audit(request: Request) -> Response:
 # --- REST API Endpoints ---
 
 
-@app.get("/api/v1/runs")
+@app.get("/api/v1/runs", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_list_runs() -> list[dict[str, Any]]:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -812,7 +827,7 @@ async def api_list_runs() -> list[dict[str, Any]]:
     return rows
 
 
-@app.get("/api/v1/entities")
+@app.get("/api/v1/entities", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_list_entities() -> list[dict[str, Any]]:
     duckdb_store, sqlite_store = get_stores()
     df_ent = duckdb_store.query("SELECT entity_id, name, sector, size_band FROM entity")
@@ -843,7 +858,7 @@ async def api_list_entities() -> list[dict[str, Any]]:
     return rows
 
 
-@app.get("/api/v1/findings")
+@app.get("/api/v1/findings", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_list_findings(entity_id: str | None = None) -> list[dict[str, Any]]:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -856,7 +871,7 @@ async def api_list_findings(entity_id: str | None = None) -> list[dict[str, Any]
     return rows
 
 
-@app.get("/api/v1/queue")
+@app.get("/api/v1/queue", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_get_queue(entity_id: str | None = None) -> list[dict[str, Any]]:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -897,7 +912,7 @@ async def api_submit_feedback(
     return RedirectResponse(url="/queue", status_code=303)
 
 
-@app.get("/api/v1/audit/verify")
+@app.get("/api/v1/audit/verify", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_verify_audit() -> dict[str, Any]:
     _, sqlite_store = get_stores()
     ok, msg = sqlite_store.verify_audit_chain()
@@ -905,7 +920,7 @@ async def api_verify_audit() -> dict[str, Any]:
     return {"verified": ok, "message": msg}
 
 
-@app.get("/api/v1/export/queue.csv")
+@app.get("/api/v1/export/queue.csv", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_export_queue_csv() -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -930,7 +945,7 @@ async def api_export_queue_csv() -> Response:
 # --- Production Features: Alert Explorer, Ingest Wizard, Blind Review, Tuning & Direct Reports ---
 
 
-@app.get("/alerts", response_class=HTMLResponse)
+@app.get("/alerts", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_alerts(
     request: Request,
     q: str = "",
@@ -1033,7 +1048,7 @@ async def view_alerts(
     )
 
 
-@app.get("/upload", response_class=HTMLResponse)
+@app.get("/upload", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_upload(request: Request, message: str = "") -> Response:
     duckdb_store, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -1224,7 +1239,7 @@ async def handle_delete_entity(
     )
 
 
-@app.get("/templates/{template_name}")
+@app.get("/templates/{template_name}", dependencies=[Depends(require_authenticated)])
 def download_template(template_name: str) -> Response:
     """Generate and serve canonical CSV schema templates or sample zip bundle."""
     templates_dir = Path("data/templates")
@@ -1416,7 +1431,7 @@ def handle_trigger_demo(
     return RedirectResponse(url="/", status_code=303)
 
 
-@app.get("/blind-review", response_class=HTMLResponse)
+@app.get("/blind-review", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_blind_review(request: Request, entity_id: str = "CSE-02") -> Response:
     require_valid_entity_id(entity_id)
     duckdb_store, sqlite_store = get_stores()
@@ -1587,7 +1602,7 @@ async def handle_blind_review_submit(
     return RedirectResponse(url=f"/blind-review?entity_id={entity_id}", status_code=303)
 
 
-@app.get("/rules", response_class=HTMLResponse)
+@app.get("/rules", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_rules_catalog(
     request: Request, category: str = "", domain: str = "", q: str = ""
 ) -> Response:
@@ -1658,7 +1673,7 @@ async def view_rules_catalog(
     )
 
 
-@app.get("/tuning", response_class=HTMLResponse)
+@app.get("/tuning", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_tuning(request: Request, message: str = "") -> Response:
     config_path = Path("config/rules.yaml")
     rules_cfg = (
@@ -1779,7 +1794,7 @@ def handle_import_pack(
 # --- Direct Report Downloads ---
 
 
-@app.get("/reports/entity/{entity_id}/pdf")
+@app.get("/reports/entity/{entity_id}/pdf", dependencies=[Depends(require_authenticated)])
 async def download_entity_pdf(request: Request, entity_id: str) -> FileResponse:
     require_valid_entity_id(entity_id)
     identity = get_current_identity(request)
@@ -1799,7 +1814,7 @@ async def download_entity_pdf(request: Request, entity_id: str) -> FileResponse:
     )
 
 
-@app.get("/reports/entity/{entity_id}/html")
+@app.get("/reports/entity/{entity_id}/html", dependencies=[Depends(require_authenticated)])
 async def download_entity_html(request: Request, entity_id: str) -> FileResponse:
     require_valid_entity_id(entity_id)
     identity = get_current_identity(request)
@@ -1823,7 +1838,7 @@ async def download_entity_html(request: Request, entity_id: str) -> FileResponse
     )
 
 
-@app.get("/reports/portfolio/html")
+@app.get("/reports/portfolio/html", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def download_portfolio_html(request: Request) -> FileResponse:
     duckdb_store, sqlite_store = get_stores()
     rep = ReportGenerator(duckdb_store, sqlite_store)
@@ -1844,7 +1859,7 @@ async def download_portfolio_html(request: Request) -> FileResponse:
     )
 
 
-@app.get("/reports/export/findings-csv")
+@app.get("/reports/export/findings-csv", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def download_findings_csv(request: Request) -> FileResponse:
     duckdb_store, sqlite_store = get_stores()
     rep = ReportGenerator(duckdb_store, sqlite_store)
@@ -1865,7 +1880,7 @@ async def download_findings_csv(request: Request) -> FileResponse:
     )
 
 
-@app.get("/reports/export/queue-csv")
+@app.get("/reports/export/queue-csv", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def download_queue_csv() -> FileResponse:
     duckdb_store, sqlite_store = get_stores()
     rep = ReportGenerator(duckdb_store, sqlite_store)
