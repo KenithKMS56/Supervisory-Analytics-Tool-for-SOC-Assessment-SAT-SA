@@ -133,7 +133,7 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
 
 ### 6. Runs & Audit Trail (`/runs`)
 - History of all assessment runs with execution timestamps, config hashes, input data manifests, and row counts.
-- Real-time cryptographic status check of the SHA-256 `prev_hash` chain verifying zero unauthorized database tampering.
+- On-demand verification of the `prev_hash` hash chain (each entry checked with its recorded algorithm), reporting the first entry whose contents or links no longer match. This does not by itself detect removal of the newest entries -- compare against an off-box `satsa audit head` checkpoint for that (DECISIONS.md ADR-005).
 
 ---
 

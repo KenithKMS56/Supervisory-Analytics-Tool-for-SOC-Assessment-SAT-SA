@@ -4,6 +4,7 @@ import datetime as _dt
 import hashlib
 import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,52 @@ def parse_utc(ts: str) -> _dt.datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=_dt.UTC)
     return parsed.astimezone(_dt.UTC)
+
+
+# --- Audit hash chain -----------------------------------------------------------
+#
+# Each audit row stores prev_hash (the previous row's curr_hash) and curr_hash,
+# a hash over the row's own fields plus prev_hash. Rows record which algorithm
+# produced their hash (hash_alg):
+#   * "sha256"   -- legacy rows: sha256(payload)
+#   * "sha3_256" -- current rows: sha3_256("sha3_256:" + payload)
+# The algorithm tag is part of the hashed input for SHA3 rows, so relabeling a
+# row's hash_alg column is detected rather than silently switching algorithms.
+# Verification recomputes every row with ITS OWN recorded algorithm, so a chain
+# mixing legacy and current rows verifies end to end.
+#
+# What the chain does NOT detect (see DECISIONS.md ADR-005): someone with write
+# access recomputing the whole chain from scratch, and deletion of the newest
+# rows (tail truncation) -- use `satsa audit head` to record an external
+# checkpoint and `satsa audit verify --checkpoint-*` to compare against it.
+
+HASH_ALG_LEGACY = "sha256"
+HASH_ALG_CURRENT = "sha3_256"
+
+
+def compute_chain_hash(alg: str, payload: str) -> str:
+    """Hash an audit-row payload with the named algorithm."""
+    if alg == HASH_ALG_LEGACY:
+        return hashlib.sha256(payload.encode()).hexdigest()
+    if alg == HASH_ALG_CURRENT:
+        return hashlib.sha3_256(f"{HASH_ALG_CURRENT}:{payload}".encode()).hexdigest()
+    raise ValueError(f"Unknown audit hash algorithm: {alg!r}")
+
+
+@dataclass(frozen=True)
+class ChainVerification:
+    ok: bool
+    message: str
+    entries: int
+    bad_row: int | None = None  # 1-based position (rowid order) of the first bad row
+    bad_log_id: str | None = None
+
+
+@dataclass(frozen=True)
+class AuditHead:
+    count: int
+    head_hash: str
+    hash_alg: str | None
 
 
 class SQLiteStore:
@@ -82,12 +129,19 @@ class SQLiteStore:
             r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
         }
         with self.conn:
-            # Login-lockout lookups filter audit rows by (actor, action).
             for table in ("audit_log", "admin_audit_log"):
-                if table in tables:
+                if table not in tables:
+                    continue
+                cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+                if "hash_alg" not in cols:
+                    # Every pre-existing row was hashed with plain SHA-256.
                     self.conn.execute(
-                        f"CREATE INDEX IF NOT EXISTS idx_{table}_actor_action ON {table} (actor, action)"
+                        f"ALTER TABLE {table} ADD COLUMN hash_alg TEXT NOT NULL DEFAULT 'sha256'"
                     )
+                # Login-lockout lookups filter audit rows by (actor, action).
+                self.conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_{table}_actor_action ON {table} (actor, action)"
+                )
 
     def _init_tables(self) -> None:
         """Create tables if not existing."""
@@ -216,7 +270,8 @@ class SQLiteStore:
                     actor TEXT NOT NULL,
                     details_json TEXT NOT NULL,
                     prev_hash TEXT NOT NULL,
-                    curr_hash TEXT NOT NULL
+                    curr_hash TEXT NOT NULL,
+                    hash_alg TEXT NOT NULL DEFAULT 'sha256'
                 );
 
                 CREATE TABLE IF NOT EXISTS identities (
@@ -293,7 +348,8 @@ class SQLiteStore:
                     target TEXT,
                     details_json TEXT NOT NULL,
                     prev_hash TEXT NOT NULL,
-                    curr_hash TEXT NOT NULL
+                    curr_hash TEXT NOT NULL,
+                    hash_alg TEXT NOT NULL DEFAULT 'sha256'
                 );
 
                 CREATE TABLE IF NOT EXISTS admin_sessions (
@@ -339,29 +395,26 @@ class SQLiteStore:
     # --- Audit Log with Cryptographic Hash Chaining ---
 
     def append_audit(self, action: str, actor: str, details: dict[str, Any]) -> AuditLogEntry:
-        """Append an entry to the audit log with SHA-256 prev_hash chaining."""
+        """Append an entry to the audit log, hash-chained to the previous entry (SHA3-256)."""
         cursor = self.conn.cursor()
         cursor.execute("SELECT curr_hash FROM audit_log ORDER BY rowid DESC LIMIT 1")
         row = cursor.fetchone()
         prev_hash = row["curr_hash"] if row else self.GENESIS_HASH
 
-        log_id = hashlib.sha256(f"{action}_{actor}_{prev_hash}".encode()).hexdigest()[:16]
-        details_json = json.dumps(details, sort_keys=True)
-        import datetime
-
         ts_now = utc_now_iso()
+        log_id = hashlib.sha256(f"{action}_{actor}_{prev_hash}_{ts_now}".encode()).hexdigest()[:16]
+        details_json = json.dumps(details, sort_keys=True)
 
-        # Compute current hash over all elements including prev_hash
-        payload = f"{log_id}:{ts_now}:{action}:{actor}:{details_json}:{prev_hash}".encode()
-        curr_hash = hashlib.sha256(payload).hexdigest()
+        payload = f"{log_id}:{ts_now}:{action}:{actor}:{details_json}:{prev_hash}"
+        curr_hash = compute_chain_hash(HASH_ALG_CURRENT, payload)
 
         with self.conn:
             self.conn.execute(
                 """
-                INSERT INTO audit_log (log_id, ts, action, actor, details_json, prev_hash, curr_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO audit_log (log_id, ts, action, actor, details_json, prev_hash, curr_hash, hash_alg)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (log_id, ts_now, action, actor, details_json, prev_hash, curr_hash),
+                (log_id, ts_now, action, actor, details_json, prev_hash, curr_hash, HASH_ALG_CURRENT),
             )
 
         return AuditLogEntry(
@@ -373,33 +426,115 @@ class SQLiteStore:
             curr_hash=curr_hash,
         )
 
-    def verify_audit_chain(self) -> tuple[bool, str]:
-        """Verify the integrity of the audit log hash chain."""
+    def verify_chain(self, table: str) -> ChainVerification:
+        """Walk a hash chain in rowid order, recomputing each row with its own hash_alg.
+
+        Detects edits to any hashed field, relabeled hash_alg, swapped/edited
+        hashes, deleted or inserted middle rows, and reordered rows. It does NOT
+        detect removal of the newest rows (the shortened chain is still
+        internally consistent) or a full recomputation of the chain by someone
+        with write access -- see audit_head() / verify_checkpoint().
+        """
+        if table not in ("audit_log", "admin_audit_log"):
+            raise ValueError(f"Unsupported audit table: {table}")
+        with_target = table == "admin_audit_log"
+        target_col = "target, " if with_target else ""
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT log_id, ts, action, actor, details_json, prev_hash, curr_hash FROM audit_log ORDER BY rowid ASC"
+            f"SELECT log_id, ts, action, actor, {target_col}details_json, prev_hash, curr_hash, hash_alg "
+            f"FROM {table} ORDER BY rowid ASC"
         )
         rows = cursor.fetchall()
-        if not rows:
-            return True, "Audit log is empty."
-
         expected_prev = self.GENESIS_HASH
-        for idx, row in enumerate(rows):
+        for idx, row in enumerate(rows, start=1):
             if row["prev_hash"] != expected_prev:
-                return False, f"Broken prev_hash chain at entry {row['log_id']} (row {idx + 1})."
-
-            # Recompute curr_hash
-            payload = f"{row['log_id']}:{row['ts']}:{row['action']}:{row['actor']}:{row['details_json']}:{row['prev_hash']}".encode()
-            recomputed_hash = hashlib.sha256(payload).hexdigest()
-            if recomputed_hash != row["curr_hash"]:
-                return (
+                return ChainVerification(
                     False,
-                    f"Tampered record at entry {row['log_id']} (row {idx + 1}). Hash mismatch.",
+                    f"Broken prev_hash chain at entry {row['log_id']} (row {idx}).",
+                    len(rows), idx, row["log_id"],
                 )
-
+            fields = [row["log_id"], row["ts"], row["action"], row["actor"]]
+            if with_target:
+                fields.append(row["target"] or "")
+            payload = ":".join([*fields, row["details_json"], row["prev_hash"]])
+            try:
+                recomputed = compute_chain_hash(row["hash_alg"], payload)
+            except ValueError:
+                return ChainVerification(
+                    False,
+                    f"Unknown hash algorithm {row['hash_alg']!r} at entry {row['log_id']} (row {idx}).",
+                    len(rows), idx, row["log_id"],
+                )
+            if recomputed != row["curr_hash"]:
+                return ChainVerification(
+                    False,
+                    f"Tampered record at entry {row['log_id']} (row {idx}). Hash mismatch.",
+                    len(rows), idx, row["log_id"],
+                )
             expected_prev = row["curr_hash"]
+        if not rows:
+            return ChainVerification(True, "Audit log is empty.", 0)
+        return ChainVerification(
+            True, f"Audit chain verified successfully ({len(rows)} entries intact).", len(rows)
+        )
 
-        return True, f"Audit chain verified successfully ({len(rows)} entries intact)."
+    def verify_audit_chain_detailed(self) -> ChainVerification:
+        return self.verify_chain("audit_log")
+
+    def verify_audit_chain(self) -> tuple[bool, str]:
+        """Verify the integrity of the audit log hash chain (see verify_chain for limits)."""
+        result = self.verify_chain("audit_log")
+        return result.ok, result.message
+
+    def audit_head(self, table: str = "audit_log") -> AuditHead:
+        """Row count and newest curr_hash, to be recorded OFF-BOX as a checkpoint.
+
+        A hash chain alone cannot reveal deletion of its newest rows; comparing
+        a later chain against an externally recorded head (verify_checkpoint)
+        can.
+        """
+        if table not in ("audit_log", "admin_audit_log"):
+            raise ValueError(f"Unsupported audit table: {table}")
+        count = self.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        row = self.conn.execute(
+            f"SELECT curr_hash, hash_alg FROM {table} ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return AuditHead(0, self.GENESIS_HASH, None)
+        return AuditHead(count, row["curr_hash"], row["hash_alg"])
+
+    def verify_checkpoint(
+        self, count: int, head_hash: str, table: str = "audit_log"
+    ) -> tuple[bool, str]:
+        """Check the chain still contains a previously recorded head.
+
+        Passes if the chain verifies AND its row #count (rowid order) still has
+        curr_hash == head_hash. Rows appended after the checkpoint are fine;
+        fewer rows than recorded (tail truncation) or a different hash at that
+        position (rewrite) fail.
+        """
+        chain = self.verify_chain(table)
+        if not chain.ok:
+            return False, chain.message
+        if count == 0:
+            return True, "Checkpoint was an empty chain."
+        if chain.entries < count:
+            return False, (
+                f"Audit log truncated: {chain.entries} entries present but the recorded checkpoint "
+                f"had {count}."
+            )
+        row = self.conn.execute(
+            f"SELECT curr_hash FROM {table} ORDER BY rowid ASC LIMIT 1 OFFSET ?", (count - 1,)
+        ).fetchone()
+        if row["curr_hash"] != head_hash:
+            return False, (
+                f"Checkpoint mismatch at entry {count}: recorded head {head_hash[:16]}..., "
+                f"found {row['curr_hash'][:16]}... (history rewritten)."
+            )
+        return True, (
+            f"Checkpoint verified: entry {count} matches the recorded head "
+            f"({chain.entries - count} entries appended since)."
+        )
 
     # --- Login lockout (backed by the existing hash-chained audit logs) ---
 
@@ -1211,24 +1346,22 @@ class SQLiteStore:
         row = cursor.fetchone()
         prev_hash = row["curr_hash"] if row else self.GENESIS_HASH
 
-        log_id = hashlib.sha256(f"admin_{action}_{actor}_{prev_hash}".encode()).hexdigest()[:16]
+        ts_now = utc_now_iso()
+        log_id = hashlib.sha256(f"admin_{action}_{actor}_{prev_hash}_{ts_now}".encode()).hexdigest()[:16]
         details_clean = details or {}
         # Security: Remove any potential password field
         details_clean = {k: v for k, v in details_clean.items() if "pass" not in k.lower()}
         details_json = json.dumps(details_clean, sort_keys=True)
-        import datetime
-
-        ts_now = utc_now_iso()
-        payload = f"{log_id}:{ts_now}:{action}:{actor}:{target or ''}:{details_json}:{prev_hash}".encode()
-        curr_hash = hashlib.sha256(payload).hexdigest()
+        payload = f"{log_id}:{ts_now}:{action}:{actor}:{target or ''}:{details_json}:{prev_hash}"
+        curr_hash = compute_chain_hash(HASH_ALG_CURRENT, payload)
 
         with self.conn:
             self.conn.execute(
                 """
-                INSERT INTO admin_audit_log (log_id, ts, action, actor, target, details_json, prev_hash, curr_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO admin_audit_log (log_id, ts, action, actor, target, details_json, prev_hash, curr_hash, hash_alg)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (log_id, ts_now, action, actor, target, details_json, prev_hash, curr_hash),
+                (log_id, ts_now, action, actor, target, details_json, prev_hash, curr_hash, HASH_ALG_CURRENT),
             )
 
         return AuditLogEntry(
@@ -1271,25 +1404,12 @@ class SQLiteStore:
         return result
 
     def verify_admin_audit_chain(self) -> tuple[bool, str]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT log_id, ts, action, actor, target, details_json, prev_hash, curr_hash FROM admin_audit_log ORDER BY rowid ASC")
-        rows = cursor.fetchall()
-        if not rows:
+        result = self.verify_chain("admin_audit_log")
+        if result.ok and result.entries == 0:
             return True, "Admin audit log is empty."
-
-        expected_prev = self.GENESIS_HASH
-        for idx, row in enumerate(rows):
-            if row["prev_hash"] != expected_prev:
-                return False, f"Broken prev_hash chain at entry {row['log_id']} (row {idx + 1})."
-
-            target_val = row["target"] or ""
-            payload = f"{row['log_id']}:{row['ts']}:{row['action']}:{row['actor']}:{target_val}:{row['details_json']}:{row['prev_hash']}".encode()
-            recomputed = hashlib.sha256(payload).hexdigest()
-            if recomputed != row["curr_hash"]:
-                return False, f"Tampered record at entry {row['log_id']} (row {idx + 1}). Hash mismatch."
-            expected_prev = row["curr_hash"]
-
-        return True, f"Cryptographic audit chain verified ({len(rows)} entries intact)."
+        if result.ok:
+            return True, f"Cryptographic audit chain verified ({result.entries} entries intact)."
+        return False, result.message
 
     def get_admin_overview_stats(self) -> dict[str, Any]:
         import datetime

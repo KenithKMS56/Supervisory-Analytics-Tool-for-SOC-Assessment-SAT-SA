@@ -34,7 +34,7 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is en
 2. **100% Air-Gapped & Sovereign Data Security:**
    Binds strictly to local interfaces. Zero CDN dependencies, zero external script calls, and locally vendored Apache ECharts. Socket-level egress is blocked. Ingested analyst identities are irreversibly pseudonymised using HMAC-SHA256 (`.satsa_salt`), and IP addresses/PII are redacted using deterministic regex masks.
 3. **Cryptographic Tamper-Evidence:**
-   Every batch upload, schema validation, assessment run, rule configuration change, administrative provisioning action, and human examiner disposition is recorded into append-only SQLite logs cryptographically chained using SHA-256 `prev_hash` hashes. Any tampering invalidates the chain.
+   Every batch upload, schema validation, assessment run, rule configuration change, administrative provisioning action, and human examiner disposition is recorded into append-only SQLite logs hash-chained (SHA3-256 for new entries; legacy SHA-256 entries still verify). Editing, inserting, deleting or reordering an entry in the middle of the chain breaks verification; removal of the newest entries or a full recomputation of the chain is only caught by comparing against a checkpoint recorded off-box with `satsa audit head` (see DECISIONS.md ADR-005).
 4. **Extreme Columnar Analytics Performance:**
    Built on DuckDB and PyArrow columnar storage, achieving scan speeds exceeding **10.6 Million rows/second** on standard x86 CPU hardware—enabling multi-gigabyte periodic supervisory submissions to be evaluated in seconds with zero external database dependencies.
 5. **Cognitive Bias Mitigation (Blinded Review Studio):**
@@ -163,7 +163,7 @@ The **NCIIPC Administration Portal** (`http://localhost:8000`) is a dedicated su
 
 4. **Independent Administrative Audit Log (`/audit`)**:
    - Append-only log recording every administrative action (`USER_CREATED`, `ROLE_CHANGED`, `CSE_CHANGED`, `ACCOUNT_BLOCKED`, `PASSWORD_RESET`, `ORGANISATION_CREATED`, etc.).
-   - Cryptographically linked with SHA-256 `prev_hash` chaining; verifiable on-demand via the UI.
+   - Hash-chained (`prev_hash`; SHA3-256 for new entries) and verifiable on demand via the UI; `satsa audit head` records an off-box checkpoint that also catches removal of the newest entries.
 
 5. **Modern Government Aesthetic & Floating Navigation Bar**:
    - Orange accent palette (`#ea580c`), glassmorphism card surfaces, and 0xZenith national cyber defense branding.

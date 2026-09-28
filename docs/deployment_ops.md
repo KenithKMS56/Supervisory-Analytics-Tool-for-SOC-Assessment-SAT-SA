@@ -106,9 +106,19 @@ satsa rules import dist/rule_pack_2026_q2.tar.gz --target-dir config
 ### Audit Log Integrity Check
 Supervisors can verify database integrity at any time:
 ```bash
-satsa audit verify --db-path data/satsa.db
+satsa audit verify --db-path data/satsa.db            # SAT-SA chain
+satsa audit verify --db-path data/satsa.db --chain admin   # Admin Portal chain
 ```
-- Verifies SHA-256 `prev_hash` chaining across all historical records. If any row was edited or removed outside the application, the command fails and reports the exact tampered row ID.
+- Recomputes every entry's hash with the algorithm recorded on that entry (SHA3-256 for new
+  entries, SHA-256 for legacy ones). If an entry in the chain was edited, inserted, deleted or
+  reordered outside the application, the command fails and reports the first affected row.
+- **Limit:** removing the newest entries, or recomputing the entire chain, cannot be detected by
+  the chain alone (DECISIONS.md ADR-005). Record a checkpoint off-box at each examination and
+  compare against it later:
+  ```bash
+  satsa audit head                      # note entries + head_hash on paper / a separate system
+  satsa audit verify --checkpoint-count <entries> --checkpoint-head <head_hash>
+  ```
 
 ### Backup & Disaster Recovery
 To back up the complete supervisory state:
