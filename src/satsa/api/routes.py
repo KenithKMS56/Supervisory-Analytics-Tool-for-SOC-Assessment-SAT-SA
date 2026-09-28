@@ -27,7 +27,7 @@ from satsa.auth.session import (
     require_cse_access,
     require_role,
 )
-from satsa.bundle.rules_signer import RulePackSigner
+from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
 from satsa.explain.finding_card import FindingCard
 from satsa.ingest.pipeline import IngestionPipeline
 from satsa.models.outputs import ExaminerFeedback
@@ -1826,11 +1826,20 @@ async def handle_tuning_save(
     return RedirectResponse(url=f"/tuning?message={msg}", status_code=303)
 
 
+RULEPACK_DISABLED_DETAIL = (
+    "Rule-pack signing is disabled on this server: SATSA_RULEPACK_SECRET is not configured "
+    "(or is unsafe). There is no built-in default key."
+)
+
+
 @app.get("/tuning/export-pack")
 async def handle_export_pack(
     identity: Identity = Depends(require_role(*RULEPACK_ROLES)),
-) -> FileResponse:
-    signer = RulePackSigner()
+) -> Response:
+    try:
+        signer = RulePackSigner()
+    except RulePackKeyError:
+        raise HTTPException(status_code=503, detail=RULEPACK_DISABLED_DETAIL) from None
     out_tar = Path("dist/rule_pack_active.tar.gz")
     signer.export_rule_pack(config_dir="config", output_path=out_tar, version="1.0.0")
     return FileResponse(
@@ -1845,15 +1854,21 @@ def handle_import_pack(
     pack_file: UploadFile = File(...),
     identity: Identity = Depends(require_role(*RULEPACK_ROLES)),
 ) -> Response:
+    try:
+        signer = RulePackSigner()
+    except RulePackKeyError:
+        raise HTTPException(status_code=503, detail=RULEPACK_DISABLED_DETAIL) from None
     _, sqlite_store = get_stores()
-    signer = RulePackSigner()
     with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tmp:
         shutil.copyfileobj(pack_file.file, tmp)
         tmp_path = Path(tmp.name)
 
     try:
         res = signer.import_rule_pack(
-            tmp_path, target_config_dir="config", sqlite_store=sqlite_store
+            tmp_path,
+            target_config_dir="config",
+            sqlite_store=sqlite_store,
+            actor=identity.username,
         )
         msg = f"Rule pack verified and installed! Version: {res.get('version')} | Files: {res.get('files_imported')}"
     except (ValueError, KeyError, OSError, RuntimeError) as e:

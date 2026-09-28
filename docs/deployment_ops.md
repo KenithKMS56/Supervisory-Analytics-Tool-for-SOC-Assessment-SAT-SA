@@ -74,22 +74,30 @@ satsa serve --host 127.0.0.1 --port 8000
 
 To update detection thresholds or supervisory criteria without altering code:
 
+### Signing key (required)
+Rule-pack signing and import use an HMAC key taken from the `SATSA_RULEPACK_SECRET`
+environment variable (at least 32 characters; `--secret` overrides it). There is **no built-in
+default key**: without one, `satsa rules export/import` exit with an error and the UI's
+export/import endpoints return HTTP 503. The key that earlier versions embedded in this repository
+is public and permanently compromised; it is explicitly rejected. Generate a fresh key per
+deployment, e.g. `python -c "import secrets; print(secrets.token_urlsafe(48))"`, and distribute it
+to field stations out of band. Packs signed with the old embedded key must be re-signed.
+
 ### Exporting & Signing a Rule Pack (Regulatory Headquarters)
 ```bash
-satsa rules export \
-  --config-dir config \
-  --output dist/rule_pack_2026_q2.tar.gz \
-  --version 2.0.0 \
-  --secret "REGULATOR_PRIVATE_HMAC_KEY"
+export SATSA_RULEPACK_SECRET="<deployment-specific key, >= 32 chars>"
+satsa rules export   --config-dir config   --output dist/rule_pack_2026_q2.tar.gz   --version 2.0.0
 ```
 
 ### Importing & Verifying a Rule Pack (Field Examiner Station)
 ```bash
-satsa rules import dist/rule_pack_2026_q2.tar.gz \
-  --target-dir config \
-  --secret "REGULATOR_PRIVATE_HMAC_KEY"
+export SATSA_RULEPACK_SECRET="<same key>"
+satsa rules import dist/rule_pack_2026_q2.tar.gz --target-dir config
 ```
-- SAT-SA verifies cryptographic HMAC signature and individual SHA-256 file checksums before writing to disk. Tampered files are rejected immediately and logged to the audit trail.
+- Before anything is written to disk, SAT-SA rejects any archive member that is not a regular file
+  under `rule_pack/` (absolute paths, `..` components, links and devices are refused), verifies the
+  HMAC signature over the manifest, and checks every file's SHA-256. Files are then written only
+  inside the target directory, and the import is logged to the audit trail with the real actor.
 
 ---
 
