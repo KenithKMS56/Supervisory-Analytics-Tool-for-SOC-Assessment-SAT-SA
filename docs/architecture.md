@@ -11,7 +11,7 @@ The **Supervisory Analytics Tool for SOC Assessment (SAT-SA)** is an air-gapped,
 SAT-SA adheres strictly to statutory explainability and regulatory integrity:
 1. **Explicit "No AI/ML" Architecture:** Zero neural networks, zero LLMs, zero non-deterministic heuristics. Every finding is derived from relational algebra (SQL in DuckDB), deterministic rule predicates, and classical robust statistics (Median, Median Absolute Deviation [MAD], IQR, CUSUM, EWMA, Jaccard similarity).
 2. **Strict Air-Gap & Data Minimization:** Operates entirely offline with 127.0.0.1 default binding. Outbound network sockets are blocked at runtime. Ingested actor names are pseudonymised via HMAC-SHA256 (`.satsa_salt`), and internal IPs/PII are redacted using deterministic regex masking.
-3. **Cryptographic Tamper-Evidence:** All ingestion manifests, assessment runs, configuration changes, and examiner actions are recorded in an append-only SQLite log with cryptographic SHA-256 `prev_hash` chaining.
+3. **Cryptographic Tamper-Evidence:** All ingestion manifests, assessment runs, configuration changes, and examiner actions are recorded in an append-only SQLite log with `prev_hash` hash chaining (SHA3-256 for new entries). The chain detects edits, insertions, deletions and reordering within the chain; truncation of the newest entries is detected by comparing against an off-box `satsa audit head` checkpoint (DECISIONS.md ADR-005).
 
 ---
 
