@@ -22,11 +22,11 @@ from satsa.auth.session import (
 
 __all__ = [
     "ROLES",
-    "generate_salt",
-    "hash_passphrase",
-    "verify_passphrase",
     "SESSION_COOKIE_NAME",
     "Identity",
+    "generate_salt",
     "get_current_identity",
+    "hash_passphrase",
     "require_role",
+    "verify_passphrase",
 ]

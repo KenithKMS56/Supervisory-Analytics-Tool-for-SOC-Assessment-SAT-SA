@@ -137,16 +137,10 @@
           <span class="form-helper">Controls access boundaries, review actions, and supervisory privileges.</span>
         </div>
 
-        <!-- Admin Portal Access Option Card -->
+        <!-- Admin Portal Access (derived from role; no separate grant) -->
         <div class="form-group">
           <label class="form-label">Control Portal Authorization</label>
-          <label class="form-checkbox-card" for="is_admin_user">
-            <input type="checkbox" id="is_admin_user" name="is_admin_user" value="true">
-            <div class="form-checkbox-content">
-              <span class="form-checkbox-title">Grant NCIIPC Control Portal Access (:8000)</span>
-              <span class="form-checkbox-desc">Allows operator to authenticate to this administrative console.</span>
-            </div>
-          </label>
+          <span class="form-helper">NCIIPC Control Portal access (:8000) is granted only by the NCIIPC Super Administrator role. It cannot be granted separately to other roles.</span>
         </div>
       </div>
     </div>
@@ -263,14 +257,8 @@ function handleOrgChange() {
 
 function handleRoleChange() {
   var roleSelect = document.getElementById("role");
-  var adminCheck = document.getElementById("is_admin_user");
-  var val = roleSelect.value;
-
-  if (val.indexOf("Administrator") !== -1 || val.indexOf("Super") !== -1) {
-    adminCheck.checked = true;
-  } else {
-    adminCheck.checked = false;
-  }
+  // Portal access is derived from the role server-side; nothing to toggle here.
+  return roleSelect ? roleSelect.value : "";
 }
 
 function generatePassphrase() {

@@ -375,7 +375,6 @@ def validate_stress_cmd(
 
     See src/satsa/synth/stress.py and docs/validation.md Section 2A for the methodology.
     """
-    import shutil
     import tempfile
     from pathlib import Path
 
@@ -503,6 +502,22 @@ rules_app = typer.Typer(help="Manage signed supervisory rule packs")
 app.add_typer(rules_app, name="rules")
 
 
+SECRET_HELP = (
+    "HMAC signing secret (>= 32 chars). Defaults to the SATSA_RULEPACK_SECRET environment "
+    "variable; there is NO built-in key and the command refuses to run without one."
+)
+
+
+def _make_signer(secret: str | None):
+    from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
+
+    try:
+        return RulePackSigner(secret=secret)
+    except RulePackKeyError as e:
+        console.print(f"[bold red][!] {e}[/bold red]")
+        raise typer.Exit(code=1) from None
+
+
 @rules_app.command("export")
 def rules_export_cmd(
     config_dir: str = typer.Option("config", "--config-dir", "-c", help="Source config directory"),
@@ -510,12 +525,12 @@ def rules_export_cmd(
         "dist/rule_pack_v1.tar.gz", "--output", "-o", help="Output archive path"
     ),
     version: str = typer.Option("1.0.0", "--version", "-v", help="Rule pack version"),
-    secret: str = typer.Option("SATSA_RULEPACK_NCIIPC_2026", "--secret", help="Signing secret"),
+    secret: str | None = typer.Option(
+        None, "--secret", envvar="SATSA_RULEPACK_SECRET", show_envvar=True, help=SECRET_HELP
+    ),
 ) -> None:
     """Export and sign supervisory rules and configuration."""
-    from satsa.bundle.rules_signer import RulePackSigner
-
-    signer = RulePackSigner(default_secret=secret)
+    signer = _make_signer(secret)
     out = signer.export_rule_pack(config_dir=config_dir, output_path=output_path, version=version)
     console.print(
         f"[bold green][+] Rule pack signed and exported:[/bold green] [cyan]{out}[/cyan] (version {version})"
@@ -529,24 +544,25 @@ def rules_import_cmd(
     db_path: str = typer.Option(
         "data/satsa.db", "--db-path", help="Path to SQLite metadata database"
     ),
-    secret: str = typer.Option("SATSA_RULEPACK_NCIIPC_2026", "--secret", help="Signing secret"),
+    secret: str | None = typer.Option(
+        None, "--secret", envvar="SATSA_RULEPACK_SECRET", show_envvar=True, help=SECRET_HELP
+    ),
 ) -> None:
     """Verify cryptographic signature and checksums before importing rule pack."""
-    from satsa.bundle.rules_signer import RulePackSigner
     from satsa.store.sqlite import SQLiteStore
 
+    signer = _make_signer(secret)
     sqlite_store = SQLiteStore(db_path)
-    signer = RulePackSigner(default_secret=secret)
     try:
         res = signer.import_rule_pack(
-            archive_path, target_config_dir=target_dir, sqlite_store=sqlite_store
+            archive_path, target_config_dir=target_dir, sqlite_store=sqlite_store, actor="cli:rules"
         )
         console.print(
             f"[bold green][+] Rule pack verified and imported successfully:[/bold green] {res}"
         )
     except (ValueError, PermissionError, FileNotFoundError, OSError) as e:
         console.print(f"[bold red][!] Rule pack import failed:[/bold red] {e}")
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     finally:
         sqlite_store.close()
 
@@ -600,21 +616,88 @@ audit_app = typer.Typer(help="Manage and verify cryptographic audit log chain")
 app.add_typer(audit_app, name="audit")
 
 
+CHAIN_TABLES = {"audit": "audit_log", "admin": "admin_audit_log"}
+
+
+def _chain_table(chain: str) -> str:
+    if chain not in CHAIN_TABLES:
+        console.print(f"[bold red][!] --chain must be one of {sorted(CHAIN_TABLES)}[/bold red]")
+        raise typer.Exit(code=2)
+    return CHAIN_TABLES[chain]
+
+
 @audit_app.command("verify")
 def audit_verify_cmd(
     db_path: str = typer.Option("data/satsa.db", "--db-path", help="Path to SQLite database"),
+    chain: str = typer.Option("audit", "--chain", help="Which chain: 'audit' (SAT-SA) or 'admin'"),
+    checkpoint_count: int | None = typer.Option(
+        None, "--checkpoint-count", help="Entry count recorded earlier by `satsa audit head`"
+    ),
+    checkpoint_head: str | None = typer.Option(
+        None, "--checkpoint-head", help="Head hash recorded earlier by `satsa audit head`"
+    ),
 ) -> None:
-    """Verify cryptographic SHA-256 prev_hash chain in the audit log."""
+    """Verify the audit hash chain (each row checked with its own recorded algorithm).
+
+    The chain alone cannot detect deletion of its newest rows; pass a checkpoint
+    recorded off-box with `satsa audit head` to detect that too.
+    """
     from satsa.store.sqlite import SQLiteStore
 
+    table = _chain_table(chain)
+    if (checkpoint_count is None) != (checkpoint_head is None):
+        console.print("[bold red][!] --checkpoint-count and --checkpoint-head go together.[/bold red]")
+        raise typer.Exit(code=2)
     store = SQLiteStore(db_path)
-    ok, msg = store.verify_audit_chain()
-    store.close()
+    try:
+        if checkpoint_count is not None and checkpoint_head is not None:
+            ok, msg = store.verify_checkpoint(checkpoint_count, checkpoint_head, table=table)
+        else:
+            result = store.verify_chain(table)
+            ok, msg = result.ok, result.message
+    finally:
+        store.close()
     if ok:
         console.print(f"[bold green][+] Audit integrity verified:[/bold green] {msg}")
+        if checkpoint_count is None:
+            console.print(
+                "[dim]Note: without a checkpoint this cannot detect removal of the newest entries; "
+                "see `satsa audit head`.[/dim]"
+            )
     else:
         console.print(f"[bold red][!] Audit chain broken/tampered:[/bold red] {msg}")
         raise typer.Exit(code=1)
+
+
+@audit_app.command("head")
+def audit_head_cmd(
+    db_path: str = typer.Option("data/satsa.db", "--db-path", help="Path to SQLite database"),
+    chain: str = typer.Option("audit", "--chain", help="Which chain: 'audit' (SAT-SA) or 'admin'"),
+) -> None:
+    """Print the chain's entry count and head hash for an examiner to record OFF-BOX.
+
+    A hash chain cannot, by itself, detect truncation of its newest entries: the
+    shortened chain is still internally consistent. Recording this checkpoint
+    somewhere the database's operators cannot edit (paper, a separate system)
+    and later running `satsa audit verify --checkpoint-count N --checkpoint-head H`
+    detects such truncation or a rewrite of history up to that point.
+    """
+    from satsa.store.sqlite import SQLiteStore, utc_now_iso
+
+    store = SQLiteStore(db_path)
+    try:
+        head = store.audit_head(table=_chain_table(chain))
+    finally:
+        store.close()
+    console.print(f"chain:      {chain}")
+    console.print(f"entries:    {head.count}")
+    console.print(f"head_hash:  {head.head_hash}")
+    console.print(f"hash_alg:   {head.hash_alg or '-'}")
+    console.print(f"recorded:   {utc_now_iso()}")
+    console.print(
+        f"[dim]Verify later with: satsa audit verify --chain {chain} "
+        f"--checkpoint-count {head.count} --checkpoint-head {head.head_hash}[/dim]"
+    )
 
 
 if __name__ == "__main__":

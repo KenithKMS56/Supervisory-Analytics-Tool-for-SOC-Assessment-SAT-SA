@@ -42,7 +42,7 @@ podman run -d \
 ## 2. Standard Operating Procedures (SOP)
 
 ### SOP-01: Ingesting Periodic SOC Submissions
-When a CSE submits periodic CSV telemetries:
+When a CSE submits its periodic CSV batch:
 ```bash
 satsa ingest --data-dir /path/to/extracted_csvs --parquet-dir data --db-path data/satsa.db
 ```
@@ -74,22 +74,30 @@ satsa serve --host 127.0.0.1 --port 8000
 
 To update detection thresholds or supervisory criteria without altering code:
 
+### Signing key (required)
+Rule-pack signing and import use an HMAC key taken from the `SATSA_RULEPACK_SECRET`
+environment variable (at least 32 characters; `--secret` overrides it). There is **no built-in
+default key**: without one, `satsa rules export/import` exit with an error and the UI's
+export/import endpoints return HTTP 503. The key that earlier versions embedded in this repository
+is public and permanently compromised; it is explicitly rejected. Generate a fresh key per
+deployment, e.g. `python -c "import secrets; print(secrets.token_urlsafe(48))"`, and distribute it
+to field stations out of band. Packs signed with the old embedded key must be re-signed.
+
 ### Exporting & Signing a Rule Pack (Regulatory Headquarters)
 ```bash
-satsa rules export \
-  --config-dir config \
-  --output dist/rule_pack_2026_q2.tar.gz \
-  --version 2.0.0 \
-  --secret "REGULATOR_PRIVATE_HMAC_KEY"
+export SATSA_RULEPACK_SECRET="<deployment-specific key, >= 32 chars>"
+satsa rules export   --config-dir config   --output dist/rule_pack_2026_q2.tar.gz   --version 2.0.0
 ```
 
 ### Importing & Verifying a Rule Pack (Field Examiner Station)
 ```bash
-satsa rules import dist/rule_pack_2026_q2.tar.gz \
-  --target-dir config \
-  --secret "REGULATOR_PRIVATE_HMAC_KEY"
+export SATSA_RULEPACK_SECRET="<same key>"
+satsa rules import dist/rule_pack_2026_q2.tar.gz --target-dir config
 ```
-- SAT-SA verifies cryptographic HMAC signature and individual SHA-256 file checksums before writing to disk. Tampered files are rejected immediately and logged to the audit trail.
+- Before anything is written to disk, SAT-SA rejects any archive member that is not a regular file
+  under `rule_pack/` (absolute paths, `..` components, links and devices are refused), verifies the
+  HMAC signature over the manifest, and checks every file's SHA-256. Files are then written only
+  inside the target directory, and the import is logged to the audit trail with the real actor.
 
 ---
 
@@ -98,9 +106,19 @@ satsa rules import dist/rule_pack_2026_q2.tar.gz \
 ### Audit Log Integrity Check
 Supervisors can verify database integrity at any time:
 ```bash
-satsa audit verify --db-path data/satsa.db
+satsa audit verify --db-path data/satsa.db            # SAT-SA chain
+satsa audit verify --db-path data/satsa.db --chain admin   # Admin Portal chain
 ```
-- Verifies SHA-256 `prev_hash` chaining across all historical records. If any row was edited or removed outside the application, the command fails and reports the exact tampered row ID.
+- Recomputes every entry's hash with the algorithm recorded on that entry (SHA3-256 for new
+  entries, SHA-256 for legacy ones). If an entry in the chain was edited, inserted, deleted or
+  reordered outside the application, the command fails and reports the first affected row.
+- **Limit:** removing the newest entries, or recomputing the entire chain, cannot be detected by
+  the chain alone (DECISIONS.md ADR-005). Record a checkpoint off-box at each examination and
+  compare against it later:
+  ```bash
+  satsa audit head                      # note entries + head_hash on paper / a separate system
+  satsa audit verify --checkpoint-count <entries> --checkpoint-head <head_hash>
+  ```
 
 ### Backup & Disaster Recovery
 To back up the complete supervisory state:
@@ -108,7 +126,7 @@ To back up the complete supervisory state:
 # 1. Snapshot SQLite database safely using SQLite online backup
 sqlite3 data/satsa.db ".backup backup/satsa_$(date +%Y%m%d).db"
 
-# 2. Archive Parquet telemetry directory
+# 2. Archive the Parquet submission directory
 tar -czf backup/parquet_$(date +%Y%m%d).tar.gz data/parquet/
 ```
 
@@ -120,6 +138,6 @@ tar -czf backup/parquet_$(date +%Y%m%d).tar.gz data/parquet/
 |---|---|---|---|
 | Ingesting Entity Batch | Monthly / Quarterly | ~15 minutes per entity | Data Analyst / Admin |
 | Assessment Execution | Quarterly | < 5 minutes (automated) | Supervisor |
-| Examiner Finding Review | Continuous / Quarterly | ~2 hours per entity | Supervisory Examiner |
+| Examiner Finding Review | Each assessment cycle (e.g. quarterly) | ~2 hours per entity | Supervisory Examiner |
 | Rule Calibration & Update | Bi-annually | ~4 hours | Lead Regulatory Specialist |
 | Audit Chain Verification | Weekly | < 1 minute (automated CLI) | Security Auditor |

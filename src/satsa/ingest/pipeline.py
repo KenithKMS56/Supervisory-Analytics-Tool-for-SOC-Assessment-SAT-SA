@@ -11,6 +11,8 @@ from satsa.ingest.manifest import ManifestBuilder
 from satsa.ingest.normaliser import TaxonomyNormaliser
 from satsa.ingest.pseudonymise import Pseudonymiser
 from satsa.ingest.redact import Redactor
+from satsa.models.outputs import DQIssue
+from satsa.security import is_valid_entity_id, require_entity_id
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
 
@@ -333,7 +335,14 @@ class IngestionPipeline:
     def ingest_directory(
         self, input_dir: Path | str, default_entity_id: str | None = None
     ) -> dict[str, Any]:
-        """Ingest all CSV and JSON tables from directory, validate DQ, and store as Parquet."""
+        """Ingest all CSV and JSON tables from directory, validate DQ, and store as Parquet.
+
+        Rows whose `entity_id` fails satsa.security.ENTITY_ID_RE are dropped
+        (never written, never evaluated) and reported as an `invalid_entity_id`
+        DQ issue, so a malformed ID can't reach a query or a partition path.
+        """
+        if default_entity_id is not None:
+            require_entity_id(default_entity_id)
         dir_path = Path(input_dir)
         raw_files = (
             list(dir_path.rglob("*.csv"))
@@ -346,6 +355,8 @@ class IngestionPipeline:
         tables_data: dict[str, list[dict[str, Any]]] = {}
         row_counts: dict[str, int] = {}
         processed_files: list[Path] = []
+        # table -> sample of rejected (invalid) entity_id values
+        rejected_ids: dict[str, list[str]] = {}
 
         for f in raw_files:
             try:
@@ -367,6 +378,10 @@ class IngestionPipeline:
                     # Apply default entity if missing
                     if default_entity_id and not clean_r.get("entity_id"):
                         clean_r["entity_id"] = default_entity_id
+                    eid = clean_r.get("entity_id")
+                    if eid is not None and str(eid).strip() and not is_valid_entity_id(str(eid)):
+                        rejected_ids.setdefault(canonical_table, []).append(str(eid))
+                        continue
                     normalized_rows.append(clean_r)
 
                 tables_data.setdefault(canonical_table, []).extend(normalized_rows)
@@ -459,6 +474,21 @@ class IngestionPipeline:
 
         # Run Data Quality checks per entity
         all_dq_issues = []
+        for tbl, bad_ids in sorted(rejected_ids.items()):
+            all_dq_issues.append(
+                DQIssue(
+                    issue_id=f"DQ-INVALID-ENTITY-ID-{primary_entity}-{tbl}",
+                    entity_id=primary_entity,
+                    check_name="invalid_entity_id",
+                    severity="error",
+                    count=len(bad_ids),
+                    sample_records=[repr(b)[:80] for b in bad_ids[:5]],
+                    details=(
+                        f"{len(bad_ids)} '{tbl}' rows rejected: entity_id does not match "
+                        "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ (rows were not stored or evaluated)."
+                    ),
+                )
+            )
         for ent_id in sorted(entities_present):
             ent_alerts = [a for a in tables_data.get("alert", []) if a.get("entity_id") == ent_id]
             if ent_alerts:

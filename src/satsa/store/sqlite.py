@@ -1,8 +1,13 @@
 """SQLite store for operational state, findings, audit trail, and examiner feedback."""
 
+import datetime as _dt
 import hashlib
 import json
 import sqlite3
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +22,90 @@ from satsa.models.outputs import (
     ReviewQueueItem,
     Run,
 )
+
+
+def utc_now_iso() -> str:
+    """Current UTC time as ISO-8601 with FIXED microsecond precision.
+
+    datetime.isoformat() omits the fractional part when microsecond == 0, so
+    two timestamps from the same second could differ in length
+    ("...:05+00:00" vs "...:05.000123+00:00") and compare wrongly as strings.
+    Every timestamp this store writes or compares uses this fixed format.
+    """
+    return _dt.datetime.now(_dt.UTC).isoformat(timespec="microseconds")
+
+
+def parse_utc(ts: str) -> _dt.datetime:
+    """Parse a stored ISO timestamp (any precision; naive treated as UTC) to aware UTC."""
+    parsed = _dt.datetime.fromisoformat(ts)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_dt.UTC)
+    return parsed.astimezone(_dt.UTC)
+
+
+# --- Audit hash chain -----------------------------------------------------------
+#
+# Each audit row stores prev_hash (the previous row's curr_hash) and curr_hash,
+# a hash over the row's own fields plus prev_hash. Rows record which algorithm
+# produced their hash (hash_alg):
+#   * "sha256"   -- legacy rows: sha256(payload)
+#   * "sha3_256" -- current rows: sha3_256("sha3_256:" + payload)
+# The algorithm tag is part of the hashed input for SHA3 rows, so relabeling a
+# row's hash_alg column is detected rather than silently switching algorithms.
+# Verification recomputes every row with ITS OWN recorded algorithm, so a chain
+# mixing legacy and current rows verifies end to end.
+#
+# What the chain does NOT detect (see DECISIONS.md ADR-005): someone with write
+# access recomputing the whole chain from scratch, and deletion of the newest
+# rows (tail truncation) -- use `satsa audit head` to record an external
+# checkpoint and `satsa audit verify --checkpoint-*` to compare against it.
+
+# Upper bound on events returned by one activity-feed query.
+LIVE_EVENTS_MAX_LIMIT = 200
+
+HASH_ALG_LEGACY = "sha256"
+HASH_ALG_CURRENT = "sha3_256"
+
+
+def compute_chain_hash(alg: str, payload: str) -> str:
+    """Hash an audit-row payload with the named algorithm."""
+    if alg == HASH_ALG_LEGACY:
+        return hashlib.sha256(payload.encode()).hexdigest()
+    if alg == HASH_ALG_CURRENT:
+        return hashlib.sha3_256(f"{HASH_ALG_CURRENT}:{payload}".encode()).hexdigest()
+    raise ValueError(f"Unknown audit hash algorithm: {alg!r}")
+
+
+# Audit appends must be serialized: the web app opens a new connection per
+# request, so two concurrent appends could otherwise read the same previous hash
+# and fork the chain (a false tamper report later). A process-wide lock per
+# database file serializes threads (including threads sharing one connection);
+# BEGIN IMMEDIATE takes SQLite's write lock before the previous hash is read,
+# serializing writers in other processes too.
+_CHAIN_LOCKS: dict[str, threading.Lock] = {}
+_CHAIN_LOCKS_GUARD = threading.Lock()
+
+
+def _chain_lock_for(db_path: Path) -> threading.Lock:
+    key = str(db_path.resolve())
+    with _CHAIN_LOCKS_GUARD:
+        return _CHAIN_LOCKS.setdefault(key, threading.Lock())
+
+
+@dataclass(frozen=True)
+class ChainVerification:
+    ok: bool
+    message: str
+    entries: int
+    bad_row: int | None = None  # 1-based position (rowid order) of the first bad row
+    bad_log_id: str | None = None
+
+
+@dataclass(frozen=True)
+class AuditHead:
+    count: int
+    head_hash: str
+    hash_alg: str | None
 
 
 class SQLiteStore:
@@ -34,12 +123,11 @@ class SQLiteStore:
             isolation_level=None,
         )
         self.conn.row_factory = sqlite3.Row
-        try:
+        # Best effort: e.g. WAL is unavailable on some network filesystems.
+        with suppress(sqlite3.Error):
             self.conn.execute("PRAGMA journal_mode=WAL;")
             self.conn.execute("PRAGMA busy_timeout=30000;")
             self.conn.execute("PRAGMA synchronous=NORMAL;")
-        except Exception:
-            pass
 
         # Fast schema check: only run DDL migrations/seeding if schema is missing or incomplete
         cur = self.conn.cursor()
@@ -54,6 +142,52 @@ class SQLiteStore:
         if needs_init:
             self._init_tables()
             self.seed_default_identities()
+        self._ensure_migrations()
+
+    @contextmanager
+    def _serialized_chain_write(self) -> Iterator[sqlite3.Cursor]:
+        """Hold the chain lock and an IMMEDIATE transaction around read-prev + insert."""
+        with _chain_lock_for(self.db_path):
+            cur = self.conn.cursor()
+            cur.execute("BEGIN IMMEDIATE")
+            try:
+                yield cur
+            except BaseException:
+                cur.execute("ROLLBACK")
+                raise
+            cur.execute("COMMIT")
+
+    def _ensure_migrations(self) -> None:
+        """Idempotent schema upgrades applied on every open (cheap: IF NOT EXISTS / column checks)."""
+        tables = {
+            r[0] for r in self.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        with self.conn:
+            for table in ("audit_log", "admin_audit_log"):
+                if table not in tables:
+                    continue
+                cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+                if "hash_alg" not in cols:
+                    # Every pre-existing row was hashed with plain SHA-256.
+                    self.conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN hash_alg TEXT NOT NULL DEFAULT 'sha256'"
+                    )
+                # Login-lockout lookups filter audit rows by (actor, action).
+                self.conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_{table}_actor_action ON {table} (actor, action)"
+                )
+            # One JSON batch submission per (entity, period): see claim_batch_submission.
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS batch_submissions (
+                    entity_id TEXT NOT NULL,
+                    period TEXT NOT NULL,
+                    submitted_at TIMESTAMP NOT NULL,
+                    actor TEXT NOT NULL,
+                    PRIMARY KEY (entity_id, period)
+                )
+                """
+            )
 
     def _init_tables(self) -> None:
         """Create tables if not existing."""
@@ -182,7 +316,8 @@ class SQLiteStore:
                     actor TEXT NOT NULL,
                     details_json TEXT NOT NULL,
                     prev_hash TEXT NOT NULL,
-                    curr_hash TEXT NOT NULL
+                    curr_hash TEXT NOT NULL,
+                    hash_alg TEXT NOT NULL DEFAULT 'sha256'
                 );
 
                 CREATE TABLE IF NOT EXISTS identities (
@@ -259,7 +394,8 @@ class SQLiteStore:
                     target TEXT,
                     details_json TEXT NOT NULL,
                     prev_hash TEXT NOT NULL,
-                    curr_hash TEXT NOT NULL
+                    curr_hash TEXT NOT NULL,
+                    hash_alg TEXT NOT NULL DEFAULT 'sha256'
                 );
 
                 CREATE TABLE IF NOT EXISTS admin_sessions (
@@ -305,29 +441,28 @@ class SQLiteStore:
     # --- Audit Log with Cryptographic Hash Chaining ---
 
     def append_audit(self, action: str, actor: str, details: dict[str, Any]) -> AuditLogEntry:
-        """Append an entry to the audit log with SHA-256 prev_hash chaining."""
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT curr_hash FROM audit_log ORDER BY rowid DESC LIMIT 1")
-        row = cursor.fetchone()
-        prev_hash = row["curr_hash"] if row else self.GENESIS_HASH
+        """Append an entry to the audit log, hash-chained to the previous entry (SHA3-256).
 
-        log_id = hashlib.sha256(f"{action}_{actor}_{prev_hash}".encode()).hexdigest()[:16]
+        Serialized (process lock + BEGIN IMMEDIATE) so concurrent writers can't fork the chain.
+        """
         details_json = json.dumps(details, sort_keys=True)
-        import datetime
+        with self._serialized_chain_write() as cursor:
+            cursor.execute("SELECT curr_hash FROM audit_log ORDER BY rowid DESC LIMIT 1")
+            row = cursor.fetchone()
+            prev_hash = row["curr_hash"] if row else self.GENESIS_HASH
 
-        ts_now = datetime.datetime.now(datetime.UTC).isoformat()
-
-        # Compute current hash over all elements including prev_hash
-        payload = f"{log_id}:{ts_now}:{action}:{actor}:{details_json}:{prev_hash}".encode()
-        curr_hash = hashlib.sha256(payload).hexdigest()
-
-        with self.conn:
-            self.conn.execute(
+            ts_now = utc_now_iso()
+            log_id = hashlib.sha256(
+                f"{action}_{actor}_{prev_hash}_{ts_now}".encode()
+            ).hexdigest()[:16]
+            payload = f"{log_id}:{ts_now}:{action}:{actor}:{details_json}:{prev_hash}"
+            curr_hash = compute_chain_hash(HASH_ALG_CURRENT, payload)
+            cursor.execute(
                 """
-                INSERT INTO audit_log (log_id, ts, action, actor, details_json, prev_hash, curr_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO audit_log (log_id, ts, action, actor, details_json, prev_hash, curr_hash, hash_alg)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (log_id, ts_now, action, actor, details_json, prev_hash, curr_hash),
+                (log_id, ts_now, action, actor, details_json, prev_hash, curr_hash, HASH_ALG_CURRENT),
             )
 
         return AuditLogEntry(
@@ -339,33 +474,176 @@ class SQLiteStore:
             curr_hash=curr_hash,
         )
 
-    def verify_audit_chain(self) -> tuple[bool, str]:
-        """Verify the integrity of the audit log hash chain."""
+    def verify_chain(self, table: str) -> ChainVerification:
+        """Walk a hash chain in rowid order, recomputing each row with its own hash_alg.
+
+        Detects edits to any hashed field, relabeled hash_alg, swapped/edited
+        hashes, deleted or inserted middle rows, and reordered rows. It does NOT
+        detect removal of the newest rows (the shortened chain is still
+        internally consistent) or a full recomputation of the chain by someone
+        with write access -- see audit_head() / verify_checkpoint().
+        """
+        if table not in ("audit_log", "admin_audit_log"):
+            raise ValueError(f"Unsupported audit table: {table}")
+        with_target = table == "admin_audit_log"
+        target_col = "target, " if with_target else ""
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT log_id, ts, action, actor, details_json, prev_hash, curr_hash FROM audit_log ORDER BY rowid ASC"
+            f"SELECT log_id, ts, action, actor, {target_col}details_json, prev_hash, curr_hash, hash_alg "
+            f"FROM {table} ORDER BY rowid ASC"
         )
         rows = cursor.fetchall()
-        if not rows:
-            return True, "Audit log is empty."
-
         expected_prev = self.GENESIS_HASH
-        for idx, row in enumerate(rows):
+        for idx, row in enumerate(rows, start=1):
             if row["prev_hash"] != expected_prev:
-                return False, f"Broken prev_hash chain at entry {row['log_id']} (row {idx + 1})."
-
-            # Recompute curr_hash
-            payload = f"{row['log_id']}:{row['ts']}:{row['action']}:{row['actor']}:{row['details_json']}:{row['prev_hash']}".encode()
-            recomputed_hash = hashlib.sha256(payload).hexdigest()
-            if recomputed_hash != row["curr_hash"]:
-                return (
+                return ChainVerification(
                     False,
-                    f"Tampered record at entry {row['log_id']} (row {idx + 1}). Hash mismatch.",
+                    f"Broken prev_hash chain at entry {row['log_id']} (row {idx}).",
+                    len(rows), idx, row["log_id"],
                 )
-
+            fields = [row["log_id"], row["ts"], row["action"], row["actor"]]
+            if with_target:
+                fields.append(row["target"] or "")
+            payload = ":".join([*fields, row["details_json"], row["prev_hash"]])
+            try:
+                recomputed = compute_chain_hash(row["hash_alg"], payload)
+            except ValueError:
+                return ChainVerification(
+                    False,
+                    f"Unknown hash algorithm {row['hash_alg']!r} at entry {row['log_id']} (row {idx}).",
+                    len(rows), idx, row["log_id"],
+                )
+            if recomputed != row["curr_hash"]:
+                return ChainVerification(
+                    False,
+                    f"Tampered record at entry {row['log_id']} (row {idx}). Hash mismatch.",
+                    len(rows), idx, row["log_id"],
+                )
             expected_prev = row["curr_hash"]
+        if not rows:
+            return ChainVerification(True, "Audit log is empty.", 0)
+        return ChainVerification(
+            True, f"Audit chain verified successfully ({len(rows)} entries intact).", len(rows)
+        )
 
-        return True, f"Audit chain verified successfully ({len(rows)} entries intact)."
+    def verify_audit_chain_detailed(self) -> ChainVerification:
+        return self.verify_chain("audit_log")
+
+    def verify_audit_chain(self) -> tuple[bool, str]:
+        """Verify the integrity of the audit log hash chain (see verify_chain for limits)."""
+        result = self.verify_chain("audit_log")
+        return result.ok, result.message
+
+    def audit_head(self, table: str = "audit_log") -> AuditHead:
+        """Row count and newest curr_hash, to be recorded OFF-BOX as a checkpoint.
+
+        A hash chain alone cannot reveal deletion of its newest rows; comparing
+        a later chain against an externally recorded head (verify_checkpoint)
+        can.
+        """
+        if table not in ("audit_log", "admin_audit_log"):
+            raise ValueError(f"Unsupported audit table: {table}")
+        count = self.conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+        row = self.conn.execute(
+            f"SELECT curr_hash, hash_alg FROM {table} ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return AuditHead(0, self.GENESIS_HASH, None)
+        return AuditHead(count, row["curr_hash"], row["hash_alg"])
+
+    def verify_checkpoint(
+        self, count: int, head_hash: str, table: str = "audit_log"
+    ) -> tuple[bool, str]:
+        """Check the chain still contains a previously recorded head.
+
+        Passes if the chain verifies AND its row #count (rowid order) still has
+        curr_hash == head_hash. Rows appended after the checkpoint are fine;
+        fewer rows than recorded (tail truncation) or a different hash at that
+        position (rewrite) fail.
+        """
+        chain = self.verify_chain(table)
+        if not chain.ok:
+            return False, chain.message
+        if count == 0:
+            return True, "Checkpoint was an empty chain."
+        if chain.entries < count:
+            return False, (
+                f"Audit log truncated: {chain.entries} entries present but the recorded checkpoint "
+                f"had {count}."
+            )
+        row = self.conn.execute(
+            f"SELECT curr_hash FROM {table} ORDER BY rowid ASC LIMIT 1 OFFSET ?", (count - 1,)
+        ).fetchone()
+        if row["curr_hash"] != head_hash:
+            return False, (
+                f"Checkpoint mismatch at entry {count}: recorded head {head_hash[:16]}..., "
+                f"found {row['curr_hash'][:16]}... (history rewritten)."
+            )
+        return True, (
+            f"Checkpoint verified: entry {count} matches the recorded head "
+            f"({chain.entries - count} entries appended since)."
+        )
+
+    # --- Periodic batch submissions (one per entity and period) ---
+
+    def claim_batch_submission(self, entity_id: str, period: str, actor: str) -> bool:
+        """Atomically reserve the (entity_id, period) slot; False if already submitted."""
+        try:
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO batch_submissions (entity_id, period, submitted_at, actor) "
+                    "VALUES (?, ?, ?, ?)",
+                    (entity_id, period, utc_now_iso(), actor),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def release_batch_submission(self, entity_id: str, period: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM batch_submissions WHERE entity_id = ? AND period = ?",
+                (entity_id, period),
+            )
+
+    # --- Login lockout (backed by the existing hash-chained audit logs) ---
+
+    _LOGIN_AUDIT_TABLES = frozenset({"audit_log", "admin_audit_log"})
+
+    def count_recent_login_failures(
+        self,
+        username: str,
+        window_minutes: int,
+        *,
+        table: str = "audit_log",
+        fail_action: str = "login_failed",
+        success_action: str = "login",
+        now: _dt.datetime | None = None,
+    ) -> int:
+        """Count `fail_action` rows for `username` within the last `window_minutes`.
+
+        Only failures after the most recent `success_action` count: a successful
+        login resets the counter. Timestamps are parsed and compared as aware
+        UTC datetimes rather than as strings, so rows written with and without
+        fractional seconds (see utc_now_iso) compare correctly.
+        """
+        if table not in self._LOGIN_AUDIT_TABLES:
+            raise ValueError(f"Unsupported audit table: {table}")
+        cutoff = (now or _dt.datetime.now(_dt.UTC)) - _dt.timedelta(minutes=window_minutes)
+        cur = self.conn.cursor()
+        cur.execute(
+            f"SELECT action, ts FROM {table} WHERE actor = ? AND action IN (?, ?) "
+            "ORDER BY rowid DESC LIMIT 200",
+            (username, fail_action, success_action),
+        )
+        failures = 0
+        for row in cur.fetchall():
+            if row["action"] == success_action:
+                break
+            if parse_utc(row["ts"]) < cutoff:
+                break
+            failures += 1
+        return failures
 
     # --- Auth: Identities & Sessions (local, offline RBAC) ---
 
@@ -438,7 +716,7 @@ class SQLiteStore:
                 INSERT INTO sessions (session_hash, username, role, created_at, expires_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (session_hash, username, role, now.isoformat(), expires_at.isoformat()),
+                (session_hash, username, role, now.isoformat(timespec="microseconds"), expires_at.isoformat(timespec="microseconds")),
             )
         return raw_token
 
@@ -692,9 +970,8 @@ class SQLiteStore:
         concordance_score: float,
     ) -> None:
         """Save a blinded examiner assessment record and log to audit trail."""
-        from datetime import UTC, datetime
 
-        now = datetime.now(UTC).isoformat()
+        now = utc_now_iso()
         with self.conn:
             self.conn.execute(
                 """
@@ -1046,9 +1323,8 @@ class SQLiteStore:
         return dict(row) if row else None
 
     def list_admin_users(self) -> list[dict[str, Any]]:
-        import datetime
 
-        now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+        now_iso = utc_now_iso()
         cur = self.conn.cursor()
         cur.execute(
             """
@@ -1073,9 +1349,8 @@ class SQLiteStore:
         return [dict(r) for r in cur.fetchall()]
 
     def update_user_last_login(self, username: str) -> None:
-        import datetime
 
-        now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+        now_iso = utc_now_iso()
         with self.conn:
             self.conn.execute("UPDATE identities SET last_login = ? WHERE username = ?", (now_iso, username))
 
@@ -1093,7 +1368,7 @@ class SQLiteStore:
                 INSERT INTO admin_sessions (session_hash, username, role, created_at, expires_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (session_hash, username, role, now.isoformat(), expires_at.isoformat()),
+                (session_hash, username, role, now.isoformat(timespec="microseconds"), expires_at.isoformat(timespec="microseconds")),
             )
         return raw_token
 
@@ -1133,29 +1408,27 @@ class SQLiteStore:
     def append_admin_audit(
         self, action: str, actor: str, target: str | None = None, details: dict[str, Any] | None = None
     ) -> AuditLogEntry:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT curr_hash FROM admin_audit_log ORDER BY rowid DESC LIMIT 1")
-        row = cursor.fetchone()
-        prev_hash = row["curr_hash"] if row else self.GENESIS_HASH
-
-        log_id = hashlib.sha256(f"admin_{action}_{actor}_{prev_hash}".encode()).hexdigest()[:16]
         details_clean = details or {}
         # Security: Remove any potential password field
         details_clean = {k: v for k, v in details_clean.items() if "pass" not in k.lower()}
         details_json = json.dumps(details_clean, sort_keys=True)
-        import datetime
+        with self._serialized_chain_write() as cursor:
+            cursor.execute("SELECT curr_hash FROM admin_audit_log ORDER BY rowid DESC LIMIT 1")
+            row = cursor.fetchone()
+            prev_hash = row["curr_hash"] if row else self.GENESIS_HASH
 
-        ts_now = datetime.datetime.now(datetime.UTC).isoformat()
-        payload = f"{log_id}:{ts_now}:{action}:{actor}:{target or ''}:{details_json}:{prev_hash}".encode()
-        curr_hash = hashlib.sha256(payload).hexdigest()
-
-        with self.conn:
-            self.conn.execute(
+            ts_now = utc_now_iso()
+            log_id = hashlib.sha256(
+                f"admin_{action}_{actor}_{prev_hash}_{ts_now}".encode()
+            ).hexdigest()[:16]
+            payload = f"{log_id}:{ts_now}:{action}:{actor}:{target or ''}:{details_json}:{prev_hash}"
+            curr_hash = compute_chain_hash(HASH_ALG_CURRENT, payload)
+            cursor.execute(
                 """
-                INSERT INTO admin_audit_log (log_id, ts, action, actor, target, details_json, prev_hash, curr_hash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO admin_audit_log (log_id, ts, action, actor, target, details_json, prev_hash, curr_hash, hash_alg)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (log_id, ts_now, action, actor, target, details_json, prev_hash, curr_hash),
+                (log_id, ts_now, action, actor, target, details_json, prev_hash, curr_hash, HASH_ALG_CURRENT),
             )
 
         return AuditLogEntry(
@@ -1192,36 +1465,22 @@ class SQLiteStore:
             d = dict(r)
             try:
                 d["details"] = json.loads(d["details_json"])
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 d["details"] = {}
             result.append(d)
         return result
 
     def verify_admin_audit_chain(self) -> tuple[bool, str]:
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT log_id, ts, action, actor, target, details_json, prev_hash, curr_hash FROM admin_audit_log ORDER BY rowid ASC")
-        rows = cursor.fetchall()
-        if not rows:
+        result = self.verify_chain("admin_audit_log")
+        if result.ok and result.entries == 0:
             return True, "Admin audit log is empty."
-
-        expected_prev = self.GENESIS_HASH
-        for idx, row in enumerate(rows):
-            if row["prev_hash"] != expected_prev:
-                return False, f"Broken prev_hash chain at entry {row['log_id']} (row {idx + 1})."
-
-            target_val = row["target"] or ""
-            payload = f"{row['log_id']}:{row['ts']}:{row['action']}:{row['actor']}:{target_val}:{row['details_json']}:{row['prev_hash']}".encode()
-            recomputed = hashlib.sha256(payload).hexdigest()
-            if recomputed != row["curr_hash"]:
-                return False, f"Tampered record at entry {row['log_id']} (row {idx + 1}). Hash mismatch."
-            expected_prev = row["curr_hash"]
-
-        return True, f"Cryptographic audit chain verified ({len(rows)} entries intact)."
+        if result.ok:
+            return True, f"Cryptographic audit chain verified ({result.entries} entries intact)."
+        return False, result.message
 
     def get_admin_overview_stats(self) -> dict[str, Any]:
-        import datetime
 
-        now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+        now_iso = utc_now_iso()
         cur = self.conn.cursor()
 
         cur.execute("SELECT COUNT(*) FROM organisations")
@@ -1262,7 +1521,7 @@ class SQLiteStore:
             d = dict(r)
             try:
                 d["details"] = json.loads(d["details_json"])
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 d["details"] = {}
             recent_admin.append(d)
 
@@ -1280,7 +1539,7 @@ class SQLiteStore:
             d = dict(r)
             try:
                 d["details"] = json.loads(d["details_json"])
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 d["details"] = {}
             recent_user.append(d)
 
@@ -1296,7 +1555,7 @@ class SQLiteStore:
             "online_operators": self.get_online_operators(),
         }
 
-    # --- Live Events & Cross-Application Interaction ---
+    # --- Admin activity feed (operator session monitor; live_events table) ---
 
     def record_live_event(
         self,
@@ -1307,9 +1566,8 @@ class SQLiteStore:
         details: dict[str, Any] | None = None,
         is_admin: bool = False,
     ) -> int:
-        """Record a live operational event for real-time telemetry between SAT-SA and NCIIPC Admin."""
-        import datetime
-        now = datetime.datetime.now(datetime.UTC).isoformat()
+        """Record an operator event for the Admin Portal's activity feed (non-authoritative; see ADR-006)."""
+        now = utc_now_iso()
         details_json = json.dumps(details or {})
         with self.conn:
             cur = self.conn.execute(
@@ -1319,10 +1577,24 @@ class SQLiteStore:
                 """,
                 (now, event_type, actor, role, entity_id, details_json, 1 if is_admin else 0),
             )
-            return cur.lastrowid
+            event_id = cur.lastrowid
+        assert event_id is not None  # always set after a successful INSERT
+        return event_id
 
     def get_live_events(self, since_id: int = 0, limit: int = 50) -> list[dict[str, Any]]:
-        """Fetch live events newer than since_id, ordered chronologically or reverse-chronological."""
+        """Fetch activity-feed events newer than since_id (oldest first), or the latest `limit`.
+
+        `since_id` must be a non-negative integer (bool and other types are
+        rejected, not coerced); `limit` is clamped to [1, LIVE_EVENTS_MAX_LIMIT].
+        Both are bound as query parameters.
+        """
+        if isinstance(since_id, bool) or not isinstance(since_id, int):
+            raise TypeError(f"since_id must be an integer, got {since_id!r}")
+        if since_id < 0:
+            raise ValueError(f"since_id must be non-negative, got {since_id!r}")
+        if isinstance(limit, bool) or not isinstance(limit, int):
+            raise TypeError(f"limit must be an integer, got {limit!r}")
+        limit = max(1, min(limit, LIVE_EVENTS_MAX_LIMIT))
         cur = self.conn.cursor()
         if since_id > 0:
             cur.execute(
@@ -1350,7 +1622,7 @@ class SQLiteStore:
             row = dict(r)
             try:
                 row["details"] = json.loads(row["details_json"])
-            except Exception:
+            except (json.JSONDecodeError, TypeError):
                 row["details"] = {}
             events.append(row)
         if since_id == 0:
@@ -1359,8 +1631,7 @@ class SQLiteStore:
 
     def get_online_operators(self) -> list[dict[str, Any]]:
         """Get distinct users with active non-expired sessions, including their assigned CSE/Org."""
-        import datetime
-        now = datetime.datetime.now(datetime.UTC).isoformat()
+        now = utc_now_iso()
         cur = self.conn.cursor()
         cur.execute(
             """

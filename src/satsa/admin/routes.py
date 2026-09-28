@@ -9,17 +9,30 @@ Provides dedicated web control interfaces for:
 
 from __future__ import annotations
 
+import os
 import re
+import sqlite3
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Form, Request, status, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from satsa.admin.rbac import can_access_admin_portal
-from satsa.auth.identities import verify_passphrase
-from satsa.store.sqlite import SQLiteStore
+from satsa.auth.identities import LOGIN_LOCKOUT_MINUTES, LOGIN_MAX_FAILURES, verify_passphrase
+from satsa.security import is_valid_username
+from satsa.store.sqlite import LIVE_EVENTS_MAX_LIMIT, SQLiteStore
 
 # Setup Jinja2 template environment for admin portal
 _ADMIN_DIR = Path(__file__).resolve().parent
@@ -35,40 +48,60 @@ def get_store(request: Request) -> SQLiteStore:
     return request.app.state.store
 
 
-def get_current_operator(request: Request) -> dict[str, Any] | None:
-    """Validate admin session token from cookie and return active operator identity."""
+class AdminAuthRequired(Exception):
+    """Raised when an admin-portal route is hit without a valid admin session.
+
+    Handled in satsa.admin.app: HTML GET pages redirect to /login (browser
+    flow); API paths and mutating requests get HTTP 401.
+    """
+
+
+def get_session_user(request: Request) -> dict[str, Any] | None:
+    """Resolve the identity behind the admin session cookie (any role), or None."""
     token = request.cookies.get(ADMIN_COOKIE_NAME)
     if not token:
         return None
     store = get_store(request)
-    session = store.get_admin_session(token)
+    session = store.get_admin_session(token)  # also rejects expired / blocked sessions
     if not session:
         return None
-
-    # Check account status & admin privileges
-    if session.get("is_blocked") or session.get("status") == "BLOCKED":
-        store.delete_admin_session(token)
-        return None
-
     user = store.get_user(session["username"])
-    if not user:
-        return None
-
-    role = user.get("role", "")
-    is_admin = bool(user.get("is_admin_user"))
-    if not can_access_admin_portal(role, is_admin):
+    if not user or user.get("is_blocked") or user.get("status") == "BLOCKED":
         store.delete_admin_session(token)
         return None
-
     return user
 
 
-def require_operator(request: Request) -> tuple[dict[str, Any] | None, RedirectResponse | None]:
-    """Helper to require authenticated operator or return a redirect to /login."""
-    operator = get_current_operator(request)
-    if not operator:
-        return None, RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
-    return operator, None
+def get_current_operator(request: Request) -> dict[str, Any] | None:
+    """Return the session user only if their role may use the admin portal."""
+    user = get_session_user(request)
+    if user and can_access_admin_portal(user.get("role", "")):
+        return user
+    return None
+
+
+def require_admin_operator(request: Request) -> dict[str, Any]:
+    """FastAPI dependency: require an authenticated administrator.
+
+    Runs before form/body validation, so an anonymous POST gets 401 (not 422).
+    No session -> AdminAuthRequired (303 to /login for pages, 401 otherwise);
+    authenticated but not an administrator role -> 403.
+    """
+    user = get_session_user(request)
+    if user is None:
+        raise AdminAuthRequired()
+    if not can_access_admin_portal(user.get("role", "")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The NCIIPC Administration Portal requires an administrator role.",
+        )
+    return user
+
+
+def require_valid_username(username: str) -> None:
+    """Reject a {username} path parameter that fails satsa.security.USERNAME_RE (HTTP 400)."""
+    if not is_valid_username(username):
+        raise HTTPException(status_code=400, detail="Invalid username.")
 
 
 # =========================================================================
@@ -90,64 +123,65 @@ async def admin_login_page(request: Request, error: str | None = None) -> Any:
     )
 
 
+ADMIN_LOGIN_FAILED_MESSAGE = "Invalid administrative credentials."
+# Burned on unknown usernames so a miss costs the same PBKDF2 work as a hit.
+_DUMMY_SALT_HEX = "00" * 16
+_DUMMY_HASH = "0" * 64
+
+
 @router.post("/login")
 async def admin_login_post(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
 ) -> Any:
-    """Process admin authentication and issue secure session cookie."""
+    """Process admin authentication and issue secure session cookie.
+
+    The passphrase is verified FIRST. Unknown user, wrong passphrase, blocked
+    account and non-administrator role all return the same generic 401, so the
+    response never reveals whether a username exists or is blocked. The
+    distinct reasons are still recorded in the hash-chained admin audit log.
+    """
     store = get_store(request)
     username_clean = username.strip()
 
-    # Look up user
+    def _deny(action: str, reason: str) -> Any:
+        store.append_admin_audit(action, username_clean, target=username_clean, details={"reason": reason})
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_login.html",
+            context={"request": request, "error": ADMIN_LOGIN_FAILED_MESSAGE, "username": username_clean},
+            status_code=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    recent_failures = store.count_recent_login_failures(
+        username_clean,
+        LOGIN_LOCKOUT_MINUTES,
+        table="admin_audit_log",
+        fail_action="ADMIN_LOGIN_FAIL",
+        success_action="ADMIN_LOGIN",
+    )
+    if recent_failures >= LOGIN_MAX_FAILURES:
+        # Locked: rejected even with the correct passphrase, same generic response.
+        return _deny("ADMIN_LOGIN_LOCKED", "Too many recent failed attempts")
+
     cur = store.conn.cursor()
     cur.execute(
-        "SELECT username, role, pass_hash, pass_salt, is_blocked, status, is_admin_user FROM identities WHERE username = ?",
+        "SELECT username, role, pass_hash, pass_salt, is_blocked, status FROM identities WHERE username = ?",
         (username_clean,),
     )
     user_row = cur.fetchone()
 
     if not user_row:
-        store.append_admin_audit("ADMIN_LOGIN_FAIL", username_clean, target=username_clean, details={"reason": "User not found"})
-        return templates.TemplateResponse(
-            request=request,
-            name="admin_login.html",
-            context={"request": request, "error": "Invalid administrative credentials.", "username": username_clean},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
-
-    # Check status
-    if user_row["is_blocked"] or user_row["status"] == "BLOCKED":
-        store.append_admin_audit("ADMIN_LOGIN_BLOCKED", username_clean, target=username_clean, details={"reason": "Account is blocked"})
-        return templates.TemplateResponse(
-            request=request,
-            name="admin_login.html",
-            context={"request": request, "error": "Account is blocked. Access denied.", "username": username_clean},
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
-
-    # Check passphrase
+        verify_passphrase(password, _DUMMY_SALT_HEX, _DUMMY_HASH)
+        return _deny("ADMIN_LOGIN_FAIL", "User not found")
     if not verify_passphrase(password, user_row["pass_salt"], user_row["pass_hash"]):
-        store.append_admin_audit("ADMIN_LOGIN_FAIL", username_clean, target=username_clean, details={"reason": "Bad passphrase"})
-        return templates.TemplateResponse(
-            request=request,
-            name="admin_login.html",
-            context={"request": request, "error": "Invalid administrative credentials.", "username": username_clean},
-            status_code=status.HTTP_401_UNAUTHORIZED,
-        )
-
-    # Check administrative portal authorization
+        return _deny("ADMIN_LOGIN_FAIL", "Bad passphrase")
+    if user_row["is_blocked"] or user_row["status"] == "BLOCKED":
+        return _deny("ADMIN_LOGIN_BLOCKED", "Account is blocked")
     role = user_row["role"]
-    is_admin = bool(user_row["is_admin_user"])
-    if not can_access_admin_portal(role, is_admin):
-        store.append_admin_audit("ADMIN_LOGIN_DENIED", username_clean, target=username_clean, details={"reason": "Insufficient role for admin portal"})
-        return templates.TemplateResponse(
-            request=request,
-            name="admin_login.html",
-            context={"request": request, "error": "Identity is not authorized to access NCIIPC Administration Portal.", "username": username_clean},
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
+    if not can_access_admin_portal(role):
+        return _deny("ADMIN_LOGIN_DENIED", "Insufficient role for admin portal")
 
     # Create session
     token = store.create_admin_session(username_clean, role)
@@ -159,8 +193,11 @@ async def admin_login_post(
         key=ADMIN_COOKIE_NAME,
         value=token,
         httponly=True,
-        samesite="lax",
-        secure=False,  # localhost support
+        # Strict: no admin flow starts from another site, so the session cookie is
+        # never sent on cross-site requests (partial mitigation for missing CSRF tokens).
+        samesite="strict",
+        # Off by default for plain-HTTP localhost; set SATSA_COOKIE_SECURE=1 behind TLS.
+        secure=os.environ.get("SATSA_COOKIE_SECURE", "").lower() in ("1", "true", "yes"),
         max_age=8 * 3600,
     )
     return resp
@@ -202,11 +239,8 @@ async def admin_splash_page(request: Request) -> Any:
 
 
 @router.get("/overview", response_class=HTMLResponse)
-async def admin_overview_direct(request: Request) -> Any:
+async def admin_overview_direct(request: Request, operator: dict[str, Any] = Depends(require_admin_operator)) -> Any:
     """Protected direct route for Administration Overview."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
     store = get_store(request)
     stats = store.get_admin_overview_stats()
     return templates.TemplateResponse(
@@ -257,11 +291,8 @@ async def admin_overview(request: Request) -> Any:
 
 
 @router.get("/users", response_class=HTMLResponse)
-async def admin_users_list(request: Request, message: str | None = None, error: str | None = None) -> Any:
+async def admin_users_list(request: Request, message: str | None = None, error: str | None = None, operator: dict[str, Any] = Depends(require_admin_operator)) -> Any:
     """Authoritative user directory with online state, role, and operational actions."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
 
     store = get_store(request)
     users = store.list_admin_users()
@@ -281,11 +312,8 @@ async def admin_users_list(request: Request, message: str | None = None, error: 
 
 
 @router.get("/users/create", response_class=HTMLResponse)
-async def admin_user_create_get(request: Request, error: str | None = None) -> Any:
+async def admin_user_create_get(request: Request, error: str | None = None, operator: dict[str, Any] = Depends(require_admin_operator)) -> Any:
     """Render user provisioning form with dynamic org/CSE dataset."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
 
     store = get_store(request)
     organisations = store.list_organisations()
@@ -314,12 +342,9 @@ async def admin_user_create_post(
     org_id: str | None = Form(None),
     cse_id: str | None = Form(None),
     force_password_change: str | None = Form(None),
-    is_admin_user: str | None = Form(None),
+    operator: dict[str, Any] = Depends(require_admin_operator),
 ) -> Any:
     """Provision a new authoritative identity with PBKDF2 hashed credentials."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
 
     store = get_store(request)
     username_clean = username.strip()
@@ -327,7 +352,6 @@ async def admin_user_create_post(
     org_clean = org_id.strip() if org_id and org_id.strip() else None
     cse_clean = cse_id.strip() if cse_id and cse_id.strip() else None
     fpc = 1 if force_password_change in ("true", "1", "on") else 0
-    admin_access = 1 if is_admin_user in ("true", "1", "on") else 0
 
     # Validation
     if not re.match(r"^[a-zA-Z0-9_\-\.]{3,32}$", username_clean):
@@ -406,7 +430,6 @@ async def admin_user_create_post(
         cse_id=cse_clean,
         status="ACTIVE",
         force_password_change=fpc,
-        is_admin_user=admin_access,
     )
 
     # Append cryptographic audit event (password is never logged)
@@ -419,7 +442,6 @@ async def admin_user_create_post(
             "org_id": org_clean,
             "cse_id": cse_clean,
             "force_password_change": fpc,
-            "is_admin_user": admin_access,
         },
     )
 
@@ -430,11 +452,9 @@ async def admin_user_create_post(
 
 
 @router.get("/users/{username}/edit", response_class=HTMLResponse)
-async def admin_user_edit_get(request: Request, username: str, error: str | None = None) -> Any:
+async def admin_user_edit_get(request: Request, username: str, error: str | None = None, operator: dict[str, Any] = Depends(require_admin_operator)) -> Any:
     """Render user editing form."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     user = store.get_user(username)
@@ -468,12 +488,10 @@ async def admin_user_edit_post(
     org_id: str | None = Form(None),
     cse_id: str | None = Form(None),
     force_password_change: str | None = Form(None),
-    is_admin_user: str | None = Form(None),
+    operator: dict[str, Any] = Depends(require_admin_operator),
 ) -> Any:
     """Update user identity parameters and enforce audit logging for mutations."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     prev_user = store.get_user(username)
@@ -485,7 +503,6 @@ async def admin_user_edit_post(
     org_clean = org_id.strip() if org_id and org_id.strip() else None
     cse_clean = cse_id.strip() if cse_id and cse_id.strip() else None
     fpc = 1 if force_password_change in ("true", "1", "on") else 0
-    admin_access = 1 if is_admin_user in ("true", "1", "on") else 0
 
     # Dynamic constraint check: if org_id is provided and cse_id is provided, CSE must belong to Org
     if org_clean and cse_clean:
@@ -515,7 +532,6 @@ async def admin_user_edit_post(
         cse_id=cse_clean,
         status=status_clean,
         force_password_change=fpc,
-        is_admin_user=admin_access,
     )
 
     # Audit individual mutations
@@ -586,11 +602,9 @@ async def admin_user_edit_post(
 
 
 @router.post("/users/{username}/block")
-async def admin_user_block(request: Request, username: str) -> Any:
+async def admin_user_block(request: Request, username: str, operator: dict[str, Any] = Depends(require_admin_operator)) -> Any:
     """Immediately block user and revoke active sessions."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     store.set_user_status(username, "BLOCKED")
@@ -611,11 +625,9 @@ async def admin_user_block(request: Request, username: str) -> Any:
 
 
 @router.post("/users/{username}/unblock")
-async def admin_user_unblock(request: Request, username: str) -> Any:
+async def admin_user_unblock(request: Request, username: str, operator: dict[str, Any] = Depends(require_admin_operator)) -> Any:
     """Restore active status to a previously blocked user."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     store.set_user_status(username, "ACTIVE")
@@ -628,11 +640,9 @@ async def admin_user_unblock(request: Request, username: str) -> Any:
 
 
 @router.get("/users/{username}/reset", response_class=HTMLResponse)
-async def admin_user_reset_get(request: Request, username: str, error: str | None = None) -> Any:
+async def admin_user_reset_get(request: Request, username: str, error: str | None = None, operator: dict[str, Any] = Depends(require_admin_operator)) -> Any:
     """Render password reset form."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     user = store.get_user(username)
@@ -658,11 +668,10 @@ async def admin_user_reset_post(
     username: str,
     new_password: str = Form(...),
     force_password_change: str | None = Form(None),
+    operator: dict[str, Any] = Depends(require_admin_operator),
 ) -> Any:
     """Issue new credentials, invalidate current sessions, and append audit record."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
+    require_valid_username(username)
 
     store = get_store(request)
     user = store.get_user(username)
@@ -700,12 +709,9 @@ async def admin_user_reset_post(
 
 @router.get("/organisations", response_class=HTMLResponse)
 async def admin_organisations_list(
-    request: Request, message: str | None = None, error: str | None = None
+    request: Request, message: str | None = None, error: str | None = None, operator: dict[str, Any] = Depends(require_admin_operator)
 ) -> Any:
     """View critical sector organisations."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
 
     store = get_store(request)
     organisations = store.list_organisations()
@@ -730,11 +736,9 @@ async def admin_organisation_create(
     org_id: str = Form(...),
     name: str = Form(...),
     sector: str = Form(...),
+    operator: dict[str, Any] = Depends(require_admin_operator),
 ) -> Any:
     """Register a new critical sector organisation."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
 
     store = get_store(request)
     org_clean = org_id.strip().upper()
@@ -759,9 +763,9 @@ async def admin_organisation_create(
             url=f"/organisations?message=Organisation+'{org_clean}'+registered+successfully",
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    except Exception as exc:
+    except sqlite3.Error as exc:  # e.g. duplicate org_id
         return RedirectResponse(
-            url=f"/organisations?error=Failed+to+register+organisation:+{str(exc)}",
+            url=f"/organisations?error=Failed+to+register+organisation:+{exc!s}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -772,11 +776,8 @@ async def admin_organisation_create(
 
 
 @router.get("/cses", response_class=HTMLResponse)
-async def admin_cses_list(request: Request, message: str | None = None, error: str | None = None) -> Any:
+async def admin_cses_list(request: Request, message: str | None = None, error: str | None = None, operator: dict[str, Any] = Depends(require_admin_operator)) -> Any:
     """View registered Critical Sector Entities."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
 
     store = get_store(request)
     cses = store.list_cses()
@@ -803,11 +804,9 @@ async def admin_cse_create(
     cse_id: str = Form(...),
     org_id: str = Form(...),
     sector: str = Form(...),
+    operator: dict[str, Any] = Depends(require_admin_operator),
 ) -> Any:
     """Register a new Critical Sector Entity."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
 
     store = get_store(request)
     cse_clean = cse_id.strip().upper()
@@ -832,9 +831,9 @@ async def admin_cse_create(
             url=f"/cses?message=Critical+Sector+Entity+'{cse_clean}'+registered+successfully",
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    except Exception as exc:
+    except sqlite3.Error as exc:  # e.g. duplicate cse_id / unknown org
         return RedirectResponse(
-            url=f"/cses?error=Failed+to+register+CSE:+{str(exc)}",
+            url=f"/cses?error=Failed+to+register+CSE:+{exc!s}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
@@ -845,11 +844,8 @@ async def admin_cse_create(
 
 
 @router.get("/audit", response_class=HTMLResponse)
-async def admin_audit_view(request: Request) -> Any:
+async def admin_audit_view(request: Request, operator: dict[str, Any] = Depends(require_admin_operator)) -> Any:
     """Cryptographic audit trail viewer with live SHA-256 chain verification."""
-    operator, redirect = require_operator(request)
-    if redirect:
-        return redirect
 
     store = get_store(request)
     logs = store.list_admin_audit_logs(limit=250)
@@ -870,17 +866,22 @@ async def admin_audit_view(request: Request) -> Any:
 
 
 # =========================================================================
-# Live Activity & Telemetry Endpoints
+# Admin Activity Feed (operator session monitor) Endpoints
 # =========================================================================
 
 
 @router.get("/api/activity/stream")
-async def admin_activity_stream(request: Request, since_id: int = 0, limit: int = 50) -> JSONResponse:
-    """Telemetry stream endpoint providing real-time SAT-SA operational events and online operators."""
-    operator = get_current_operator(request)
-    if not operator:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
+async def admin_activity_stream(
+    request: Request,
+    since_id: int = Query(0, ge=0, description="Return events with event_id > since_id"),
+    limit: int = Query(50, ge=1, le=LIVE_EVENTS_MAX_LIMIT),
+    operator: dict[str, Any] = Depends(require_admin_operator),
+) -> JSONResponse:
+    """Admin activity feed polling endpoint: SAT-SA operator events newer than since_id.
 
+    Monitors SAT-SA's own operators (logins, report downloads, account actions),
+    not CSE security data. Parameters are range-checked (422 on bad input).
+    """
     store = get_store(request)
     events = store.get_live_events(since_id=since_id, limit=limit)
     online_users = store.get_online_operators()
@@ -895,12 +896,12 @@ async def admin_activity_stream(request: Request, since_id: int = 0, limit: int 
 
 
 @router.get("/api/activity/recent")
-async def admin_activity_recent(request: Request, limit: int = 30) -> JSONResponse:
-    """Fetch the most recent operational events."""
-    operator = get_current_operator(request)
-    if not operator:
-        return JSONResponse({"error": "Unauthorized"}, status_code=401)
-
+async def admin_activity_recent(
+    request: Request,
+    limit: int = Query(30, ge=1, le=LIVE_EVENTS_MAX_LIMIT),
+    operator: dict[str, Any] = Depends(require_admin_operator),
+) -> JSONResponse:
+    """Most recent admin activity feed events and currently signed-in operators."""
     store = get_store(request)
     events = store.get_live_events(since_id=0, limit=limit)
     online_users = store.get_online_operators()
@@ -909,9 +910,23 @@ async def admin_activity_recent(request: Request, limit: int = 30) -> JSONRespon
 
 @router.websocket("/ws/activity")
 async def admin_activity_websocket(websocket: WebSocket) -> None:
-    """WebSocket endpoint pushing near-real-time operational telemetry to Admin Dashboard."""
-    await websocket.accept()
+    """Admin activity feed over WebSocket: pushes new SAT-SA operator events (admin session required)."""
     store: SQLiteStore = websocket.app.state.store
+    # Same authorization as every other admin route: a valid, unblocked admin
+    # session with an administrator role. Otherwise refuse the handshake
+    # (policy violation, 1008) before any event is sent.
+    token = websocket.cookies.get(ADMIN_COOKIE_NAME)
+    session = store.get_admin_session(token) if token else None
+    user = store.get_user(session["username"]) if session else None
+    if (
+        not user
+        or user.get("is_blocked")
+        or user.get("status") == "BLOCKED"
+        or not can_access_admin_portal(user.get("role", ""))
+    ):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
     last_id = 0
     initial_events = store.get_live_events(since_id=0, limit=25)
     if initial_events:
@@ -926,5 +941,5 @@ async def admin_activity_websocket(websocket: WebSocket) -> None:
                 online_users = store.get_online_operators()
                 await websocket.send_json({"events": new_events, "online_users": online_users})
             await asyncio.sleep(1.0)
-    except (WebSocketDisconnect, Exception):
-        pass
+    except (WebSocketDisconnect, RuntimeError, OSError):
+        return  # client disconnected

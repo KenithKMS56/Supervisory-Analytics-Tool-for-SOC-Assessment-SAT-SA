@@ -70,6 +70,18 @@ def get_current_identity(request: Request, db_path: str = "data/satsa.db") -> Id
     )
 
 
+def require_authenticated(request: Request) -> Identity:
+    """FastAPI dependency: require any valid, unblocked session (401 otherwise).
+
+    Used on read-only views that every signed-in identity may open; per-entity
+    boundaries are still enforced separately via require_cse_access.
+    """
+    identity = get_current_identity(request)
+    if identity is None:
+        raise HTTPException(status_code=401, detail="Authentication required. Please log in at /login.")
+    return identity
+
+
 def require_role(*allowed_roles: str) -> Callable[[Request], Identity]:
     """FastAPI dependency factory: require an authenticated identity with one of the given roles.
 

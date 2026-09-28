@@ -12,6 +12,8 @@ Verifies:
 9. Logout terminates session and redirects to /login.
 """
 
+import uuid
+
 from fastapi.testclient import TestClient
 
 from satsa.api.routes import app
@@ -71,10 +73,13 @@ def test_unauthenticated_protected_routes_redirect_to_login():
 
 
 def test_failed_login_displays_error():
+    # Uses an unknown username rather than the shared seeded "admin" account:
+    # failed attempts count toward login lockout, and other tests depend on
+    # "admin" staying usable no matter how often this suite runs.
     client = TestClient(app)
     resp = client.post(
         "/login",
-        data={"username": "admin", "password": "WrongPassword#9999"},
+        data={"username": f"nobody-{uuid.uuid4().hex[:8]}", "password": "WrongPassword#9999"},
         follow_redirects=False,
     )
     assert resp.status_code == 303

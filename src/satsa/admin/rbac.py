@@ -38,11 +38,13 @@ SUPERVISORY_ROLES: set[str] = {
     Role.LEGACY_EXAMINER,
 }
 
+# Only administrator roles may use the Admin Portal: every portal route can
+# create/modify identities (including new administrators), block accounts or
+# reset credentials, so read-only supervisory roles are deliberately excluded.
 ADMIN_PORTAL_ROLES: set[str] = {
     Role.NCIIPC_SUPER_ADMIN,
-    Role.NCIIPC_SUPERVISOR,
     Role.LEGACY_ADMIN,
-    Role.LEGACY_SUPERVISOR,
+    "NCIIPC_SUPER_ADMINISTRATOR",
 }
 
 
@@ -115,8 +117,11 @@ def has_permission(role: str, permission: Permission) -> bool:
     return permission in perms
 
 
-def can_access_admin_portal(role: str, is_admin_user: bool = False) -> bool:
-    """Determine whether an actor is authorized to authenticate into the NCIIPC Admin Portal."""
-    if is_admin_user:
-        return True
+def can_access_admin_portal(role: str) -> bool:
+    """Determine whether an actor is authorized to use the NCIIPC Admin Portal.
+
+    Authorization is derived from the role alone. The legacy `is_admin_user`
+    identity flag is ignored: it let any role (e.g. an examiner) be granted
+    full user-management power outside the role model.
+    """
     return role in ADMIN_PORTAL_ROLES

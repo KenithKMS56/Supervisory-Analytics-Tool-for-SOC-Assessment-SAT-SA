@@ -449,12 +449,15 @@ class ValidationHarness:
             f"**Run ID:** `{r_id}` | **Validation Engine:** Fully Deterministic (No AI/ML)",
             "",
             "## 1. Executive Summary & Verification Criteria",
-            "This report documents whether each detection rule's code correctly implements its own specified "
-            "logic, measured against a synthetic ground-truth dataset across 10 Critical Sector Entities (CSEs) "
-            "whose injected defects are deliberately built to clearly exceed each rule's threshold. High scores "
-            "here demonstrate implementation correctness on an unambiguous dataset, not real-world detection "
-            "accuracy -- see docs/validation.md Section 0 for the harder, more realistic 'stress scenario' "
-            "(`satsa validate-stress`) and Section 5 for the Shadow-Pilot mode against real historical findings.",
+            (
+                "This report documents whether each detection rule's code correctly implements its own specified "
+                "logic, measured against a synthetic ground-truth dataset across 10 Critical Sector Entities (CSEs) "
+                "whose injected defects are deliberately built to clearly exceed each rule's threshold. High scores "
+                "here demonstrate implementation correctness on an unambiguous dataset, not real-world detection "
+                "accuracy -- see docs/validation.md Section 0 for the harder, more realistic 'stress scenario' "
+                "(`satsa validate-stress`) and Section 5 for the Shadow-Pilot mode against real historical findings."
+            ),
+
             "",
             "| Assessment Axis | Empirical Result | Status |",
             "|---|---|---|",

@@ -39,7 +39,7 @@ def test_default_identities_seeded():
 def test_unauthenticated_access_rejected_on_protected_routes():
     anon = TestClient(app)
     # Tuning save (admin/supervisor only)
-    r1 = anon.post("/tuning/save", data={"eg01_threshold": "150"}, follow_redirects=False)
+    r1 = anon.post("/tuning/save", data={"EG01__fast_share_threshold": "0.2"}, follow_redirects=False)
     assert r1.status_code == 401
 
     # Rule pack export (admin/supervisor only)
@@ -54,9 +54,9 @@ def test_unauthenticated_access_rejected_on_protected_routes():
     )
     assert r3.status_code == 401
 
-    # Telemetry ingest API (admin/supervisor only)
+    # Periodic batch submission API (admin/supervisor only)
     r4 = anon.post(
-        "/api/v1/telemetry/ingest",
+        "/api/v1/submissions",
         json={"entity_id": "CSE-01", "alerts": []},
         follow_redirects=False,
     )
@@ -68,7 +68,7 @@ def test_wrong_role_rejected():
     exam_client = TestClient(app)
     _login(exam_client, "examiner", "ChangeMe-Examiner#2026")
     resp = exam_client.post(
-        "/tuning/save", data={"eg01_threshold": "150"}, follow_redirects=False
+        "/tuning/save", data={"EG01__fast_share_threshold": "0.2"}, follow_redirects=False
     )
     assert resp.status_code == 403
 
@@ -82,7 +82,7 @@ def test_role_appropriate_access_succeeds():
         sup_client = TestClient(app)
         _login(sup_client, "supervisor", "ChangeMe-Supervisor#2026")
         resp = sup_client.post(
-            "/tuning/save", data={"eg01_threshold": "125"}, follow_redirects=True
+            "/tuning/save", data={"EG01__fast_share_threshold": "0.18"}, follow_redirects=True
         )
         assert resp.status_code == 200
         assert "Parameters updated and re-calibrated!" in resp.text
@@ -145,10 +145,19 @@ def test_audit_log_records_real_actor_not_caller_supplied_string():
 
 
 def test_login_failure_is_audited_and_rejected():
+    # Throwaway identity: failed attempts count toward lockout, so never fail
+    # logins against the shared seeded accounts other tests rely on.
+    import uuid
+
+    username = f"audit-fail-{uuid.uuid4().hex[:8]}"
+    store = SQLiteStore("data/satsa.db")
+    store.upsert_identity(username, "examiner", "Throwaway-Passphrase#2026")
+    store.close()
+
     anon = TestClient(app)
     resp = anon.post(
         "/login",
-        data={"username": "admin", "password": "definitely-wrong-password"},
+        data={"username": username, "password": "definitely-wrong-password"},
         follow_redirects=False,
     )
     assert resp.status_code == 303
@@ -160,7 +169,7 @@ def test_login_failure_is_audited_and_rejected():
     row = cur.fetchone()
     store.close()
     assert row is not None
-    assert row["actor"] == "admin"
+    assert row["actor"] == username
 
 
 def test_logout_clears_session():
@@ -170,5 +179,5 @@ def test_logout_clears_session():
     assert resp.status_code == 303
 
     # Now protected actions should be rejected again.
-    r = c.post("/tuning/save", data={"eg01_threshold": "150"}, follow_redirects=False)
+    r = c.post("/tuning/save", data={"EG01__fast_share_threshold": "0.2"}, follow_redirects=False)
     assert r.status_code == 401

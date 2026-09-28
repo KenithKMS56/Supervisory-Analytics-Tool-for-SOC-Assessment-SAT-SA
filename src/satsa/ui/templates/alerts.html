@@ -5,7 +5,7 @@
 {% block content %}
 <div class="header-section">
   <div class="header-title">
-    <h1>National SOC Alert Telemetry Explorer</h1>
+    <h1>National SOC Alert Explorer</h1>
     <p>Cross-entity deep audit stream queried directly from DuckDB partitioned Parquet storage.</p>
   </div>
   <div class="header-actions">
@@ -22,7 +22,7 @@
 <div class="stats-grid">
   <div class="stat-card">
     <div class="stat-top">
-      <span class="stat-label">Total Telemetric Alerts</span>
+      <span class="stat-label">Total Submitted Alerts</span>
       <div class="stat-icon">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
@@ -92,7 +92,7 @@
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-blue);">
         <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
       </svg>
-      <span>Telemetric Filter & Query Engine</span>
+      <span>Alert Filter & Query Engine</span>
     </div>
     <span class="filter-badge">Showing {{ alerts|length }} Sample Records</span>
   </div>
@@ -250,7 +250,7 @@
                 <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                 <line x1="8" y1="11" x2="14" y2="11"></line>
               </svg>
-              <div style="font-size: 1rem; font-weight: 600; color: var(--text-primary);">No telemetric records matched your search filter</div>
+              <div style="font-size: 1rem; font-weight: 600; color: var(--text-primary);">No alert records matched your search filter</div>
               <p style="font-size: 0.85rem; color: var(--text-secondary); max-width: 400px;">Try adjusting your query, selecting a different entity, or clearing the active filters.</p>
               <a href="/alerts" class="btn btn-secondary" style="margin-top: 0.5rem;">Reset All Filters</a>
             </div>

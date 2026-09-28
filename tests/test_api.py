@@ -116,14 +116,14 @@ def test_feedback_submission():
 def test_ui_alerts_view():
     resp = client.get("/alerts")
     assert resp.status_code == 200
-    assert "National SOC Alert Telemetry Explorer" in resp.text
+    assert "National SOC Alert Explorer" in resp.text
     assert "CSE-" in resp.text
 
 
 def test_ui_upload_view():
     resp = client.get("/upload")
     assert resp.status_code == 200
-    assert "Telemetric Submission & Ingestion Wizard" in resp.text
+    assert "Periodic Submission & Ingestion Wizard" in resp.text
     assert "Quick Demo Launcher" in resp.text
     assert "Run Full Assessment Pipeline" in resp.text
 
@@ -165,8 +165,8 @@ def test_ui_tuning_view_and_save():
         save_resp = client.post(
             "/tuning/save",
             data={
-                "eg01_threshold": "150",
-                "eg04_share": "0.45",
+                "EG01__fast_share_threshold": "0.2",
+                "EG04__max_comment_hash_share": "0.45",
             },
             follow_redirects=True,
         )

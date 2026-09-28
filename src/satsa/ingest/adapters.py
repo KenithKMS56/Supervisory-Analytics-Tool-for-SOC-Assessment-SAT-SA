@@ -64,7 +64,16 @@ class SourceAdapter:
         conn = sqlite3.connect(str(path))
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute(f"SELECT * FROM [{table_name}]")
+        # Identifiers can't be bound as parameters, so only read a table that
+        # actually exists in the export, and quote it with ']' escaped.
+        cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)
+        )
+        if cursor.fetchone() is None:
+            conn.close()
+            return []
+        quoted = "[" + table_name.replace("]", "]]") + "]"
+        cursor.execute(f"SELECT * FROM {quoted}")
         rows = [dict(r) for r in cursor.fetchall()]
         conn.close()
         return rows
@@ -114,7 +123,7 @@ class SourceAdapter:
             timeout = float(endpoint_config.get("timeout_seconds", 5.0))
             req = urllib.request.Request(url, headers=headers, method="GET")
             try:
-                with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     payload = json.loads(resp.read().decode("utf-8"))
             except urllib.error.URLError as e:
                 raise ValueError(f"read_api: failed to reach local endpoint '{url}': {e}") from e

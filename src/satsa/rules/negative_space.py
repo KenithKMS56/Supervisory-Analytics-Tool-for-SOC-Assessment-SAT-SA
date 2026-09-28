@@ -6,7 +6,7 @@ from satsa.store.duckdb import DuckDBStore
 
 
 class NS01SilentCriticalAssets(BaseRule):
-    """NS01: Silent critical assets (zero telemetry for >= 3 days)."""
+    """NS01: Silent critical assets (>= min_silent_days zero-event days on critical monitored assets)."""
 
     id = "NS01"
     name = "Silent Critical Assets"
@@ -23,8 +23,10 @@ class NS01SilentCriticalAssets(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        # Look for criticality >= 3 assets with 0 events on daily log sources
-        sql = f"""
+        # Tunable: min asset criticality considered, and min zero-event days to flag.
+        min_silent_days = int(self.params.get("min_silent_days", 3))
+        min_asset_criticality = int(self.params.get("min_asset_criticality", 3))
+        sql = """
         SELECT
             l.asset_id,
             count(CASE WHEN l.event_count = 0 THEN 1 END) as silent_days,
@@ -32,23 +34,25 @@ class NS01SilentCriticalAssets(BaseRule):
             max(l.date) as max_date
         FROM log_source_daily l
         JOIN asset a ON l.entity_id = a.entity_id AND l.asset_id = a.asset_id
-        WHERE l.entity_id = '{entity_id}' AND a.criticality >= 3 AND a.monitored_flag = true
+        WHERE l.entity_id = ? AND a.criticality >= ? AND a.monitored_flag = true
         GROUP BY l.asset_id
-        HAVING count(CASE WHEN l.event_count = 0 THEN 1 END) >= 3
+        HAVING count(CASE WHEN l.event_count = 0 THEN 1 END) >= ?
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id, min_asset_criticality, min_silent_days])
         if df.is_empty():
             return [], []
 
         silent_assets = df["asset_id"].to_list()
         max_silent_val = df["silent_days"].max()
         max_silent = int(str(max_silent_val)) if max_silent_val is not None else 0
-        score, conf = self.compute_rule_score(max_silent / 3.0, len(silent_assets))
+        score, conf = self.compute_rule_score(
+            max_silent / float(min_silent_days), len(silent_assets)
+        )
         f_id = f"FND-NS01-{entity_id}-{run_id}"
 
         rationale = (
-            f"Telemetry blind spot: {len(silent_assets)} monitored Tier-1/Tier-2 critical assets "
-            f"exhibited zero event telemetry for up to {max_silent} days."
+            f"Logging blind spot: {len(silent_assets)} monitored critical assets "
+            f"recorded zero log events on up to {max_silent} days."
         )
         finding = Finding(
             finding_id=f_id,
@@ -61,7 +65,7 @@ class NS01SilentCriticalAssets(BaseRule):
             score=score,
             confidence=conf,
             severity="critical",
-            title=f"{self.name}: {len(silent_assets)} critical assets silent >= 3 days",
+            title=f"{self.name}: {len(silent_assets)} critical assets silent >= {min_silent_days} days",
             rationale=rationale,
             peer_comparison={
                 "silent_assets_count": len(silent_assets),
@@ -84,7 +88,7 @@ class NS01SilentCriticalAssets(BaseRule):
 
 
 class NS02MissingAlertCategories(BaseRule):
-    """NS02: Missing alert categories present in >= 80% of peers."""
+    """NS02: Missing alert categories reported by >= min_peer_entity_count portfolio entities."""
 
     id = "NS02"
     name = "Missing Alert Categories"
@@ -104,22 +108,24 @@ class NS02MissingAlertCategories(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        # Find categories present across >= 80% of other entities
+        # Tunable: a category counts as "standard" when at least this many entities
+        # in the portfolio report it (6 of the 10 demo entities by default).
+        min_peer_entity_count = int(self.params.get("min_peer_entity_count", 6))
         sql_peers = """
         SELECT category, count(DISTINCT entity_id) as ent_count
         FROM alert
         WHERE category IS NOT NULL AND category != ''
         GROUP BY category
-        HAVING count(DISTINCT entity_id) >= 6
+        HAVING count(DISTINCT entity_id) >= ?
         """
-        df_peers = store.query(sql_peers)
+        df_peers = store.query(sql_peers, [min_peer_entity_count])
         peer_common_cats = (
             {c for c in df_peers["category"].to_list() if c} if not df_peers.is_empty() else set()
         )
 
         # Find target entity categories
-        sql_target = f"SELECT DISTINCT category FROM alert WHERE entity_id = '{entity_id}' AND category IS NOT NULL AND category != ''"
-        df_target = store.query(sql_target)
+        sql_target = "SELECT DISTINCT category FROM alert WHERE entity_id = ? AND category IS NOT NULL AND category != ''"
+        df_target = store.query(sql_target, [entity_id])
         target_cats = (
             {c for c in df_target["category"].to_list() if c} if not df_target.is_empty() else set()
         )
@@ -132,7 +138,7 @@ class NS02MissingAlertCategories(BaseRule):
 
             rationale = (
                 f"Negative space detected: Entity completely lacks alert volume for standard categories "
-                f"prevalent in >= 80% of peers: {', '.join(missing_list)}."
+                f"reported by >= {min_peer_entity_count} entities in the portfolio: {', '.join(missing_list)}."
             )
             finding = Finding(
                 finding_id=f_id,
@@ -166,7 +172,7 @@ class NS02MissingAlertCategories(BaseRule):
 
 
 class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
-    """NS03: Unexpectedly low or flat activity (robust z <= -2, night flatline)."""
+    """NS03: Unexpectedly low or flat activity (night-time alert share below max_night_share)."""
 
     id = "NS03"
     name = "Unexpectedly Low or Flat Activity"
@@ -184,14 +190,14 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Calculate night share of alerts
-        sql = f"""
+        sql = """
         SELECT
             count(*) as total,
             count(CASE WHEN extract(hour from created_at) < 8 OR extract(hour from created_at) >= 20 THEN 1 END) as night_cnt
         FROM alert
-        WHERE entity_id = '{entity_id}'
+        WHERE entity_id = ?
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -212,7 +218,10 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
         peer_res = store.query(sql_peer)
         peer_avg = float(peer_res["peer_night_share"][0] or 0.20)
 
-        if total >= 100 and night_share < 0.03:
+        # Tunable: flag when the night-time share of alerts is below this, given enough volume.
+        max_night_share = float(self.params.get("max_night_share", 0.03))
+        min_alert_volume = int(self.params.get("min_alert_volume", 100))
+        if total >= min_alert_volume and night_share < max_night_share:
             score, conf = self.compute_rule_score(2.0, total)
             f_id = f"FND-NS03-{entity_id}-{run_id}"
 
@@ -260,14 +269,14 @@ class NS04MissingRecords(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Check TP alerts without cases
-        sql_tp = f"""
+        sql_tp = """
         SELECT a.alert_id
         FROM alert a
         LEFT JOIN case_alert_link l ON a.entity_id = l.entity_id AND a.alert_id = l.alert_id
-        WHERE a.entity_id = '{entity_id}' AND a.disposition = 'true_positive' AND a.severity_final IN ('high', 'critical')
+        WHERE a.entity_id = ? AND a.disposition = 'true_positive' AND a.severity_final IN ('high', 'critical')
           AND l.case_id IS NULL
         """
-        df_tp = store.query(sql_tp)
+        df_tp = store.query(sql_tp, [entity_id])
         tp_without_case = df_tp.shape[0] if not df_tp.is_empty() else 0
 
         if tp_without_case >= 3:
@@ -327,16 +336,16 @@ class NS05RuleCoverageGaps(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        sql = """
         SELECT
             r.rule_id,
             count(a.alert_id) as fired_count
         FROM detection_rule r
         LEFT JOIN alert a ON r.entity_id = a.entity_id AND r.rule_id = a.rule_id
-        WHERE r.entity_id = '{entity_id}' AND r.enabled = true
+        WHERE r.entity_id = ? AND r.enabled = true
         GROUP BY r.rule_id
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -396,16 +405,16 @@ class NS06InventoryVsTelemetry(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        sql = """
         SELECT a.asset_id
         FROM asset a
         LEFT JOIN alert alt ON a.entity_id = alt.entity_id AND a.asset_id = alt.asset_id
         LEFT JOIN log_source_daily l ON a.entity_id = l.entity_id AND a.asset_id = l.asset_id
-        WHERE a.entity_id = '{entity_id}'
+        WHERE a.entity_id = ?
         GROUP BY a.asset_id
         HAVING count(alt.alert_id) = 0 AND (count(l.event_count) = 0 OR sum(l.event_count) = 0)
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -450,7 +459,7 @@ class NS06InventoryVsTelemetry(BaseRule):
 
 
 class NS07AbsentExternalReporting(BaseRule):
-    """NS07: Absent external reporting (mandatory NCIIPC/CERT-In notification)."""
+    """NS07: Absent external reporting (no NCIIPC/CERT-In notification record for a Critical case)."""
 
     id = "NS07"
     name = "Absent External Reporting"
@@ -469,13 +478,13 @@ class NS07AbsentExternalReporting(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Critical incidents with no external_report row
-        sql = f"""
+        sql = """
         SELECT c.case_id, c.opened_at
         FROM "case" c
         LEFT JOIN external_report r ON c.entity_id = r.entity_id AND c.case_id = r.incident_id
-        WHERE c.entity_id = '{entity_id}' AND c.severity = 'critical' AND r.incident_id IS NULL
+        WHERE c.entity_id = ? AND c.severity = 'critical' AND r.incident_id IS NULL
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -483,9 +492,15 @@ class NS07AbsentExternalReporting(BaseRule):
         score, conf = self.compute_rule_score(len(unreported_cases) / 1.0, len(unreported_cases))
         f_id = f"FND-NS07-{entity_id}-{run_id}"
 
+        # NOTE: this checks only that SOME external_report row exists for each
+        # Critical case. Whether it was filed within the statutory reporting
+        # window is NOT evaluated (external_report.reported_at vs case opened_at);
+        # that timeliness check is a documented follow-up (docs/hardening_log.md),
+        # so the rationale must not claim a time window was checked.
         rationale = (
-            f"Statutory reporting violation: {len(unreported_cases)} confirmed Critical incidents were resolved "
-            f"without filing the mandatory external notification report with NCIIPC / CERT-In within 6 hours."
+            f"Possible reporting gap: {len(unreported_cases)} Critical incident cases have no "
+            f"corresponding external notification record (NCIIPC / CERT-In) in the submission. "
+            f"Reporting timeliness was not evaluated."
         )
         finding = Finding(
             finding_id=f_id,
@@ -534,12 +549,12 @@ class NS08SubmissionCompleteness(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Count months represented in alert timestamps
-        sql = f"""
+        sql = """
         SELECT count(DISTINCT date_trunc('month', created_at)) as month_cnt
         FROM alert
-        WHERE entity_id = '{entity_id}'
+        WHERE entity_id = ?
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 

@@ -4,7 +4,7 @@
 **SAT-SA** is an air-gapped, fully deterministic analytical tool and sovereign identity management platform designed for regulatory oversight of Security Operations Centres (SOCs) across Critical Sector Entities (CSEs) in power, banking, telecom, transport, and oil & gas.
 
 The platform provides a unified dual-application architecture:
-- **NCIIPC Administration Portal (`http://localhost:8000`)**: Authoritative governance, centralized identity provisioning, critical sector entity and organisation registries, live examiner telemetry, and administrative cryptographic audit chaining.
+- **NCIIPC Administration Portal (`http://localhost:8000`)**: Authoritative governance, centralized identity provisioning, critical sector entity and organisation registries, an admin activity feed (operator session monitor of SAT-SA's own users), and administrative cryptographic audit chaining.
 - **SAT-SA Supervisory Tool (`http://localhost:8001`)**: Supervisory execution gap detection (**EG01–EG12**), negative space inference (**NS01–NS08**), peer benchmarking, blinded review studios, and statutory compliance dossier exports.
 
 ---
@@ -21,7 +21,7 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is en
 │  • Authoritative Identity Provisioning  │  • Deterministic Analytics Engine       │
 │  • Org & Critical Sector Registries     │  • 12 Execution Gaps (EG01–EG12)        │
 │  • Dynamic Scoping & Role Assignment    │  • 8 Negative Space Inferences (NS)     │
-│  • Live Examiner Telemetry Stream       │  • Blinded Review Studio & Bias Defense │
+│  • Admin Activity Feed (Operators)      │  • Blinded Review Studio & Bias Defense │
 │  • Cryptographic Admin Audit Log        │  • PDF Dossiers & Peer Benchmarking     │
 ├─────────────────────────────────────────┴─────────────────────────────────────────┤
 │                      SHARED PERSISTENT SOVEREIGN BACKEND                          │
@@ -34,19 +34,19 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is en
 2. **100% Air-Gapped & Sovereign Data Security:**
    Binds strictly to local interfaces. Zero CDN dependencies, zero external script calls, and locally vendored Apache ECharts. Socket-level egress is blocked. Ingested analyst identities are irreversibly pseudonymised using HMAC-SHA256 (`.satsa_salt`), and IP addresses/PII are redacted using deterministic regex masks.
 3. **Cryptographic Tamper-Evidence:**
-   Every batch upload, schema validation, assessment run, rule configuration change, administrative provisioning action, and human examiner disposition is recorded into append-only SQLite logs cryptographically chained using SHA-256 `prev_hash` hashes. Any tampering invalidates the chain.
+   Every batch upload, schema validation, assessment run, rule configuration change, administrative provisioning action, and human examiner disposition is recorded into append-only SQLite logs hash-chained (SHA3-256 for new entries; legacy SHA-256 entries still verify). Editing, inserting, deleting or reordering an entry in the middle of the chain breaks verification; removal of the newest entries or a full recomputation of the chain is only caught by comparing against a checkpoint recorded off-box with `satsa audit head` (see DECISIONS.md ADR-005).
 4. **Extreme Columnar Analytics Performance:**
    Built on DuckDB and PyArrow columnar storage, achieving scan speeds exceeding **10.6 Million rows/second** on standard x86 CPU hardware—enabling multi-gigabyte periodic supervisory submissions to be evaluated in seconds with zero external database dependencies.
 5. **Cognitive Bias Mitigation (Blinded Review Studio):**
    Includes a double-blind supervisory mode that presents raw operational metrics without showing pre-calculated risk scores, helping examiners reach unbiased conclusions before revealing inter-rater concordance.
-6. **Live Cross-Application Telemetry:**
-   Bi-directional real-time telemetry connects SAT-SA examiner activities to the NCIIPC Admin Dashboard via high-throughput WebSockets (`/ws/activity`) with resilient long-polling fallbacks, enabling live visibility into active operator sessions and instant session revocation.
+6. **Admin Activity Feed (Operator Session Monitor):**
+   The NCIIPC Admin Portal shows what SAT-SA's *own operators* are doing -- sign-ins, report downloads, assessment runs, account blocks -- via an admin-only WebSocket (`/ws/activity`) with a polling fallback, plus instant session revocation. This monitors the tool's internal users; it does **not** collect or monitor any CSE security data (SAT-SA only assesses periodic batch submissions, after the fact).
 
 ---
 
 ## Regulatory Detection Catalog: 20 Production Rules
 
-SAT-SA evaluates telemetry against **12 Execution Gaps** (malfunctions in active workflows) and **8 Negative Space Inferences** (anomalies revealed by what is absent or missing).
+SAT-SA evaluates each periodic CSE submission against **12 Execution Gaps** (malfunctions in active workflows) and **8 Negative Space Inferences** (anomalies revealed by what is absent or missing).
 
 ### Execution Gaps (EG01–EG12)
 | ID | Rule Name | Operational Defect Identified | Severity |
@@ -68,11 +68,11 @@ SAT-SA evaluates telemetry against **12 Execution Gaps** (malfunctions in active
 | ID | Rule Name | Operational Defect Identified | Severity |
 | :--- | :--- | :--- | :--- |
 | **NS01** | Silent Critical Assets | Crown-jewel production servers with $\ge 3$ consecutive days of zero alert activity. | Critical |
-| **NS02** | Missing Alert Categories | Sector-prevalent MITRE ATT&CK tactics completely absent from telemetry. | High |
+| **NS02** | Missing Alert Categories | Sector-prevalent MITRE ATT&CK tactics completely absent from the entity's submitted alerts. | High |
 | **NS03** | Unexpectedly Low / Flat Activity| CUSUM volume collapse or total absence of weekend/off-hours alert generation. | High |
 | **NS04** | Missing Sequence Gaps | Non-contiguous alert/case ID numbers indicating withheld or purged records. | High |
 | **NS05** | Inactive Rule Coverage | Mandated detection signatures enabled in SIEM that have never triggered in 180 days. | Medium |
-| **NS06** | Inventory Reconciliation Gap | Discrepancy between declared asset registers and telemetric event sources. | High |
+| **NS06** | Inventory Reconciliation Gap | Discrepancy between declared asset registers and the assets that actually emit log events or alerts. | High |
 | **NS07** | Absent Regulatory Reporting | Critical True Positive incidents resolved without statutory regulatory notification. | Critical |
 | **NS08** | Submission Completeness Deficit | High null-rates ($>5\%$) or unparseable timestamps indicating compromised evidence. | High |
 
@@ -97,7 +97,7 @@ The application provides a fully server-rendered, responsive web interface:
 1. **Upload & Ingest (`/upload`)**:
    - Onboard new Critical Sector Entities (with custom critical sector support).
    - Permanent database persistence (SQLite entity store) with instant entity deletion.
-   - Drag-and-drop batch upload supporting individual CSVs or full telemetry `.zip` bundles.
+   - Drag-and-drop periodic batch upload supporting individual CSVs or full submission `.zip` bundles.
    - Schema validation, HMAC pseudonymisation, regex redaction, and automatic Parquet partitioning.
    - Canonical template downloads (pre-formatted CSVs and sample bundles).
 2. **Supervisory Portfolio League (`/`)**:
@@ -105,8 +105,8 @@ The application provides a fully server-rendered, responsive web interface:
    - Interactive filtering (e.g. click *"Entities Require Action"* to isolate outlier CSEs).
    - 8-domain capability heatmap (Detection, Triage, Escalation, Hygiene, Compliance, etc.).
    - Instant HTML and PDF executive dossier export buttons.
-3. **National Alert Telemetry Explorer (`/alerts`)**:
-   - Server-side paginated telemetric event browser (25 records/page) handling thousands of alerts smoothly.
+3. **National Alert Explorer (`/alerts`)**:
+   - Server-side paginated browser of submitted alert records (25 records/page) handling thousands of alerts smoothly.
    - Cross-filtering by entity, severity, disposition, and search query with live duration tracking.
 4. **Blinded Review Studio (`/blind-review`)**:
    - Cognitive debiasing workspace: presents raw empirical metrics (MTTR, SOAR volume, true-positive rates) without scores.
@@ -142,7 +142,7 @@ The **NCIIPC Administration Portal** (`http://localhost:8000`) is a dedicated su
      ├── Critical Sector Organisation Registry (Sector classification, Status)
      ├── Critical Sector Entity (CSE) Registry (Parent Org mapping)
      ├── Administrative Cryptographic Audit Log (Chained SHA-256 prev_hash)
-     └── Real-Time Operator Telemetry & Remote Session Revocation
+     └── Admin Activity Feed (Operator Session Monitor) & Remote Session Revocation
 ```
 
 1. **Authoritative Centralized User Provisioning (`/users`, `/users/create`)**:
@@ -159,11 +159,11 @@ The **NCIIPC Administration Portal** (`http://localhost:8000`) is a dedicated su
 
 3. **Critical Sector Entity & Organisation Registries (`/organisations`, `/cses`)**:
    - Authoritative registry for national critical information infrastructure bodies.
-   - Real-time mapping showing active CSE count and provisioned analyst count per entity.
+   - Registry view showing active CSE count and provisioned analyst count per entity.
 
 4. **Independent Administrative Audit Log (`/audit`)**:
    - Append-only log recording every administrative action (`USER_CREATED`, `ROLE_CHANGED`, `CSE_CHANGED`, `ACCOUNT_BLOCKED`, `PASSWORD_RESET`, `ORGANISATION_CREATED`, etc.).
-   - Cryptographically linked with SHA-256 `prev_hash` chaining; verifiable on-demand via the UI.
+   - Hash-chained (`prev_hash`; SHA3-256 for new entries) and verifiable on demand via the UI; `satsa audit head` records an off-box checkpoint that also catches removal of the newest entries.
 
 5. **Modern Government Aesthetic & Floating Navigation Bar**:
    - Orange accent palette (`#ea580c`), glassmorphism card surfaces, and 0xZenith national cyber defense branding.
@@ -171,9 +171,9 @@ The **NCIIPC Administration Portal** (`http://localhost:8000`) is a dedicated su
 
 ---
 
-## Live Cross-Application Activity Telemetry (`:8000` ↔ `:8001`)
+## Admin Activity Feed / Operator Session Monitor (`:8000` ↔ `:8001`)
 
-The two applications act as real-time views of the same running supervisory deployment:
+The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applications share one local database:
 
 - **Operational Event Tracking**:
   Records meaningful high-value events into `live_events`:
@@ -181,11 +181,12 @@ The two applications act as real-time views of the same running supervisory depl
   - Assessments: `ASSESSMENT_UPLOAD`, `ASSESSMENT_STARTED`, `ASSESSMENT_COMPLETED`
   - Supervisory Investigation: `FINDING_VIEWED`, `REPORT_GENERATED`, `REPORT_DOWNLOADED`
   - Governance: `ROLE_CHANGED`, `CSE_CHANGED`, `ORGANISATION_CREATED`, `CSE_CREATED`
-- **Dual-Channel Telemetry Stream**:
-  - Primary: Native WebSocket feed (`ws://localhost:8000/ws/activity`) for zero-latency event push.
-  - Fallback: Resilient polling stream (`/api/activity/stream?since_id=...`) for high-availability under strict firewall or proxy policies.
+- **Admin-only feed delivery** (both require an administrator session):
+  - WebSocket (`ws://localhost:8000/ws/activity`) pushing new operator events.
+  - Polling fallback (`/api/activity/stream?since_id=...&limit=...`, limit capped at 200).
+  - The feed is supplementary and not hash-chained; security-relevant events are also recorded in the hash-chained audit logs (DECISIONS.md ADR-006).
 - **Live Active Operators Widget**:
-  Real-time indicator showing active examiners/analysts, their active session start times, assigned CSE scope, and an instant **Revoke & Block** button for incident response.
+  Indicator showing signed-in examiners/analysts, their active session start times, assigned CSE scope, and an instant **Revoke & Block** button for incident response.
 
 ---
 
@@ -204,14 +205,14 @@ The two applications act as real-time views of the same running supervisory depl
 
 | Metric | Result | Target | Status |
 | :--- | :--- | :--- | :--- |
-| **Injected Defect Recall** (primary, unambiguous dataset) | **100.0%** (11/11 defects caught) | $\ge 90.0\%$ | Meets target |
+| **Injected Defect Recall** (primary, unambiguous dataset) | **100.0%** (13/13 defects caught) | $\ge 90.0\%$ | Meets target |
 | **Entity Rank Precision@7** (primary, unambiguous dataset) | **100.0%** (top-7 entities ranked accurately) | $\ge 85.0\%$ | Meets target |
 | **False-Alarm Precision** (primary, unambiguous dataset) | **100.0%** (0 false hits on clean entities) | $\ge 95.0\%$ | Meets target |
 | **Stress Scenario Defect Precision** (harder, ambiguous dataset) | **~60.0%** (2 false positives on noisy clean entity) | n/a -- reported for transparency | Genuinely imperfect |
-| **Review-Effort Lift** (primary dataset) | **16.60x** over random sampling | $\ge 5.00x$ | Meets target |
+| **Review-Effort Lift** (primary dataset) | **5.97x** at a 1% audit budget (4.13x at 2%, 1.65x at 5%). *Corrected from a stale 16.60x -- see docs/hardening_log.md.* | $\ge 5.00x$ | Meets target at the 1% budget only |
 | **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ perturbations) | $\ge 0.9000$ | Meets target |
 | **DuckDB Scan Throughput** | **10,623,549 rows/second** | $\ge 1,000,000$ | Measured, exceeds target |
-| **Automated Test Suite** | **94 passed, 0 failed** (100% passing across analytics, rules, RBAC, live telemetry, and Docker) | 100% passing | Verified |
+| **Automated Test Suite** | **596 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.11 and 3.13 from a clean clone | 100% passing | Verified |
 
 ---
 
@@ -225,7 +226,7 @@ The two applications act as real-time views of the same running supervisory depl
 
 ### Method 1: One-Click Docker Deployment (Production & Demo — Recommended)
 
-The easiest way to run the entire unified platform (NCIIPC Admin Portal + SAT-SA + Shared RBAC + Live Telemetry) without configuring local Python environments:
+The easiest way to run the entire unified platform (NCIIPC Admin Portal + SAT-SA + Shared RBAC + Admin Activity Feed) without configuring local Python environments:
 
 1. **Start the platform:**
    - **Windows One-Click**:
@@ -354,7 +355,7 @@ The `satsa` command provides a complete command suite powered by Typer and Rich:
 Usage: satsa [OPTIONS] COMMAND [ARGS]...
 
 Commands:
-  generate-data   Generate synthetic SOC telemetry with ground-truth defects.
+  generate-data   Generate a synthetic periodic SOC submission with ground-truth defects.
   ingest          Ingest CSVs, apply HMAC masking, and build Parquet stores.
   run             Execute the supervisory assessment across all entities.
   seed-history    Seed genuine multi-period historical runs for the trend chart.
@@ -382,7 +383,8 @@ satsa benchmark --data-dir data
 # Generate comprehensive PDF dossiers for all entities:
 satsa report --entity all --format pdf --output-dir reports/2026-Q1
 
-# Export signed rule configuration pack:
+# Export signed rule configuration pack (requires SATSA_RULEPACK_SECRET, >= 32 chars;
+# there is no built-in key -- see docs/deployment_ops.md Section 3):
 satsa rules export -c config -o dist/nciipc_rules_v1.tar.gz
 ```
 
@@ -427,10 +429,10 @@ satsa/
 │   └── ui/                      # Server-rendered Jinja2 templates & static assets
 │       ├── static/              # SAT-SA CSS stylesheets and vendored echarts.min.js
 │       └── templates/           # Clean, responsive HTML templates for all 10 tabs
-├── tests/                       # Complete pytest test suite (94 production tests)
+├── tests/                       # Complete pytest test suite (596 passing tests)
 │   ├── test_admin_portal.py     # NCIIPC Admin Portal routes & CRUD verification
 │   ├── test_admin_satsa_integration.py # E2E Admin-to-SATSA provisioning & scoping
-│   ├── test_live_telemetry_interaction.py # WebSocket & stream interaction verification
+│   ├── test_admin_activity_feed.py # Admin activity feed (operator session monitor) verification
 │   ├── test_api.py              # REST API and UI view testing
 │   ├── test_auth.py             # RBAC and session isolation testing
 │   ├── test_rules.py            # Rule predicate and execution testing
@@ -453,7 +455,7 @@ satsa/
 
 ## Known Limitations & Supervisory Boundary Conditions
 
-1. **Supervisory Scope:** SAT-SA identifies telemetric anomalies and evidentiary gaps; it does not replace on-site forensic inspection or legal examination.
+1. **Supervisory Scope:** SAT-SA identifies anomalies and evidentiary gaps in periodic submissions; it does not replace on-site forensic inspection or legal examination.
 2. **Data Truthfulness:** If an entity falsifies all raw event timestamps consistently across independent systems before submission, mathematical reconciliation will reflect the falsified data.
 3. **Third-Party MSSP Visibility:** If an entity outsources Tier-1 triage to an external MSSP that does not share workflow event logs, rules dependent on `workflow_event` may be skipped or flagged under NS08.
 4. **Offline Assumption:** SAT-SA assumes local host security. The air-gap boundary protects against remote exfiltration, but physical and operating-system security of the supervisory host remains the examiner's responsibility.
