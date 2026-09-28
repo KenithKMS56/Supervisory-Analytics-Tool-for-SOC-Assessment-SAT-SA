@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import shutil
 import tempfile
 import zipfile
@@ -32,6 +33,7 @@ from satsa.models.outputs import ExaminerFeedback
 from satsa.report.generator import ReportGenerator
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
+from satsa.security import is_valid_entity_id, safe_archive_member, safe_join
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
 from satsa.synth.generator import SyntheticDataGenerator
@@ -98,6 +100,18 @@ async def enforce_auth_middleware(request: Request, call_next):
         return RedirectResponse(url=f"/login?next={encoded_next}", status_code=303)
 
     return await call_next(request)
+
+
+def require_valid_entity_id(entity_id: str) -> str:
+    """Reject an externally supplied entity_id that fails satsa.security.ENTITY_ID_RE (HTTP 400)."""
+    if not is_valid_entity_id(entity_id):
+        raise HTTPException(status_code=400, detail="Invalid entity_id.")
+    return entity_id
+
+
+def session_cookie_secure() -> bool:
+    """Whether to set the Secure cookie flag (off by default: the app serves plain-HTTP localhost)."""
+    return os.environ.get("SATSA_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
 
 
 def get_stores() -> tuple[DuckDBStore, SQLiteStore]:
@@ -262,6 +276,7 @@ async def handle_login(
         value=token,
         httponly=True,
         samesite="lax",
+        secure=session_cookie_secure(),
         max_age=8 * 3600,
     )
     return resp
@@ -533,6 +548,7 @@ async def view_portfolio(request: Request) -> Response:
 
 @app.get("/entity/{entity_id}", response_class=HTMLResponse)
 async def view_entity_profile(request: Request, entity_id: str) -> Response:
+    require_valid_entity_id(entity_id)
     identity = get_current_identity(request)
     if identity:
         require_cse_access(entity_id, identity)
@@ -544,7 +560,7 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
     run_id = run_row["run_id"] if run_row else ""
 
     # Fetch entity info
-    ent_res = duckdb_store.query(f"SELECT * FROM entity WHERE entity_id = '{entity_id}'")
+    ent_res = duckdb_store.query("SELECT * FROM entity WHERE entity_id = ?", [entity_id])
     if ent_res.is_empty():
         duckdb_store.close()
         sqlite_store.close()
@@ -604,7 +620,7 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
 
     # KPI Reconciliation data
     duckdb_store.query(
-        f"SELECT metric, severity, value FROM declared_kpi WHERE entity_id = '{entity_id}'"
+        "SELECT metric, severity, value FROM declared_kpi WHERE entity_id = ?", [entity_id]
     )
     kpi_comparison = [
         {
@@ -929,25 +945,33 @@ async def view_alerts(
     df_ents = duckdb_store.query("SELECT entity_id FROM entity ORDER BY entity_id")
     all_entities = [r["entity_id"] for r in df_ents.iter_rows(named=True)]
 
-    # Build filtered DuckDB query
-    where_clauses = ["1=1"]
+    # Build filtered DuckDB query. Every user-supplied value is bound as a
+    # parameter; only fixed clause text is joined into the SQL string.
     if entity:
-        where_clauses.append(f"entity_id = '{entity}'")
+        require_valid_entity_id(entity)
+    where_clauses = ["1=1"]
+    where_params: list[Any] = []
+    if entity:
+        where_clauses.append("entity_id = ?")
+        where_params.append(entity)
     if severity:
-        where_clauses.append(f"severity_final = '{severity}'")
+        where_clauses.append("severity_final = ?")
+        where_params.append(severity)
     if actor_type:
-        where_clauses.append(f"closed_by_type = '{actor_type}'")
+        where_clauses.append("closed_by_type = ?")
+        where_params.append(actor_type)
     if q:
-        safe_q = q.replace("'", "''")
-        where_clauses.append(
-            f"(alert_id LIKE '%{safe_q}%' OR rule_id LIKE '%{safe_q}%' OR asset_id LIKE '%{safe_q}%')"
-        )
+        like_q = f"%{q}%"
+        where_clauses.append("(alert_id LIKE ? OR rule_id LIKE ? OR asset_id LIKE ?)")
+        where_params.extend([like_q, like_q, like_q])
 
     where_sql = " AND ".join(where_clauses)
 
     # Count total matching for pagination
     page_size = 25
-    total_matching_df = duckdb_store.query(f"SELECT count(*) as count FROM alert WHERE {where_sql}")
+    total_matching_df = duckdb_store.query(
+        f"SELECT count(*) as count FROM alert WHERE {where_sql}", where_params
+    )
     total_matching = total_matching_df.to_dicts()[0]["count"]
     total_pages = max(1, (total_matching + page_size - 1) // page_size)
     page = max(1, min(page, total_pages))
@@ -960,8 +984,8 @@ async def view_alerts(
         FROM alert
         WHERE {where_sql}
         ORDER BY created_at DESC
-        LIMIT {page_size} OFFSET {offset}
-    """)
+        LIMIT {int(page_size)} OFFSET {int(offset)}
+    """, where_params)
 
     alerts_list = []
     for r in df_alerts.iter_rows(named=True):
@@ -1056,6 +1080,11 @@ def handle_add_entity(
         return RedirectResponse(
             url="/upload?message=Error:+Entity+ID+cannot+be+empty", status_code=303
         )
+    if not is_valid_entity_id(clean_id):
+        return RedirectResponse(
+            url="/upload?message=Error:+Entity+ID+may+only+contain+letters,+digits,+'.',+'_'+and+'-'",
+            status_code=303,
+        )
 
     # If "Other" sector was selected, use the custom sector text
     resolved_sector = sector.strip()
@@ -1149,8 +1178,8 @@ def handle_add_entity(
 async def handle_delete_entity(
     entity_id: str, identity: Identity = Depends(require_role(*INGEST_RUN_ROLES))
 ) -> Response:
-    """Permanently delete an entity, its telemetric partitions, and recalculate portfolio."""
-    clean_id = entity_id.strip().upper()
+    """Permanently delete an entity, its data partitions, and recalculate portfolio."""
+    clean_id = require_valid_entity_id(entity_id.strip().upper())
     duckdb_store, sqlite_store = get_stores()
 
     # 1. Delete from SQLite
@@ -1162,10 +1191,18 @@ async def handle_delete_entity(
     cur.execute("DELETE FROM review_queue WHERE entity_id = ?", (clean_id,))
     sqlite_store.conn.commit()
 
-    # 2. Delete from DuckDB parquet files
-    for p in Path("data").rglob(f"entity_id={clean_id}"):
-        if p.is_dir():
-            shutil.rmtree(p, ignore_errors=True)
+    # 2. Delete from DuckDB parquet files: only the exact `entity_id=<id>`
+    # partition directory under each table (no glob patterns, so an ID can
+    # never match another entity's partitions), confined to the parquet root.
+    parquet_root = duckdb_store.parquet_dir
+    partition_name = f"entity_id={clean_id}"
+    if parquet_root.is_dir():
+        for table_dir in parquet_root.iterdir():
+            if not table_dir.is_dir():
+                continue
+            part = safe_join(parquet_root, f"{table_dir.name}/{partition_name}")
+            if part.is_dir() and part.name == partition_name:
+                shutil.rmtree(part, ignore_errors=True)
 
     # 3. Audit log
     sqlite_store.append_audit(
@@ -1193,9 +1230,14 @@ def download_template(template_name: str) -> Response:
     templates_dir = Path("data/templates")
     templates_dir.mkdir(parents=True, exist_ok=True)
 
-    t_name = template_name.lower().replace(".csv", "")
+    t_name = template_name.lower().removesuffix(".csv").removesuffix(".zip")
+    # Allow-list: the name is used to build a file path, so only known template
+    # names are accepted (anything else, e.g. "..\\..\\x", is a 404).
+    is_bundle = t_name in ("bundle", "canonical_soc_telemetry_bundle")
+    if not is_bundle and t_name not in TEMPLATE_CSV_CONTENT:
+        raise HTTPException(status_code=404, detail="Unknown template.")
 
-    if t_name == "bundle" or template_name.endswith(".zip"):
+    if is_bundle:
         zip_path = templates_dir / "canonical_soc_telemetry_bundle.zip"
         with zipfile.ZipFile(zip_path, "w") as z:
             alert_csv = "alert_id,entity_id,rule_id,category,severity_orig,severity_final,asset_id,created_at,acknowledged_at,closed_at,closed_by,closed_by_type,disposition,status\nALT-001,CSE-DEMO,DET-BRUTE-FORCE,Credential Access,high,high,SRV-AUTH-01,2026-01-15T08:30:00Z,2026-01-15T08:35:00Z,2026-01-15T09:15:00Z,analyst_sharma,human,true_positive,closed\nALT-002,CSE-DEMO,DET-PORT-SCAN,Discovery,medium,low,SRV-WEB-02,2026-01-15T10:00:00Z,2026-01-15T10:01:00Z,2026-01-15T10:02:00Z,soar_bot,soar,false_positive,closed\n"
@@ -1216,39 +1258,41 @@ def download_template(template_name: str) -> Response:
             media_type="application/zip",
         )
 
-    template_headers = {
-        "alerts": (
-            "alert_id,entity_id,rule_id,category,severity_orig,severity_final,asset_id,created_at,acknowledged_at,closed_at,closed_by,closed_by_type,disposition,status\n"
-            "ALT-001,CSE-01,DET-01,Threat Detection,high,high,ASSET-01,2026-01-15T08:30:00Z,2026-01-15T08:35:00Z,2026-01-15T09:15:00Z,analyst_1,human,true_positive,closed\n"
-        ),
-        "cases": (
-            "case_id,entity_id,alert_id,severity,status,opened_at,resolved_at,lead_analyst_id,root_cause\n"
-            "CAS-001,CSE-01,ALT-001,high,resolved,2026-01-15T08:40:00Z,2026-01-15T09:15:00Z,analyst_1,Malicious IP scan confirmed\n"
-        ),
-        "escalations": (
-            "escalation_id,alert_id,case_id,entity_id,from_tier,to_tier,escalated_at,acknowledged_at,outcome\n"
-            "ESC-001,ALT-001,CAS-001,CSE-01,Tier-1,Tier-2,2026-01-15T08:36:00Z,2026-01-15T08:42:00Z,contained\n"
-        ),
-        "closures": (
-            "closure_id,record_id,entity_id,closed_by_type,comment,duration_seconds,disposition\n"
-            "CLS-001,ALT-001,CSE-01,human,Malicious credential brute-force contained and host isolated.,2700,true_positive\n"
-        ),
-        "assets": (
-            "asset_id,entity_id,asset_type,criticality,zone,is_monitored\n"
-            "ASSET-01,CSE-01,domain_controller,4,core,true\n"
-            "ASSET-02,CSE-01,scada_gateway,4,ot_substation,true\n"
-        ),
-        "kpis": (
-            "entity_id,period,metric,severity,value\n"
-            "CSE-01,2026-Q1,mtta,all,15.0\n"
-            "CSE-01,2026-Q1,mttr,all,45.0\n"
-            "CSE-01,2026-Q1,sla_compliance,all,95.0\n"
-        ),
-    }
-    content = template_headers.get(t_name, template_headers["alerts"])
+    content = TEMPLATE_CSV_CONTENT[t_name]
     csv_file = templates_dir / f"{t_name}.csv"
     csv_file.write_text(content, encoding="utf-8")
     return FileResponse(csv_file, filename=f"{t_name}_template.csv", media_type="text/csv")
+
+
+TEMPLATE_CSV_CONTENT: dict[str, str] = {
+    "alerts": (
+        "alert_id,entity_id,rule_id,category,severity_orig,severity_final,asset_id,created_at,acknowledged_at,closed_at,closed_by,closed_by_type,disposition,status\n"
+        "ALT-001,CSE-01,DET-01,Threat Detection,high,high,ASSET-01,2026-01-15T08:30:00Z,2026-01-15T08:35:00Z,2026-01-15T09:15:00Z,analyst_1,human,true_positive,closed\n"
+    ),
+    "cases": (
+        "case_id,entity_id,alert_id,severity,status,opened_at,resolved_at,lead_analyst_id,root_cause\n"
+        "CAS-001,CSE-01,ALT-001,high,resolved,2026-01-15T08:40:00Z,2026-01-15T09:15:00Z,analyst_1,Malicious IP scan confirmed\n"
+    ),
+    "escalations": (
+        "escalation_id,alert_id,case_id,entity_id,from_tier,to_tier,escalated_at,acknowledged_at,outcome\n"
+        "ESC-001,ALT-001,CAS-001,CSE-01,Tier-1,Tier-2,2026-01-15T08:36:00Z,2026-01-15T08:42:00Z,contained\n"
+    ),
+    "closures": (
+        "closure_id,record_id,entity_id,closed_by_type,comment,duration_seconds,disposition\n"
+        "CLS-001,ALT-001,CSE-01,human,Malicious credential brute-force contained and host isolated.,2700,true_positive\n"
+    ),
+    "assets": (
+        "asset_id,entity_id,asset_type,criticality,zone,is_monitored\n"
+        "ASSET-01,CSE-01,domain_controller,4,core,true\n"
+        "ASSET-02,CSE-01,scada_gateway,4,ot_substation,true\n"
+    ),
+    "kpis": (
+        "entity_id,period,metric,severity,value\n"
+        "CSE-01,2026-Q1,mtta,all,15.0\n"
+        "CSE-01,2026-Q1,mttr,all,45.0\n"
+        "CSE-01,2026-Q1,sla_compliance,all,95.0\n"
+    ),
+}
 
 
 @app.post("/upload")
@@ -1257,9 +1301,13 @@ def handle_upload(
     target_entity: Annotated[str, Form()] = "",
     identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
 ) -> Response:
+    target_clean = target_entity.strip() or None
+    if target_clean is not None and not is_valid_entity_id(target_clean):
+        return RedirectResponse(
+            url="/upload?message=Error:+invalid+target+entity+ID", status_code=303
+        )
     duckdb_store, sqlite_store = get_stores()
     pipeline = IngestionPipeline(duckdb_store, sqlite_store)
-    target_clean = target_entity.strip() or None
 
     try:
         sqlite_store.record_live_event(
@@ -1272,12 +1320,17 @@ def handle_upload(
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             for uf in files:
-                dest = tmp_path / (uf.filename or "upload.csv")
+                # Only the base name of the client-supplied filename is used, so a
+                # name like "../../x.csv" cannot write outside the temp directory.
+                safe_name = Path((uf.filename or "").replace("\\", "/")).name or "upload.csv"
+                dest = tmp_path / safe_name
                 with open(dest, "wb") as f:
                     shutil.copyfileobj(uf.file, f)
-                # If ZIP, unpack
+                # If ZIP, validate every member path before unpacking anything.
                 if dest.suffix.lower() == ".zip":
                     with zipfile.ZipFile(dest, "r") as z:
+                        for member in z.namelist():
+                            safe_archive_member(member)
                         z.extractall(tmp_path)
 
             res = pipeline.ingest_directory(
@@ -1365,6 +1418,7 @@ def handle_trigger_demo(
 
 @app.get("/blind-review", response_class=HTMLResponse)
 async def view_blind_review(request: Request, entity_id: str = "CSE-02") -> Response:
+    require_valid_entity_id(entity_id)
     duckdb_store, sqlite_store = get_stores()
 
     df_ents = duckdb_store.query("SELECT entity_id FROM entity ORDER BY entity_id")
@@ -1373,7 +1427,7 @@ async def view_blind_review(request: Request, entity_id: str = "CSE-02") -> Resp
         entity_id = all_entities[0]
 
     # Compute raw objective signals without revealing risk scores
-    m_df = duckdb_store.query(f"""
+    m_df = duckdb_store.query("""
         SELECT
             count(*) as total_alerts,
             ROUND(quantile_cont(epoch(acknowledged_at - created_at) / 60.0, 0.5), 1) as median_mtta_min,
@@ -1381,38 +1435,40 @@ async def view_blind_review(request: Request, entity_id: str = "CSE-02") -> Resp
             count(CASE WHEN closed_by_type = 'soar' THEN 1 END) * 100.0 / greatest(count(*), 1) as soar_share,
             count(CASE WHEN disposition = 'false_positive' THEN 1 END) * 100.0 / greatest(count(*), 1) as fp_rate
         FROM alert
-        WHERE entity_id = '{entity_id}'
-    """).to_dicts()[0]
+        WHERE entity_id = ?
+    """, [entity_id]).to_dicts()[0]
 
     # Declared MTTR
     kpi_df = duckdb_store.query(
-        f"SELECT value FROM declared_kpi WHERE entity_id = '{entity_id}' AND metric = 'mttr' LIMIT 1"
+        "SELECT value FROM declared_kpi WHERE entity_id = ? AND metric = 'mttr' LIMIT 1",
+        [entity_id],
     )
     declared_mttr = kpi_df.to_dicts()[0]["value"] if not kpi_df.is_empty() else "N/A"
 
     # Escalations
     esc_df = duckdb_store.query(
-        f"SELECT count(*) as c FROM alert WHERE entity_id = '{entity_id}' AND severity_final IN ('high', 'critical')"
+        "SELECT count(*) as c FROM alert WHERE entity_id = ? AND severity_final IN ('high', 'critical')",
+        [entity_id],
     )
     tot_high = esc_df.to_dicts()[0]["c"] if not esc_df.is_empty() else 1
     esc_c_df = duckdb_store.query(
-        f"SELECT count(*) as c FROM escalation WHERE entity_id = '{entity_id}'"
+        "SELECT count(*) as c FROM escalation WHERE entity_id = ?", [entity_id]
     )
     tot_esc = esc_c_df.to_dicts()[0]["c"] if not esc_c_df.is_empty() else 0
     esc_rate = round((tot_esc / max(tot_high, 1)) * 100.0, 1)
 
     # Silent assets
-    silent_df = duckdb_store.query(f"""
+    silent_df = duckdb_store.query("""
         SELECT count(*) as c FROM asset
-        WHERE entity_id = '{entity_id}' AND criticality >= 3 AND asset_id NOT IN (
-            SELECT DISTINCT asset_id FROM log_source_daily WHERE entity_id = '{entity_id}'
+        WHERE entity_id = ? AND criticality >= 3 AND asset_id NOT IN (
+            SELECT DISTINCT asset_id FROM log_source_daily WHERE entity_id = ?
         )
-    """)
+    """, [entity_id, entity_id])
     silent_assets = silent_df.to_dicts()[0]["c"] if not silent_df.is_empty() else 0
 
     # Sample anonymized comments
     c_df = duckdb_store.query(
-        f"SELECT comment_norm_hash FROM closure WHERE entity_id = '{entity_id}' LIMIT 5"
+        "SELECT comment_norm_hash FROM closure WHERE entity_id = ? LIMIT 5", [entity_id]
     )
     sample_comments = [
         f"Normalised closure text hash: {r['comment_norm_hash']}" for r in c_df.to_dicts()
@@ -1479,6 +1535,7 @@ async def handle_blind_review_submit(
     examiner_notes: Annotated[str, Form()],
     identity: Identity = Depends(require_role(*REVIEW_ROLES)),
 ) -> Response:
+    require_valid_entity_id(entity_id)
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1")
@@ -1724,6 +1781,7 @@ def handle_import_pack(
 
 @app.get("/reports/entity/{entity_id}/pdf")
 async def download_entity_pdf(request: Request, entity_id: str) -> FileResponse:
+    require_valid_entity_id(entity_id)
     identity = get_current_identity(request)
     if identity:
         require_cse_access(entity_id, identity)
@@ -1743,6 +1801,7 @@ async def download_entity_pdf(request: Request, entity_id: str) -> FileResponse:
 
 @app.get("/reports/entity/{entity_id}/html")
 async def download_entity_html(request: Request, entity_id: str) -> FileResponse:
+    require_valid_entity_id(entity_id)
     identity = get_current_identity(request)
     if identity:
         require_cse_access(entity_id, identity)
@@ -1856,6 +1915,12 @@ async def api_telemetry_ingest(
     clean_id = payload.entity_id.strip().upper()
     if not clean_id:
         raise HTTPException(status_code=400, detail="entity_id is required")
+    require_valid_entity_id(clean_id)
+    for rows in (payload.alerts, payload.cases, payload.assets, payload.closures):
+        for row in rows:
+            row_eid = row.get("entity_id")
+            if row_eid and not is_valid_entity_id(str(row_eid)):
+                raise HTTPException(status_code=400, detail="Invalid entity_id in submitted rows.")
 
     duckdb_store, sqlite_store = get_stores()
     ingested_counts: dict[str, int] = {}

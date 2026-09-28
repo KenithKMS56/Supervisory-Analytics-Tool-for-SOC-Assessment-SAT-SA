@@ -36,7 +36,7 @@ class ReportGenerator:
         gen_time = run_row["created_at"] if run_row else "N/A"
 
         # Entity info
-        df_ent = self.duckdb_store.query(f"SELECT * FROM entity WHERE entity_id = '{entity_id}'")
+        df_ent = self.duckdb_store.query("SELECT * FROM entity WHERE entity_id = ?", [entity_id])
         ent_info = (
             df_ent.to_dicts()[0]
             if not df_ent.is_empty()

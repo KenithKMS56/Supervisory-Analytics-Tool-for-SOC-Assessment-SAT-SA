@@ -24,7 +24,7 @@ class NS01SilentCriticalAssets(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Look for criticality >= 3 assets with 0 events on daily log sources
-        sql = f"""
+        sql = """
         SELECT
             l.asset_id,
             count(CASE WHEN l.event_count = 0 THEN 1 END) as silent_days,
@@ -32,11 +32,11 @@ class NS01SilentCriticalAssets(BaseRule):
             max(l.date) as max_date
         FROM log_source_daily l
         JOIN asset a ON l.entity_id = a.entity_id AND l.asset_id = a.asset_id
-        WHERE l.entity_id = '{entity_id}' AND a.criticality >= 3 AND a.monitored_flag = true
+        WHERE l.entity_id = ? AND a.criticality >= 3 AND a.monitored_flag = true
         GROUP BY l.asset_id
         HAVING count(CASE WHEN l.event_count = 0 THEN 1 END) >= 3
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -118,8 +118,8 @@ class NS02MissingAlertCategories(BaseRule):
         )
 
         # Find target entity categories
-        sql_target = f"SELECT DISTINCT category FROM alert WHERE entity_id = '{entity_id}' AND category IS NOT NULL AND category != ''"
-        df_target = store.query(sql_target)
+        sql_target = "SELECT DISTINCT category FROM alert WHERE entity_id = ? AND category IS NOT NULL AND category != ''"
+        df_target = store.query(sql_target, [entity_id])
         target_cats = (
             {c for c in df_target["category"].to_list() if c} if not df_target.is_empty() else set()
         )
@@ -184,14 +184,14 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Calculate night share of alerts
-        sql = f"""
+        sql = """
         SELECT
             count(*) as total,
             count(CASE WHEN extract(hour from created_at) < 8 OR extract(hour from created_at) >= 20 THEN 1 END) as night_cnt
         FROM alert
-        WHERE entity_id = '{entity_id}'
+        WHERE entity_id = ?
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -260,14 +260,14 @@ class NS04MissingRecords(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Check TP alerts without cases
-        sql_tp = f"""
+        sql_tp = """
         SELECT a.alert_id
         FROM alert a
         LEFT JOIN case_alert_link l ON a.entity_id = l.entity_id AND a.alert_id = l.alert_id
-        WHERE a.entity_id = '{entity_id}' AND a.disposition = 'true_positive' AND a.severity_final IN ('high', 'critical')
+        WHERE a.entity_id = ? AND a.disposition = 'true_positive' AND a.severity_final IN ('high', 'critical')
           AND l.case_id IS NULL
         """
-        df_tp = store.query(sql_tp)
+        df_tp = store.query(sql_tp, [entity_id])
         tp_without_case = df_tp.shape[0] if not df_tp.is_empty() else 0
 
         if tp_without_case >= 3:
@@ -327,16 +327,16 @@ class NS05RuleCoverageGaps(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        sql = """
         SELECT
             r.rule_id,
             count(a.alert_id) as fired_count
         FROM detection_rule r
         LEFT JOIN alert a ON r.entity_id = a.entity_id AND r.rule_id = a.rule_id
-        WHERE r.entity_id = '{entity_id}' AND r.enabled = true
+        WHERE r.entity_id = ? AND r.enabled = true
         GROUP BY r.rule_id
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -396,16 +396,16 @@ class NS06InventoryVsTelemetry(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        sql = """
         SELECT a.asset_id
         FROM asset a
         LEFT JOIN alert alt ON a.entity_id = alt.entity_id AND a.asset_id = alt.asset_id
         LEFT JOIN log_source_daily l ON a.entity_id = l.entity_id AND a.asset_id = l.asset_id
-        WHERE a.entity_id = '{entity_id}'
+        WHERE a.entity_id = ?
         GROUP BY a.asset_id
         HAVING count(alt.alert_id) = 0 AND (count(l.event_count) = 0 OR sum(l.event_count) = 0)
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -469,13 +469,13 @@ class NS07AbsentExternalReporting(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Critical incidents with no external_report row
-        sql = f"""
+        sql = """
         SELECT c.case_id, c.opened_at
         FROM "case" c
         LEFT JOIN external_report r ON c.entity_id = r.entity_id AND c.case_id = r.incident_id
-        WHERE c.entity_id = '{entity_id}' AND c.severity = 'critical' AND r.incident_id IS NULL
+        WHERE c.entity_id = ? AND c.severity = 'critical' AND r.incident_id IS NULL
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -534,12 +534,12 @@ class NS08SubmissionCompleteness(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Count months represented in alert timestamps
-        sql = f"""
+        sql = """
         SELECT count(DISTINCT date_trunc('month', created_at)) as month_cnt
         FROM alert
-        WHERE entity_id = '{entity_id}'
+        WHERE entity_id = ?
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
