@@ -5,7 +5,7 @@ Coordinates concurrent startup of:
 - SAT-SA Supervisory Tool (http://0.0.0.0:8001)
 
 Both portals share the exact same underlying SQLite database (in WAL mode),
-DuckDB Parquet storage, and operational telemetry streams.
+DuckDB Parquet storage, and the admin activity feed.
 """
 
 from __future__ import annotations

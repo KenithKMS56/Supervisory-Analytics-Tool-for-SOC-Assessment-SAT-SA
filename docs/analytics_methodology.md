@@ -8,7 +8,7 @@ This document provides the exhaustive mathematical, statistical, and algorithmic
 
 ## 1. Robust Statistics & Peer Benchmarking
 
-Traditional mean and standard deviation metrics are highly sensitive to extreme outliers and asymmetric distributions common in SOC incident response telemetry. SAT-SA employs **classical robust statistics** exclusively.
+Traditional mean and standard deviation metrics are highly sensitive to extreme outliers and asymmetric distributions common in SOC incident response data. SAT-SA employs **classical robust statistics** exclusively.
 
 ### 1.1 Median & Median Absolute Deviation (MAD)
 For an entity observation set $X = \{x_1, x_2, \dots, x_n\}$ across a peer group:
@@ -112,7 +112,7 @@ $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
 - **Examiner Checks:** Confirm active case status in legal or incident management logs.
 
 #### EG10: KPI Reconciliation Gap
-- **Purpose:** Detect discrepancies between declared regulatory KPIs and empirical telemetric data.
+- **Purpose:** Detect discrepancies between declared regulatory KPIs and KPIs recomputed from submitted records.
 - **Logic:** Recomputes MTTA, MTTR, and SLA achievement percentage directly from canonical timestamps. Flags relative discrepancy $>10\%$ against values in `declared_kpi`.
 - **Formula:** $\text{Gap} = \frac{|\text{Declared} - \text{Empirical}|}{\max(\text{Declared}, \text{Empirical})}$.
 - **Benign Explanations:** Different timezone assumptions; exclusion of maintenance hours in declared SLA calculation.

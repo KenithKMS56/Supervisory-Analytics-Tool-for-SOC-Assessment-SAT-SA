@@ -28,7 +28,7 @@ seeded into a fresh database and MUST be rotated before real deployment via
 | Role | Primary Responsibilities | Enforced Permissions (server-side, `require_role` / `require_admin_operator`) |
 |---|---|---|
 | **Admin** | System administration & batch maintenance | Everything a Supervisor can do, plus **sole** access to the NCIIPC Administration Portal (user provisioning, blocking, credential resets, organisation/CSE registries, admin audit trail, admin activity feed). Portal access is derived from the administrator role only; the legacy `is_admin_user` flag no longer grants it. |
-| **Supervisor** | Sector-wide risk assessment & queue allocation | Ingest periodic batches (`/upload`, `/upload/add-entity`, `/upload/trigger-demo`, `POST /api/v1/telemetry/ingest`), trigger assessment runs, calibrate rule thresholds (`/tuning/save`), export/import signed rule packs (`/tuning/export-pack`, `/tuning/import-pack`). **No** Admin Portal access (HTTP 403). |
+| **Supervisor** | Sector-wide risk assessment & queue allocation | Ingest periodic batches (`/upload`, `/upload/add-entity`, `/upload/trigger-demo`, `POST /api/v1/submissions`), trigger assessment runs, calibrate rule thresholds (`/tuning/save`), export/import signed rule packs (`/tuning/export-pack`, `/tuning/import-pack`). **No** Admin Portal access (HTTP 403). |
 | **Examiner** | Operational investigation & evidentiary review | Log review dispositions (`POST /api/v1/feedback`) and submit blinded-review verdicts (`POST /blind-review/submit`). Supervisor and Admin can also perform these. |
 
 **Current scope, stated plainly:** every route is classified in the explicit permission table in
@@ -84,17 +84,17 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
 - **Systemic / Cross-Entity Findings:** a distinct section (rendered only when present) surfacing patterns where 3+ entities sharing the same third-party SOC provider all triggered the identical rule in the same run -- see `satsa.rules.systemic` and `docs/analytics_methodology.md` Section 3A.
 - **Multi-Period Risk Trajectory Trend Chart:** plots REAL historical risk_index values from persisted `entity_scores` across past assessment runs (never fabricated); entities with fewer than 2 historical runs are omitted with an "insufficient history" notice rather than padded with synthesized points.
 
-### 2. National Alert Telemetry Explorer (`/alerts`)
-- **Cross-Entity Telemetry Grid:** Searchable multi-entity alert catalog with live filtering by severity, entity ID, and disposition.
-- **Duration & Timing Metrics:** Real-time calculation of triage durations (`duration_min`) and display of alert lifecycle states.
-- **SOC Summary Statistics:** Real-time calculation of total alerts, high/critical count, SOAR automation count, and fleet-wide false-positive rate.
+### 2. National Alert Explorer (`/alerts`)
+- **Cross-Entity Alert Grid:** Searchable multi-entity alert catalog with live filtering by severity, entity ID, and disposition.
+- **Duration & Timing Metrics:** On-page calculation of triage durations (`duration_min`) and display of alert lifecycle states.
+- **SOC Summary Statistics:** On-page calculation of total alerts, high/critical count, SOAR automation count, and fleet-wide false-positive rate.
 
 ### 3. Blinded Supervisory Review Studio (`/blind-review`)
-- **Cognitive Bias Mitigation:** Examiners review raw objective telemetry (median MTTA, median MTTR, SOAR automation share, false positive rate, sample comment hashes, silent assets) without seeing algorithmic scores or rule flags.
+- **Cognitive Bias Mitigation:** Examiners review raw objective metrics (median MTTA, median MTTR, SOAR automation share, false positive rate, sample comment hashes, silent assets) without seeing algorithmic scores or rule flags.
 - **Independent Examiner Inquest Form:** Captures human examiner concern rating (Low/Moderate/Elevated/Critical), recommended audit priority, and statutory recommendation under Sec 70A.
 - **Inter-Rater Concordance Matrix:** Side-by-side comparison revealing the examiner's verdict vs. SAT-SA's mathematical risk band, calculating algorithmic concordance percentage ($0\text{--}100\%$) and logging to the tamper-evident audit trail.
 
-### 4. Telemetric Submission & Ingestion Wizard (`/upload`)
+### 4. Periodic Submission & Ingestion Wizard (`/upload`)
 - **Air-Gapped Batch Ingestion Dropzone:** Drag-and-drop or select CSV, JSON, or ZIP packages for automated ingestion.
 - **Data Minimization Pipeline:** Instant HMAC-SHA256 pseudonymisation of analyst identifiers and regex redaction of internal IPs and hostnames.
 - **One-Click Demo Launcher:** Instantly re-seeds the canonical 10-CSE synthetic dataset and triggers full assessment.
@@ -108,7 +108,7 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
 ### 6. Entity Profile (`/entity/{entity_id}`)
 - **Supervisory Score Card:** Entity risk index, sector baseline, size band, and number of triggered rules.
 - **Radar & Domain Breakdown Chart:** Visual comparison of entity domain scores against peer group medians.
-- **Reported vs. Recomputed KPI Panel:** Auditing panel comparing declared entity KPIs (MTTA, MTTR, SLA%) against empirical timestamps calculated directly from raw telemetry.
+- **Reported vs. Recomputed KPI Panel:** Auditing panel comparing declared entity KPIs (MTTA, MTTR, SLA%) against empirical timestamps calculated directly from the submitted records.
 - **Key Findings Table:** Filterable list of all execution gaps and negative space findings flagged for this entity.
 - **Direct Dossier Exports:** Instant PDF dossier generation via ReportLab and standalone HTML view.
 

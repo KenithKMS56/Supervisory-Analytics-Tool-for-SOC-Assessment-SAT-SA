@@ -6,7 +6,7 @@
 
 ## Slide 1: Problem & Regulatory Mission
 - **Regulatory Challenge:** NCIIPC oversees SOC operations across Critical Sector Entities (Power, Banking, Telecom, Transport, Oil & Gas). Standard compliance audits rely on static questionnaires and self-declared KPIs that fail to detect operational degradation, metric gaming, or surveillance blindspots.
-- **The SAT-SA Solution:** The **Supervisory Analytics Tool for SOC Assessment (SAT-SA)** ingests raw telemetric feeds (Splunk, ServiceNow, TheHive) and applies deterministic relational analytics and robust statistics to surface objective operational realities.
+- **The SAT-SA Solution:** The **Supervisory Analytics Tool for SOC Assessment (SAT-SA)** ingests periodic batch submissions exported from CSE tools (Splunk, ServiceNow, TheHive) and applies deterministic relational analytics and robust statistics to surface objective operational realities.
 - **Guiding Principle:** Strict supervisory support, not subjective compliance verdicts. Every finding provides evidentiary proof for human examiner verification.
 
 ---
@@ -23,8 +23,8 @@
 - **Execution Gaps (EG01–EG12):** Detects operational shortcuts, metric manipulation, and triage failures:
   - *Example EG01:* High/Critical alerts closed in $<120$ seconds without investigation.
   - *Example EG06:* SLA deadline-hugging, bulk closures, and MTTA/MTTR gaming.
-  - *Example EG10:* Discrepancies between declared KPIs and empirical telemetry.
-- **Negative Space (NS01–NS08):** Detects what is missing from telemetry:
+  - *Example EG10:* Discrepancies between declared KPIs and KPIs recomputed from the submitted records.
+- **Negative Space (NS01–NS08):** Detects what is missing from a submission:
   - *Example NS01:* Critical monitored assets that have gone completely silent ($>3$ days zero logs).
   - *Example NS03:* Collapse of nighttime and weekend logging activity (lack of 24x7 coverage).
   - *Example NS06:* Shadow assets (telemetry without CMDB record) and ghost assets (inventory without logs).

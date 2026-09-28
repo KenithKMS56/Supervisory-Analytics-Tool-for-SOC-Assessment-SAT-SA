@@ -54,9 +54,9 @@ def test_unauthenticated_access_rejected_on_protected_routes():
     )
     assert r3.status_code == 401
 
-    # Telemetry ingest API (admin/supervisor only)
+    # Periodic batch submission API (admin/supervisor only)
     r4 = anon.post(
-        "/api/v1/telemetry/ingest",
+        "/api/v1/submissions",
         json={"entity_id": "CSE-01", "alerts": []},
         follow_redirects=False,
     )

@@ -42,7 +42,7 @@ podman run -d \
 ## 2. Standard Operating Procedures (SOP)
 
 ### SOP-01: Ingesting Periodic SOC Submissions
-When a CSE submits periodic CSV telemetries:
+When a CSE submits its periodic CSV batch:
 ```bash
 satsa ingest --data-dir /path/to/extracted_csvs --parquet-dir data --db-path data/satsa.db
 ```
@@ -126,7 +126,7 @@ To back up the complete supervisory state:
 # 1. Snapshot SQLite database safely using SQLite online backup
 sqlite3 data/satsa.db ".backup backup/satsa_$(date +%Y%m%d).db"
 
-# 2. Archive Parquet telemetry directory
+# 2. Archive the Parquet submission directory
 tar -czf backup/parquet_$(date +%Y%m%d).tar.gz data/parquet/
 ```
 
@@ -138,6 +138,6 @@ tar -czf backup/parquet_$(date +%Y%m%d).tar.gz data/parquet/
 |---|---|---|---|
 | Ingesting Entity Batch | Monthly / Quarterly | ~15 minutes per entity | Data Analyst / Admin |
 | Assessment Execution | Quarterly | < 5 minutes (automated) | Supervisor |
-| Examiner Finding Review | Continuous / Quarterly | ~2 hours per entity | Supervisory Examiner |
+| Examiner Finding Review | Each assessment cycle (e.g. quarterly) | ~2 hours per entity | Supervisory Examiner |
 | Rule Calibration & Update | Bi-annually | ~4 hours | Lead Regulatory Specialist |
 | Audit Chain Verification | Weekly | < 1 minute (automated CLI) | Security Auditor |

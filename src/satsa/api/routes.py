@@ -330,7 +330,7 @@ async def handle_logout(request: Request) -> Response:
 
 @app.get("/api/session/status")
 async def api_session_status(request: Request) -> JSONResponse:
-    """Telemetry endpoint called by SAT-SA frontend to verify session validity and detect administrative revocation."""
+    """Session status endpoint polled by the SAT-SA frontend to detect administrative revocation of the session."""
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         return JSONResponse({"authenticated": False, "revoked": False})
@@ -1264,12 +1264,12 @@ def download_template(template_name: str) -> Response:
     t_name = template_name.lower().removesuffix(".csv").removesuffix(".zip")
     # Allow-list: the name is used to build a file path, so only known template
     # names are accepted (anything else, e.g. "..\\..\\x", is a 404).
-    is_bundle = t_name in ("bundle", "canonical_soc_telemetry_bundle")
+    is_bundle = t_name in ("bundle", "canonical_soc_submission_bundle", "canonical_soc_telemetry_bundle")
     if not is_bundle and t_name not in TEMPLATE_CSV_CONTENT:
         raise HTTPException(status_code=404, detail="Unknown template.")
 
     if is_bundle:
-        zip_path = templates_dir / "canonical_soc_telemetry_bundle.zip"
+        zip_path = templates_dir / "canonical_soc_submission_bundle.zip"
         with zipfile.ZipFile(zip_path, "w") as z:
             alert_csv = "alert_id,entity_id,rule_id,category,severity_orig,severity_final,asset_id,created_at,acknowledged_at,closed_at,closed_by,closed_by_type,disposition,status\nALT-001,CSE-DEMO,DET-BRUTE-FORCE,Credential Access,high,high,SRV-AUTH-01,2026-01-15T08:30:00Z,2026-01-15T08:35:00Z,2026-01-15T09:15:00Z,analyst_sharma,human,true_positive,closed\nALT-002,CSE-DEMO,DET-PORT-SCAN,Discovery,medium,low,SRV-WEB-02,2026-01-15T10:00:00Z,2026-01-15T10:01:00Z,2026-01-15T10:02:00Z,soar_bot,soar,false_positive,closed\n"
             z.writestr("alerts.csv", alert_csv)
@@ -1285,7 +1285,7 @@ def download_template(template_name: str) -> Response:
 
         return FileResponse(
             zip_path,
-            filename="canonical_soc_telemetry_bundle.zip",
+            filename="canonical_soc_submission_bundle.zip",
             media_type="application/zip",
         )
 
@@ -2002,9 +2002,15 @@ async def download_queue_csv() -> FileResponse:
     )
 
 
-class TelemetryIngestPayload(BaseModel):
+# Supervisory review period label, e.g. "2026-Q1", "2026-H2" or "2026-03".
+PERIOD_RE = r"^\d{4}-(Q[1-4]|H[12]|0[1-9]|1[0-2])$"
+
+
+class BatchSubmissionPayload(BaseModel):
     entity_id: str = Field(..., description="Unique code for the CSE, e.g. CSE-11")
-    period: str = Field(default="2026-Q1", description="Supervisory review period")
+    period: str = Field(
+        default="2026-Q1", pattern=PERIOD_RE, description="Supervisory review period (e.g. 2026-Q1)"
+    )
     alerts: list[dict[str, Any]] = Field(
         default=[], description="List of alert metadata dictionaries"
     )
@@ -2016,22 +2022,28 @@ class TelemetryIngestPayload(BaseModel):
     )
     closures: list[dict[str, Any]] = Field(default=[], description="List of closure dictionaries")
     run_assessment_now: bool = Field(
-        default=True, description="Whether to trigger an immediate assessment run"
+        default=True, description="Whether to run the periodic assessment after the batch is stored"
     )
 
 
-@app.post("/api/v1/telemetry/ingest", tags=["Ingestion API"])
-async def api_telemetry_ingest(
-    payload: TelemetryIngestPayload,
+@app.post("/api/v1/submissions", tags=["Periodic Batch Submission"])
+async def api_batch_submission(
+    payload: BatchSubmissionPayload,
     identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
 ) -> dict[str, Any]:
     """
-    Direct Programmatic JSON REST Ingestion API.
-    Enables SIEM webhooks, SOAR playbooks, and automated pipeline integration
-    to submit structured telemetry directly to SAT-SA's DuckDB partitioned storage.
+    Submit ONE periodic batch (a CSE's alert/case/asset/closure records for a
+    supervisory review period) as JSON -- the programmatic equivalent of the
+    /upload file submission, used after the fact at each assessment cycle.
 
-    Requires an authenticated admin/supervisor session: automated clients must
-    first POST credentials to /login and retain the returned session cookie.
+    This is not a streaming or event-driven feed: each (entity_id, period) may be
+    submitted exactly once. A repeat submission for the same entity and period is
+    rejected with HTTP 409, so the endpoint cannot be used as a continuous
+    collection channel. Corrections to an already-submitted period go through a
+    supervised re-ingest (/upload) by an admin or supervisor.
+
+    Requires an authenticated admin/supervisor session (POST /login first and
+    retain the session cookie).
     """
     clean_id = payload.entity_id.strip().upper()
     if not clean_id:
@@ -2044,54 +2056,53 @@ async def api_telemetry_ingest(
                 raise HTTPException(status_code=400, detail="Invalid entity_id in submitted rows.")
 
     duckdb_store, sqlite_store = get_stores()
-    ingested_counts: dict[str, int] = {}
+    try:
+        # Claim the (entity, period) slot first: it is unique, so a concurrent or
+        # repeated submission fails here before any data is written.
+        if not sqlite_store.claim_batch_submission(clean_id, payload.period, identity.username):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A batch for {clean_id} / {payload.period} has already been submitted. "
+                    "Each entity and period may be submitted once; use a supervised re-ingest "
+                    "via /upload for corrections."
+                ),
+            )
+        ingested_counts: dict[str, int] = {}
+        try:
+            # canonical DuckDB table for each payload section
+            for section, table, rows in (
+                ("alerts", "alert", payload.alerts),
+                ("cases", "case", payload.cases),
+                ("assets", "asset", payload.assets),
+                ("closures", "closure", payload.closures),
+            ):
+                if not rows:
+                    continue
+                for r in rows:
+                    if not r.get("entity_id"):
+                        r["entity_id"] = clean_id
+                duckdb_store.write_partitioned_parquet(table, pl.DataFrame(rows))
+                ingested_counts[section] = len(rows)
+        except Exception:
+            # Nothing usable was stored: free the slot so the batch can be resubmitted.
+            sqlite_store.release_batch_submission(clean_id, payload.period)
+            raise
 
-    if payload.alerts:
-        for a in payload.alerts:
-            if "entity_id" not in a or not a["entity_id"]:
-                a["entity_id"] = clean_id
-        df_alerts = pl.DataFrame(payload.alerts)
-        duckdb_store.write_partitioned_parquet("alert", df_alerts)
-        ingested_counts["alerts"] = len(payload.alerts)
+        sqlite_store.append_audit(
+            action="api_batch_submission",
+            actor=identity.username,
+            details={"entity_id": clean_id, "period": payload.period, "ingested_counts": ingested_counts},
+        )
 
-    if payload.cases:
-        for c in payload.cases:
-            if "entity_id" not in c or not c["entity_id"]:
-                c["entity_id"] = clean_id
-        df_cases = pl.DataFrame(payload.cases)
-        duckdb_store.write_partitioned_parquet("case_record", df_cases)
-        ingested_counts["cases"] = len(payload.cases)
-
-    if payload.assets:
-        for ass in payload.assets:
-            if "entity_id" not in ass or not ass["entity_id"]:
-                ass["entity_id"] = clean_id
-        df_assets = pl.DataFrame(payload.assets)
-        duckdb_store.write_partitioned_parquet("asset_inventory", df_assets)
-        ingested_counts["assets"] = len(payload.assets)
-
-    if payload.closures:
-        for cl in payload.closures:
-            if "entity_id" not in cl or not cl["entity_id"]:
-                cl["entity_id"] = clean_id
-        df_closures = pl.DataFrame(payload.closures)
-        duckdb_store.write_partitioned_parquet("closure", df_closures)
-        ingested_counts["closures"] = len(payload.closures)
-
-    sqlite_store.append_audit(
-        action="api_json_ingest",
-        actor=identity.username,
-        details={"entity_id": clean_id, "ingested_counts": ingested_counts},
-    )
-
-    run_id = None
-    if payload.run_assessment_now and any(ingested_counts.values()):
-        runner = AssessmentRunner(duckdb_store, sqlite_store)
-        res = runner.run_assessment(period=payload.period, actor=identity.username)
-        run_id = res.get("run_id")
-
-    duckdb_store.close()
-    sqlite_store.close()
+        run_id = None
+        if payload.run_assessment_now and any(ingested_counts.values()):
+            runner = AssessmentRunner(duckdb_store, sqlite_store)
+            res = runner.run_assessment(period=payload.period, actor=identity.username)
+            run_id = res.get("run_id")
+    finally:
+        duckdb_store.close()
+        sqlite_store.close()
 
     return {
         "status": "success",
@@ -2099,5 +2110,5 @@ async def api_telemetry_ingest(
         "period": payload.period,
         "ingested_counts": ingested_counts,
         "assessment_run_id": run_id,
-        "message": f"Successfully ingested {sum(ingested_counts.values())} records for {clean_id}",
+        "message": f"Stored periodic batch of {sum(ingested_counts.values())} records for {clean_id} / {payload.period}",
     }

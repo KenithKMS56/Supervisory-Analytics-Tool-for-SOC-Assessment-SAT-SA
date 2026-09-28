@@ -76,7 +76,7 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("POST", "/upload/add-entity"): (INGEST, False),
     ("POST", "/upload/delete-entity/{entity_id}"): (INGEST, False),
     ("POST", "/upload/trigger-demo"): (INGEST, False),
-    ("POST", "/api/v1/telemetry/ingest"): (INGEST, False),
+    ("POST", "/api/v1/submissions"): (INGEST, False),
     ("POST", "/tuning/save"): (TUNING, False),
     ("GET", "/tuning/export-pack"): (RULEPACK, False),
     ("POST", "/tuning/import-pack"): (RULEPACK, False),

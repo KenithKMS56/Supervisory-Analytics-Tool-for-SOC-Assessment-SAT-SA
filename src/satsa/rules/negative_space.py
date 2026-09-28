@@ -51,8 +51,8 @@ class NS01SilentCriticalAssets(BaseRule):
         f_id = f"FND-NS01-{entity_id}-{run_id}"
 
         rationale = (
-            f"Telemetry blind spot: {len(silent_assets)} monitored Tier-1/Tier-2 critical assets "
-            f"exhibited zero event telemetry for up to {max_silent} days."
+            f"Logging blind spot: {len(silent_assets)} monitored critical assets "
+            f"recorded zero log events on up to {max_silent} days."
         )
         finding = Finding(
             finding_id=f_id,

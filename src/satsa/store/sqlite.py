@@ -177,6 +177,18 @@ class SQLiteStore:
                 self.conn.execute(
                     f"CREATE INDEX IF NOT EXISTS idx_{table}_actor_action ON {table} (actor, action)"
                 )
+            # One JSON batch submission per (entity, period): see claim_batch_submission.
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS batch_submissions (
+                    entity_id TEXT NOT NULL,
+                    period TEXT NOT NULL,
+                    submitted_at TIMESTAMP NOT NULL,
+                    actor TEXT NOT NULL,
+                    PRIMARY KEY (entity_id, period)
+                )
+                """
+            )
 
     def _init_tables(self) -> None:
         """Create tables if not existing."""
@@ -572,6 +584,28 @@ class SQLiteStore:
             f"Checkpoint verified: entry {count} matches the recorded head "
             f"({chain.entries - count} entries appended since)."
         )
+
+    # --- Periodic batch submissions (one per entity and period) ---
+
+    def claim_batch_submission(self, entity_id: str, period: str, actor: str) -> bool:
+        """Atomically reserve the (entity_id, period) slot; False if already submitted."""
+        try:
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO batch_submissions (entity_id, period, submitted_at, actor) "
+                    "VALUES (?, ?, ?, ?)",
+                    (entity_id, period, utc_now_iso(), actor),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def release_batch_submission(self, entity_id: str, period: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "DELETE FROM batch_submissions WHERE entity_id = ? AND period = ?",
+                (entity_id, period),
+            )
 
     # --- Login lockout (backed by the existing hash-chained audit logs) ---
 
@@ -1526,7 +1560,7 @@ class SQLiteStore:
             "online_operators": self.get_online_operators(),
         }
 
-    # --- Live Events & Cross-Application Interaction ---
+    # --- Admin activity feed (operator session monitor; live_events table) ---
 
     def record_live_event(
         self,
@@ -1537,7 +1571,7 @@ class SQLiteStore:
         details: dict[str, Any] | None = None,
         is_admin: bool = False,
     ) -> int:
-        """Record a live operational event for real-time telemetry between SAT-SA and NCIIPC Admin."""
+        """Record an operator event for the Admin Portal's activity feed (non-authoritative; see ADR-006)."""
         import datetime
         now = utc_now_iso()
         details_json = json.dumps(details or {})
