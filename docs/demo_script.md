@@ -47,21 +47,21 @@ Open your browser to `http://127.0.0.1:8000`.
 1. **Action:** Click on finding **NS01 (Silent Critical Assets)** under **CSE-05**.
 2. **Presenter Script:**
    > *"SAT-SA does not just evaluate alerts that occurred—it detects Negative Space: what should have happened but didn't.
-   > Here in rule NS01, SAT-SA identifies two Criticality-4 monitored servers in transport logistics that exhibited complete telemetric silence for consecutive days, uncovering severe logging pipeline failures that traditional SIEM dashboards missed."*
+   > Here in rule NS01, SAT-SA identifies two Criticality-4 monitored servers in transport logistics that recorded zero log events for several days, uncovering severe logging pipeline failures that traditional SIEM dashboards missed."*
 
 ---
 
-### [1:35 - 1:50] Step 5: Prioritized Review Queue & 16.6x Lift
+### [1:35 - 1:50] Step 5: Prioritized Review Queue & ~6x Lift
 1. **Action:** Click **Review Queue** in top navbar (`/queue`).
 2. **Presenter Script:**
    > *"Rather than reviewing millions of logs, the examiner uses our mathematically stratified Review Queue: 70% top-risk alerts combined with 30% stratified random controls.
-   > In empirical validation, auditing just 1% of alerts through this queue yields a 16.60x discovery lift over standard random sampling. Examiners can mark audit dispositions directly with one click."*
+   > In empirical validation, auditing just 1% of alerts through this queue finds 5.97 times as many injected defects as random sampling of the same size (on our synthetic validation dataset). Examiners can mark audit dispositions directly with one click."*
 
 ### [1:50 - 2:10] Step 6: Blinded Supervisory Review (Cognitive Bias Mitigation)
 1. **Action:** Click **Blind Review** in top navbar (`/blind-review`).
 2. **Presenter Script:**
    > *"To eliminate confirmation bias in regulatory inquests, SAT-SA introduces a Blinded Review Studio.
-   > The examiner inspects raw objective telemetry—such as MTTA, MTTR, SOAR automation rates, and comment hashes—with pre-computed algorithmic scores withheld.
+   > The examiner inspects raw objective metrics—such as MTTA, MTTR, SOAR automation rates, and comment hashes—with pre-computed algorithmic scores withheld.
    > After the examiner submits an independent verdict, SAT-SA reveals the Inter-Rater Concordance Matrix, comparing human judgment against the mathematical engine and logging the concordance score to our cryptographic audit trail."*
 
 ---

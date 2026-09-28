@@ -2,8 +2,7 @@
 
 from fastapi.testclient import TestClient
 
-from satsa.api.routes import _build_real_trend_series
-from satsa.api.routes import app
+from satsa.api.routes import _build_real_trend_series, app
 from satsa.scoring.history import period_label_for, seed_historical_periods
 from satsa.store.sqlite import SQLiteStore
 
@@ -31,7 +30,7 @@ def test_insufficient_history_reported_not_synthesized():
     cur = store.conn.cursor()
 
     # An entity id that has never had any run at all.
-    periods, series, has_data = _build_real_trend_series(cur, ["CSE-ZZ-NONEXISTENT"], [])
+    _periods, series, _has_data = _build_real_trend_series(cur, ["CSE-ZZ-NONEXISTENT"], [])
     store.close()
 
     assert len(series) == 1
@@ -70,7 +69,7 @@ def test_seed_historical_periods_produces_real_distinct_runs():
         cur.execute("SELECT entity_id FROM entity_scores WHERE run_id = ?", (run_ids[-1],))
         entity_ids = [r["entity_id"] for r in cur.fetchall()]
         assert entity_ids
-        periods, series, has_data = _build_real_trend_series(cur, entity_ids[:3], [])
+        _periods, series, has_data = _build_real_trend_series(cur, entity_ids[:3], [])
         assert has_data is True
         assert any(not s["insufficient_history"] for s in series)
     finally:

@@ -120,16 +120,10 @@
           <span class="form-helper">Determines review, analytics, and administrative privileges.</span>
         </div>
 
-        <!-- Admin Portal Checkbox Card -->
+        <!-- Admin Portal Access (derived from role; no separate grant) -->
         <div class="form-group">
           <label class="form-label">Control Portal Authorization</label>
-          <label class="form-checkbox-card" for="is_admin_user">
-            <input type="checkbox" id="is_admin_user" name="is_admin_user" value="true" {% if user.is_admin_user %}checked{% endif %}>
-            <div class="form-checkbox-content">
-              <span class="form-checkbox-title">Grant NCIIPC Control Portal Access (:8000)</span>
-              <span class="form-checkbox-desc">Allows operator to authenticate to this administrative console.</span>
-            </div>
-          </label>
+          <span class="form-helper">NCIIPC Control Portal access (:8000) is granted only by the NCIIPC Super Administrator role. It cannot be granted separately to other roles.</span>
         </div>
       </div>
     </div>

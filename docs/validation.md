@@ -51,7 +51,7 @@ Ground truth injects 11 distinct operational execution gaps and negative space d
 - **CSE-10 (Transport Small):** Total nighttime logging collapse (zero 24x7 coverage) and mid-period volume drop $\to$ **NS03**.
 
 ### 1.2 Clean Baselines & Controlled Confounders (Negative Cases)
-- **Clean Baselines (CSE-01, CSE-04, CSE-06):** Entities operating with disciplined triage, timely escalations, balanced dispositions, and consistent 24x7 telemetry.
+- **Clean Baselines (CSE-01, CSE-04, CSE-06):** Entities operating with disciplined triage, timely escalations, balanced dispositions, and consistent 24x7 logging.
 - **Confounder 1 (SOAR Automation):** High-velocity closures executed by automated playbooks (`closed_by_type='soar'`). Validates that fast triage algorithms are not misflagged as human rubber-stamping.
 - **Confounder 2 (Small Entity Scale):** CSE-08 has lower absolute alert volumes. Validates that robust statistics correctly group by size band rather than falsely flagging small entities as volume collapses.
 
@@ -75,8 +75,8 @@ constructed to be unambiguous (see Section 0 for what that does and does not pro
 |---|---|---|---|
 | **Entity Rank Precision@7** | **100.0%** (7/7) | $\ge 90.0\%$ | **PASS** |
 | **Entity Rank Recall@7** | **100.0%** (7/7) | $\ge 90.0\%$ | **PASS** |
-| **Injected Defect Recall** | **100.0%** (11/11) | $\ge 90.0\%$ | **PASS** |
-| **Overall Defect Precision** | **100.0%** (11/11) | $\ge 85.0\%$ | **PASS** |
+| **Injected Defect Recall** | **100.0%** (13/13) | $\ge 90.0\%$ | **PASS** |
+| **Overall Defect Precision** | **100.0%** (13/13) | $\ge 85.0\%$ | **PASS** |
 | **Overall Defect F1 Score** | **1.0000** | $\ge 0.8500$ | **PASS** |
 | **Ranking Stability (+20% Weights)** | **Spearman $\rho = 1.0000$** | $\ge 0.8500$ | **PASS** |
 | **Ranking Stability (-20% Weights)** | **Spearman $\rho = 1.0000$** | $\ge 0.8500$ | **PASS** |
@@ -136,14 +136,21 @@ same size at fixed audit budgets (1%, 2%, and 5% of total alerts), measured on t
 
 | Audit Budget (% of Alerts) | Records Examined | Defects Found (SAT-SA) | Queue Hit Rate | Random Sampling Rate | Empirical Lift Factor |
 |---|---|---|---|---|---|
-| **1% Review Budget** | 56 records | 13 defects | **23.2%** | 1.40% | **16.60x Lift** |
-| **2% Review Budget** | 113 records | 20 defects | **17.7%** | 1.40% | **12.66x Lift** |
-| **5% Review Budget** | 282 records | 20 defects | **7.1%** | 1.40% | **5.07x Lift** |
+| **1% Review Budget** | 162 records | 13 defects | **8.0%** | 1.34% | **5.97x Lift** |
+| **2% Review Budget** | 324 records | 18 defects | **5.6%** | 1.34% | **4.13x Lift** |
+| **5% Review Budget** | 810 records | 18 defects | **2.2%** | 1.34% | **1.65x Lift** |
 
-*Takeaway: on this synthetic, unambiguous dataset, an examiner auditing just 1% of alerts using
-SAT-SA's prioritized queue discovers 16.6 times more of the injected defects than unassisted random
-sampling would. As with Section 2, treat this as a correctness/design check of the prioritisation
-logic, not a real-world lift guarantee.*
+*Takeaway: on this synthetic, unambiguous dataset (default generator, seed 42, ~16,200 alerts), an
+examiner auditing 1% of alerts using SAT-SA's prioritized queue finds 5.97 times as many of the
+injected defects as unassisted random sampling of the same size. The lift falls as the budget grows
+because the 30-item-per-entity queue is exhausted early. As with Section 2, treat this as a
+correctness/design check of the prioritisation logic, not a real-world lift guarantee.*
+
+*Correction (hardening pass): this table previously reported 16.60x / 12.66x / 5.07x. Those figures
+came from an older, smaller synthetic dataset (~5,600 alerts, so a 1% budget was 56 records) and
+were not updated when the default generator grew to ~16,200 alerts. The numbers above were
+recomputed from scratch with `satsa validate` on a clean checkout and match
+`docs/validation_report.md`.*
 
 ---
 

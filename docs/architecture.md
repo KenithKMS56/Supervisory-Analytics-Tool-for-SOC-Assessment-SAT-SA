@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-The **Supervisory Analytics Tool for SOC Assessment (SAT-SA)** is an air-gapped, fully deterministic analytical engine designed for the **National Critical Information Infrastructure Protection Centre (NCIIPC)**. It continuously assesses the operational execution quality and surveillance coverage of Security Operations Centres (SOCs) across Critical Sector Entities (CSEs) without relying on artificial intelligence or black-box machine learning.
+The **Supervisory Analytics Tool for SOC Assessment (SAT-SA)** is an air-gapped, fully deterministic analytical engine designed for the **National Critical Information Infrastructure Protection Centre (NCIIPC)**. It assesses the operational execution quality and surveillance coverage of Security Operations Centres (SOCs) across Critical Sector Entities (CSEs) at each periodic assessment cycle, from the batch submissions the CSEs provide, without relying on artificial intelligence or black-box machine learning.
 
 ---
 
@@ -11,7 +11,7 @@ The **Supervisory Analytics Tool for SOC Assessment (SAT-SA)** is an air-gapped,
 SAT-SA adheres strictly to statutory explainability and regulatory integrity:
 1. **Explicit "No AI/ML" Architecture:** Zero neural networks, zero LLMs, zero non-deterministic heuristics. Every finding is derived from relational algebra (SQL in DuckDB), deterministic rule predicates, and classical robust statistics (Median, Median Absolute Deviation [MAD], IQR, CUSUM, EWMA, Jaccard similarity).
 2. **Strict Air-Gap & Data Minimization:** Operates entirely offline with 127.0.0.1 default binding. Outbound network sockets are blocked at runtime. Ingested actor names are pseudonymised via HMAC-SHA256 (`.satsa_salt`), and internal IPs/PII are redacted using deterministic regex masking.
-3. **Cryptographic Tamper-Evidence:** All ingestion manifests, assessment runs, configuration changes, and examiner actions are recorded in an append-only SQLite log with cryptographic SHA-256 `prev_hash` chaining.
+3. **Cryptographic Tamper-Evidence:** All ingestion manifests, assessment runs, configuration changes, and examiner actions are recorded in an append-only SQLite log with `prev_hash` hash chaining (SHA3-256 for new entries). The chain detects edits, insertions, deletions and reordering within the chain; truncation of the newest entries is detected by comparing against an off-box `satsa audit head` checkpoint (DECISIONS.md ADR-005).
 
 ---
 
@@ -61,14 +61,14 @@ flowchart TD
 ## 3. Data Flow & Dual Storage Design
 
 1. **Ingestion & Privacy Pipeline:**
-   - Raw telemetric batches are read by source adapters (`SplunkAdapter`, `ServiceNowAdapter`, `TheHiveAdapter`).
+   - Periodic submission batches are read by source adapters (`SplunkAdapter`, `ServiceNowAdapter`, `TheHiveAdapter`).
    - `TaxonomyNormaliser` maps source-specific field names and severity labels into canonical schemas (`Alert`, `Case`, `WorkflowEvent`, `Escalation`, `Closure`, `Asset`).
    - `HMAC-SHA256` pseudonymises human analyst handles using a local 32-byte secret salt.
    - Deterministic regular expressions redact IPv4, IPv6, email addresses, hostnames, and card-like numbers. Text closures are converted to 4-shingle hashes to detect repetitive templates without preserving sensitive prose.
    - Batches failing schema validation or timestamp monotonicity are flagged in `dq_issues`.
 
 2. **Columnar Parquet Store (DuckDB):**
-   - High-volume telemetric tables (`alert`, `workflow_event`, `log_source_daily`, `asset`) are stored on disk as partitioned Parquet files (`parquet/{table}/entity_id={entity}/data.parquet`).
+   - High-volume submission tables (`alert`, `workflow_event`, `log_source_daily`, `asset`) are stored on disk as partitioned Parquet files (`parquet/{table}/entity_id={entity}/data.parquet`).
    - DuckDB executes partition-pruned, vectorized analytical scans, achieving >10M rows/second aggregation without row-level Python loops.
 
 3. **Cryptographic State Store (SQLite):**

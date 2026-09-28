@@ -1,0 +1,68 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest / validate / lint (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+    env:
+      # CI-only dummy key so the rule-pack export/import paths can be exercised.
+      # There is deliberately no built-in default key (see docs/deployment_ops.md).
+      SATSA_RULEPACK_SECRET: ci-only-dummy-rulepack-secret-not-for-deployment
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies (locked)
+        run: uv sync --frozen
+
+      - name: Bootstrap synthetic data from a clean state
+        run: |
+          uv run satsa generate-data
+          uv run satsa ingest
+          uv run satsa run
+
+      - name: Test suite
+        run: uv run pytest tests -q
+
+      - name: Validation (primary dataset)
+        run: uv run satsa validate
+
+      - name: Validation (stress scenario)
+        run: uv run satsa validate-stress
+
+      - name: Audit chain verification
+        run: uv run satsa audit verify
+
+      - name: Ruff
+        run: uv run ruff check src tests
+
+      - name: Mypy
+        run: uv run mypy src/satsa
+
+      - name: Upload validation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-reports-py${{ matrix.python-version }}
+          path: |
+            docs/validation_report.md
+            docs/validation_report.html
+            docs/validation_stress_report.md
+          if-no-files-found: warn

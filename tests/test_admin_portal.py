@@ -15,11 +15,11 @@ Covers:
 
 import tempfile
 from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
 from satsa.admin.app import app as admin_app
-from satsa.api.routes import app as satsa_app
 from satsa.auth.identities import verify_passphrase
 from satsa.store.sqlite import SQLiteStore
 
@@ -202,13 +202,18 @@ def test_user_blocking_and_immediate_session_revocation(authenticated_admin_clie
     # 5. Check that active session is immediately revoked
     assert temp_db.get_session(token) is None
 
-    # 6. Attempt login at admin portal with blocked credentials -> denied
+    # 6. Attempt login at admin portal with blocked credentials -> denied with the
+    # SAME generic 401 as an unknown user (no blocked-account enumeration); the
+    # distinct reason is still recorded in the admin audit chain.
     admin_login_resp = authenticated_admin_client.post(
         "/login",
         data={"username": "user_to_block", "password": "UserPass#2026"},
     )
-    assert admin_login_resp.status_code == 403
-    assert "Account is blocked" in admin_login_resp.text
+    assert admin_login_resp.status_code == 401
+    assert "Invalid administrative credentials" in admin_login_resp.text
+    assert "blocked" not in admin_login_resp.text.lower()
+    blocked_audit = temp_db.list_admin_audit_logs(action="ADMIN_LOGIN_BLOCKED", actor="user_to_block")
+    assert blocked_audit
 
     # 7. Unblock user
     unblock_resp = authenticated_admin_client.post(
@@ -290,6 +295,7 @@ def test_cryptographic_audit_trail_and_chain_verification(authenticated_admin_cl
 def test_server_side_cse_boundary_enforcement():
     """Users scoped to one CSE cannot access other CSE data in SAT-SA."""
     from fastapi import HTTPException
+
     from satsa.auth.session import Identity, require_cse_access
 
     # 1. CSE-scoped identity

@@ -39,7 +39,7 @@ def test_stress01_borderline_share_is_just_over_the_real_code_threshold():
     25% code threshold -- this is what makes it a genuine borderline case rather
     than another easy, blown-out defect like the primary dataset's CSE-07.
     """
-    data, gt = generate_stress_dataset()
+    _data, gt = generate_stress_dataset()
     stress01_defect = next(d for d in gt.defects if d.entity_id == "STRESS-01")
     assert 0.25 < stress01_defect.share < 0.35, (
         "STRESS-01 must sit just over EG04's real 25% code threshold, not far above it"
@@ -50,7 +50,7 @@ def test_stress02_defects_share_identical_evidence():
     """The ambiguous case's two defects (EG02 and EG04) must cite the SAME affected
     alert IDs -- that overlap is exactly what makes attribution ambiguous.
     """
-    data, gt = generate_stress_dataset()
+    _data, gt = generate_stress_dataset()
     stress02_defects = [d for d in gt.defects if d.entity_id == "STRESS-02"]
     assert len(stress02_defects) == 2
     rule_ids = {d.rule_id for d in stress02_defects}

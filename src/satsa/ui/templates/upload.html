@@ -12,11 +12,11 @@
 {% endif %}
 <div class="header-section">
   <div class="header-title">
-    <h1>Telemetric Submission & Ingestion Wizard</h1>
-    <p>Register Critical Sector Entities, download canonical schemas, and ingest multi-source SOC telemetry.</p>
+    <h1>Periodic Submission & Ingestion Wizard</h1>
+    <p>Register Critical Sector Entities, download canonical schemas, and ingest periodic multi-source SOC submissions.</p>
   </div>
   <div class="header-actions">
-    <a href="/templates/canonical_soc_telemetry_bundle.zip" class="btn btn-secondary">
+    <a href="/templates/canonical_soc_submission_bundle.zip" class="btn btn-secondary">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
       </svg>
@@ -75,7 +75,7 @@
       <span class="badge badge-low">Section 70A Registry</span>
     </div>
     <p style="color: var(--text-secondary); font-size: 0.88rem; margin-bottom: 1.25rem;">
-      Register a real-world infrastructure entity into the supervisory registry. Once created, you can ingest its alerts, cases, and telemetry for compliance assessment.
+      Register a real-world infrastructure entity into the supervisory registry. Once created, you can ingest its periodic alert, case and asset submissions for supervisory assessment.
     </p>
 
     <form method="post" action="/upload/add-entity">
@@ -149,14 +149,14 @@
     </form>
   </div>
 
-  <!-- Card 2: Upload Telemetry Batch -->
+  <!-- Card 2: Upload Periodic Batch -->
   <div class="card">
     <div class="card-title">
       <span style="display: flex; align-items: center; gap: 0.5rem;">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent-indigo);">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
         </svg>
-        2. Ingest Periodic SOC Telemetry
+        2. Ingest Periodic SOC Submission
       </span>
       <span class="badge" style="background: var(--accent-secondary-bg); color: var(--accent-indigo); border: 1px solid var(--accent-indigo);">Air-Gapped ETL</span>
     </div>
@@ -180,7 +180,7 @@
         <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
         </svg>
-        <p style="font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem;">Click to browse or drop telemetry files here</p>
+        <p style="font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem;">Click to browse or drop submission files here</p>
         <p style="color: var(--text-muted); font-size: 0.82rem;">Accepts <code>alerts.csv</code>, <code>cases.csv</code>, <code>escalations.csv</code>, <code>assets.csv</code>, or <code>.zip</code> bundle</p>
         <input type="file" id="file-input" name="files" multiple style="display: none;" onchange="updateFileList(this)">
       </div>
@@ -229,7 +229,7 @@
       <div style="font-size: 0.75rem; color: var(--text-muted);">assets.csv</div>
       <span class="badge badge-low" style="margin-top: 0.5rem;">Download</span>
     </a>
-    <a href="/templates/canonical_soc_telemetry_bundle.zip" class="stat-card" style="text-decoration: none; padding: 1rem; align-items: center; text-align: center; border-color: var(--accent-indigo);">
+    <a href="/templates/canonical_soc_submission_bundle.zip" class="stat-card" style="text-decoration: none; padding: 1rem; align-items: center; text-align: center; border-color: var(--accent-indigo);">
       <div style="font-weight: 700; color: var(--accent-indigo); font-size: 0.95rem; margin-bottom: 0.25rem;">Full Bundle (.zip)</div>
       <div style="font-size: 0.75rem; color: var(--text-muted);">All CSVs pre-packed</div>
       <span class="badge" style="margin-top: 0.5rem; background: var(--accent-secondary-bg); color: var(--accent-indigo); border: 1px solid var(--accent-indigo);">Download ZIP</span>
@@ -280,7 +280,7 @@
   <!-- Recent Ingestion Batches Audit -->
   <div class="card">
     <div class="card-title">
-      <span>Recent Batch Audit History (SHA-256 Chained)</span>
+      <span>Recent Batch Audit History (Hash-Chained)</span>
       <a href="/runs" class="btn btn-secondary" style="font-size: 0.78rem; padding: 0.3rem 0.6rem;">Full Audit Trail</a>
     </div>
     <div class="table-responsive">

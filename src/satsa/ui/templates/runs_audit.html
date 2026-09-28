@@ -6,7 +6,7 @@
 <div class="header-section">
   <div class="header-title">
     <h1>Supervisory Runs & Cryptographic Audit Trail</h1>
-    <p>Tamper-evident append-only ledger with SHA-256 hash chaining (<code>prev_hash</code>) under Section 70A evidence standards.</p>
+    <p>Tamper-evident append-only ledger with hash chaining (<code>prev_hash</code>; SHA3-256 for new entries) under Section 70A evidence standards.</p>
   </div>
   <div class="header-actions">
     {% if audit_ok %}
@@ -24,7 +24,7 @@
     <div class="stat-value" style="color: {% if audit_ok %}var(--risk-low){% else %}var(--risk-crit){% endif %}; font-size: 1.4rem;">
       {% if audit_ok %}VERIFIED INTACT{% else %}INTEGRITY COMPROMISED{% endif %}
     </div>
-    <div class="stat-desc">SHA-256 sequential block hashes</div>
+    <div class="stat-desc">SHA3-256 chained entry hashes</div>
   </div>
   <div class="stat-card">
     <div class="stat-label">Supervisory Runs</div>

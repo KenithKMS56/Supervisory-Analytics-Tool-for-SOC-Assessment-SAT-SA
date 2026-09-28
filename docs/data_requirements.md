@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-This document specifies the canonical data structures, mandatory and optional telemetric attributes, and per-rule data dependencies required by **SAT-SA**.
+This document specifies the canonical data structures, mandatory and optional attributes of a periodic submission, and per-rule data dependencies required by **SAT-SA**.
 
 ---
 
@@ -30,7 +30,7 @@ list (CSV/JSON/DB exports and APIs):
 
 ## 1. Canonical Schema Specifications
 
-SAT-SA standardizes multi-source operational telemetries into 8 canonical relational entities:
+SAT-SA standardizes multi-source periodic submissions into 8 canonical relational entities:
 
 ### 1.1 `Entity` (Master Profile)
 | Field Name | Type | Constraint | Description |
@@ -43,7 +43,7 @@ SAT-SA standardizes multi-source operational telemetries into 8 canonical relati
 | `timezone` | String | Optional | Local operational timezone (default `UTC`). |
 | `declared_shift_hours` | String | Optional | Operational shift windows (e.g., `09:00-18:00` or `24x7`). |
 
-### 1.2 `Alert` (Security Telemetry)
+### 1.2 `Alert` (Submitted Alert Records)
 | Field Name | Type | Constraint | Description |
 |---|---|---|---|
 | `entity_id` | String | Mandatory | Foreign key to `Entity`. |

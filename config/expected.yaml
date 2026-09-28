@@ -76,4 +76,6 @@ required_workflow_steps:
 mandatory_external_reporting:
   critical_true_positives:
     recipient: "NCIIPC / CERT-In"
+    # Reference only: NS07 currently checks presence of a report, not this window
+    # (timeliness check is a documented follow-up in docs/hardening_log.md).
     max_window_hours: 6

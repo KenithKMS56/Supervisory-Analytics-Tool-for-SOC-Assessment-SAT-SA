@@ -59,69 +59,27 @@
     </p>
 
     <form method="post" action="/tuning/save">
-      <h3 style="color: var(--accent-blue); margin-bottom: 1rem;">Execution Gap Parameters (EG01 - EG12)</h3>
+      {% for group_prefix, group_title, color in [("EG", "Execution Gap Parameters", "var(--accent-blue)"), ("NS", "Negative Space Parameters", "var(--accent-indigo)")] %}
+      <h3 style="color: {{ color }}; margin-bottom: 1rem;">{{ group_title }}</h3>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
+        {% for p in tunable_params if p.rule.startswith(group_prefix) %}
+        {% set rule_params = ((rules_config.rules or {}).get(p.rule) or {}).get("params") or {} %}
         <div>
-          <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">
-            EG01 Fast Closure Limit (Seconds):
-            <span class="tooltip-hint">❓<span class="tooltip-text">Alerts closed faster than this threshold by human analysts are flagged as rubber-stamping.</span></span>
+          <label for="{{ p.field }}" style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">
+            {{ p.label }}:
+            <span class="tooltip-hint">❓<span class="tooltip-text">{{ p.help }}</span></span>
           </label>
-          <input type="number" name="eg01_threshold" value="{{ rules_config.rules.EG01.threshold_seconds|default(120) }}" class="form-control">
+          <input type="number" id="{{ p.field }}" name="{{ p.field }}" step="{{ p.step }}" min="{{ p.min }}" max="{{ p.max }}"
+                 value="{{ rule_params.get(p.key, '') }}" class="form-control">
         </div>
-        <div>
-          <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">
-            EG04 Template Comment Share (0.0 - 1.0):
-            <span class="tooltip-hint">❓<span class="tooltip-text">Max proportion of closures sharing identical text hashes before flagging boilerplate documentation.</span></span>
-          </label>
-          <input type="number" step="0.05" name="eg04_share" value="{{ rules_config.rules.EG04.max_comment_hash_share|default(0.40) }}" class="form-control">
-        </div>
-        <div>
-          <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">
-            EG05 Repeat Alert Minimum Hits:
-            <span class="tooltip-hint">❓<span class="tooltip-text">Minimum repeat alerts on an asset in 30 days without root-cause remediation ticket.</span></span>
-          </label>
-          <input type="number" name="eg05_count" value="{{ rules_config.rules.EG05.repeat_count|default(5) }}" class="form-control">
-        </div>
-        <div>
-          <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">
-            EG10 Max Allowed KPI Gap (%):
-            <span class="tooltip-hint">❓<span class="tooltip-text">Relative difference threshold between declared entity KPIs and empirical raw timestamps.</span></span>
-          </label>
-          <input type="number" step="1.0" name="eg10_gap" value="{{ rules_config.rules.EG10.tolerance_percent|default(10.0) }}" class="form-control">
-        </div>
+        {% endfor %}
       </div>
-
-      <h3 style="color: var(--accent-indigo); margin-bottom: 1rem;">Negative Space Parameters (NS01 - NS08)</h3>
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
-        <div>
-          <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">
-            NS01 Silent Asset Inactivity Days:
-            <span class="tooltip-hint">❓<span class="tooltip-text">Consecutive days of zero telemetry on criticality >= 3 assets before flagging silent infrastructure.</span></span>
-          </label>
-          <input type="number" name="ns01_days" value="{{ rules_config.rules.NS01.consecutive_days_zero_events|default(3) }}" class="form-control">
-        </div>
-        <div>
-          <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">
-            NS02 Peer Prevalence Threshold (%):
-            <span class="tooltip-hint">❓<span class="tooltip-text">MITRE tactic share present in peers before flagging entity's complete absence as a blind spot.</span></span>
-          </label>
-          <input type="number" step="5.0" name="ns02_prevalence" value="{{ rules_config.rules.NS02.peer_prevalence_threshold|default(80.0) }}" class="form-control">
-        </div>
-        <div>
-          <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">
-            NS03 Robust Z-Score Threshold:
-            <span class="tooltip-hint">❓<span class="tooltip-text">MAD-standardized Z-score below which daily activity is flagged as abnormal volume collapse.</span></span>
-          </label>
-          <input type="number" step="0.5" name="ns03_z" value="{{ rules_config.rules.NS03.robust_z_threshold|default(-2.0) }}" class="form-control">
-        </div>
-        <div>
-          <label style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">
-            NS07 Statutory Reporting Window (Hours):
-            <span class="tooltip-hint">❓<span class="tooltip-text">Maximum statutory delay for notifying critical True Positive cyber incidents to NCIIPC.</span></span>
-          </label>
-          <input type="number" name="ns07_hours" value="{{ rules_config.rules.NS07.window_hours|default(6) }}" class="form-control">
-        </div>
-      </div>
+      {% endfor %}
+      <p style="color: var(--text-secondary); font-size: 0.8rem; margin-bottom: 1rem;">
+        Only thresholds that the rule engine actually reads are shown. NS07 checks whether a Critical
+        case has any external notification record; a reporting-window (timeliness) check is not yet
+        implemented, so no window setting is offered.
+      </p>
 
       <button type="submit" class="btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

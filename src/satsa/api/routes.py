@@ -4,6 +4,7 @@ import csv
 import hashlib
 import io
 import json
+import os
 import shutil
 import tempfile
 import zipfile
@@ -22,16 +23,18 @@ from satsa.auth.session import (
     SESSION_COOKIE_NAME,
     Identity,
     get_current_identity,
+    require_authenticated,
     require_cse_access,
     require_role,
 )
-from satsa.bundle.rules_signer import RulePackSigner
+from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
 from satsa.explain.finding_card import FindingCard
 from satsa.ingest.pipeline import IngestionPipeline
 from satsa.models.outputs import ExaminerFeedback
 from satsa.report.generator import ReportGenerator
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
+from satsa.security import is_valid_entity_id, safe_archive_member, safe_join
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
 from satsa.synth.generator import SyntheticDataGenerator
@@ -42,6 +45,10 @@ INGEST_RUN_ROLES = ("admin", "supervisor")
 TUNING_ROLES = ("admin", "supervisor")
 RULEPACK_ROLES = ("admin", "supervisor")
 REVIEW_ROLES = ("examiner", "supervisor", "admin")
+# Portfolio-wide data (bulk JSON APIs, portfolio/CSV exports) spans every
+# entity, so it is limited to NCIIPC supervisory roles; CSE-scoped identities
+# (SOC Analyst, CSE Viewer, ...) are denied rather than shown other CSEs' data.
+SUPERVISORY_READ_ROLES = ("examiner", "supervisor", "admin")
 
 app = FastAPI(
     title="SAT-SA Supervisory API",
@@ -63,41 +70,56 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["get_identity"] = get_current_identity
 
 
+# Paths anyone may reach without a session. Everything else requires one; the
+# route's own dependency then enforces the specific role (see the RBAC table
+# in tests/test_rbac_matrix.py, which must list every route).
+PUBLIC_PATHS = {"/", "/login", "/logout", "/splash", "/api/session/status", "/openapi.json"}
+PUBLIC_PREFIXES = ("/static/", "/docs")
+# Non-page GET endpoints (JSON APIs and file downloads): an anonymous request
+# gets 401 rather than a login redirect.
+NON_PAGE_PREFIXES = ("/api/", "/reports/", "/templates/", "/tuning/export-pack")
+
+
+def _is_public_path(path: str) -> bool:
+    return path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
+
+
 @app.middleware("http")
 async def enforce_auth_middleware(request: Request, call_next):
+    """Reject anonymous requests to every non-public path.
+
+    Anonymous browser page loads (GET on an HTML view) are redirected to
+    /login; anonymous API calls, downloads and all mutating requests get 401.
+    Authenticated requests pass through to the route, whose dependency
+    (require_authenticated / require_role) enforces the allowed roles.
+    """
     path = request.url.path
-
-    # Unconditional public endpoints
-    if (
-        path.startswith("/static")
-        or path in ("/login", "/logout", "/splash")
-        or path.startswith("/docs")
-        or path.startswith("/openapi.json")
-        or path.startswith("/redoc")
-    ):
+    if _is_public_path(path):
         return await call_next(request)
 
-    # Root endpoint "/" handles its own branch (splash if unauth, portfolio if auth)
-    if path == "/":
-        return await call_next(request)
+    if get_current_identity(request) is None:
+        if request.method == "GET" and not path.startswith(NON_PAGE_PREFIXES):
+            import urllib.parse
 
-    # REST APIs: let them pass through to their handlers (or require_role dependencies)
-    if path.startswith("/api/"):
-        return await call_next(request)
-
-    # Endpoints with specific require_role tests that expect HTTP 401
-    if path in ("/tuning/save", "/tuning/export-pack"):
-        return await call_next(request)
-
-    # For all UI views (/portfolio, /alerts, /queue, /upload, /entity, /blind-review, etc.)
-    identity = get_current_identity(request)
-    if not identity:
-        import urllib.parse
-
-        encoded_next = urllib.parse.quote_plus(str(request.url.path))
-        return RedirectResponse(url=f"/login?next={encoded_next}", status_code=303)
+            encoded_next = urllib.parse.quote_plus(path)
+            return RedirectResponse(url=f"/login?next={encoded_next}", status_code=303)
+        return JSONResponse(
+            {"detail": "Authentication required. Please log in at /login."}, status_code=401
+        )
 
     return await call_next(request)
+
+
+def require_valid_entity_id(entity_id: str) -> str:
+    """Reject an externally supplied entity_id that fails satsa.security.ENTITY_ID_RE (HTTP 400)."""
+    if not is_valid_entity_id(entity_id):
+        raise HTTPException(status_code=400, detail="Invalid entity_id.")
+    return entity_id
+
+
+def session_cookie_secure() -> bool:
+    """Whether to set the Secure cookie flag (off by default: the app serves plain-HTTP localhost)."""
+    return os.environ.get("SATSA_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
 
 
 def get_stores() -> tuple[DuckDBStore, SQLiteStore]:
@@ -210,26 +232,40 @@ async def handle_login(
     next: Annotated[str, Form()] = "/portfolio",
 ) -> Response:
     import urllib.parse
-    from satsa.auth.identities import verify_passphrase
+
+    from satsa.auth.identities import LOGIN_LOCKOUT_MINUTES, LOGIN_MAX_FAILURES, verify_passphrase
 
     uname = username.strip()
     safe_next = next if (next.startswith("/") and not next.startswith("//")) else "/portfolio"
-
-    _, sqlite_store = get_stores()
-    identity_row = sqlite_store.get_identity(uname)
-    ok = bool(identity_row) and verify_passphrase(
-        password, identity_row["pass_salt"], identity_row["pass_hash"]
+    # One generic message for unknown user, wrong passphrase AND lockout, so the
+    # response never reveals whether a username exists or is locked.
+    generic_error = RedirectResponse(
+        url=f"/login?error={urllib.parse.quote_plus('Invalid username or passphrase.')}&next={safe_next}",
+        status_code=303,
     )
 
-    if not ok:
+    _, sqlite_store = get_stores()
+    actor = uname or "unknown"
+    if sqlite_store.count_recent_login_failures(actor, LOGIN_LOCKOUT_MINUTES) >= LOGIN_MAX_FAILURES:
+        # Rejected even if the passphrase is correct; not counted as a new failure,
+        # so the lock expires LOGIN_LOCKOUT_MINUTES after the last real failure.
         sqlite_store.append_audit(
-            action="login_failed", actor=uname or "unknown", details={"reason": "bad_credentials"}
+            action="login_locked",
+            actor=actor,
+            details={"max_failures": LOGIN_MAX_FAILURES, "window_minutes": LOGIN_LOCKOUT_MINUTES},
         )
         sqlite_store.close()
-        err_msg = urllib.parse.quote_plus("Invalid username or passphrase.")
-        return RedirectResponse(
-            url=f"/login?error={err_msg}&next={safe_next}", status_code=303
+        return generic_error
+
+    identity_row = sqlite_store.get_identity(uname)
+    if identity_row is None or not verify_passphrase(
+        password, identity_row["pass_salt"], identity_row["pass_hash"]
+    ):
+        sqlite_store.append_audit(
+            action="login_failed", actor=actor, details={"reason": "bad_credentials"}
         )
+        sqlite_store.close()
+        return generic_error
 
     if identity_row.get("is_blocked") or identity_row.get("status") == "BLOCKED":
         sqlite_store.append_audit(
@@ -262,6 +298,7 @@ async def handle_login(
         value=token,
         httponly=True,
         samesite="lax",
+        secure=session_cookie_secure(),
         max_age=8 * 3600,
     )
     return resp
@@ -291,7 +328,7 @@ async def handle_logout(request: Request) -> Response:
 
 @app.get("/api/session/status")
 async def api_session_status(request: Request) -> JSONResponse:
-    """Telemetry endpoint called by SAT-SA frontend to verify session validity and detect administrative revocation."""
+    """Session status endpoint polled by the SAT-SA frontend to detect administrative revocation of the session."""
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if not token:
         return JSONResponse({"authenticated": False, "revoked": False})
@@ -336,7 +373,7 @@ async def view_splash(request: Request) -> Response:
 
 
 @app.get("/", response_class=HTMLResponse)
-@app.get("/portfolio", response_class=HTMLResponse)
+@app.get("/portfolio", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_portfolio(request: Request) -> Response:
     identity = get_current_identity(request)
     if identity is None:
@@ -531,8 +568,9 @@ async def view_portfolio(request: Request) -> Response:
     )
 
 
-@app.get("/entity/{entity_id}", response_class=HTMLResponse)
+@app.get("/entity/{entity_id}", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_entity_profile(request: Request, entity_id: str) -> Response:
+    require_valid_entity_id(entity_id)
     identity = get_current_identity(request)
     if identity:
         require_cse_access(entity_id, identity)
@@ -544,7 +582,7 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
     run_id = run_row["run_id"] if run_row else ""
 
     # Fetch entity info
-    ent_res = duckdb_store.query(f"SELECT * FROM entity WHERE entity_id = '{entity_id}'")
+    ent_res = duckdb_store.query("SELECT * FROM entity WHERE entity_id = ?", [entity_id])
     if ent_res.is_empty():
         duckdb_store.close()
         sqlite_store.close()
@@ -604,7 +642,7 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
 
     # KPI Reconciliation data
     duckdb_store.query(
-        f"SELECT metric, severity, value FROM declared_kpi WHERE entity_id = '{entity_id}'"
+        "SELECT metric, severity, value FROM declared_kpi WHERE entity_id = ?", [entity_id]
     )
     kpi_comparison = [
         {
@@ -635,7 +673,7 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
     )
 
 
-@app.get("/finding/{finding_id}", response_class=HTMLResponse)
+@app.get("/finding/{finding_id}", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_finding_detail(request: Request, finding_id: str) -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -644,6 +682,13 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
     if not f_row:
         sqlite_store.close()
         raise HTTPException(status_code=404, detail="Finding not found")
+    viewer = get_current_identity(request)
+    if viewer:
+        try:
+            require_cse_access(f_row["entity_id"], viewer)
+        except HTTPException:
+            sqlite_store.close()
+            raise
 
     cur.execute(
         "SELECT record_type, record_id, details_json FROM finding_evidences WHERE finding_id = ?",
@@ -697,7 +742,7 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
     )
 
 
-@app.get("/queue", response_class=HTMLResponse)
+@app.get("/queue", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_review_queue(request: Request) -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -717,7 +762,7 @@ async def view_review_queue(request: Request) -> Response:
     )
 
 
-@app.get("/dq", response_class=HTMLResponse)
+@app.get("/dq", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_dq_coverage(request: Request) -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -753,8 +798,8 @@ async def view_dq_coverage(request: Request) -> Response:
     )
 
 
-@app.get("/audit", response_class=HTMLResponse)
-@app.get("/runs", response_class=HTMLResponse)
+@app.get("/audit", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
+@app.get("/runs", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_runs_audit(request: Request) -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -786,7 +831,7 @@ async def view_runs_audit(request: Request) -> Response:
 # --- REST API Endpoints ---
 
 
-@app.get("/api/v1/runs")
+@app.get("/api/v1/runs", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_list_runs() -> list[dict[str, Any]]:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -796,7 +841,7 @@ async def api_list_runs() -> list[dict[str, Any]]:
     return rows
 
 
-@app.get("/api/v1/entities")
+@app.get("/api/v1/entities", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_list_entities() -> list[dict[str, Any]]:
     duckdb_store, sqlite_store = get_stores()
     df_ent = duckdb_store.query("SELECT entity_id, name, sector, size_band FROM entity")
@@ -827,7 +872,7 @@ async def api_list_entities() -> list[dict[str, Any]]:
     return rows
 
 
-@app.get("/api/v1/findings")
+@app.get("/api/v1/findings", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_list_findings(entity_id: str | None = None) -> list[dict[str, Any]]:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -840,7 +885,7 @@ async def api_list_findings(entity_id: str | None = None) -> list[dict[str, Any]
     return rows
 
 
-@app.get("/api/v1/queue")
+@app.get("/api/v1/queue", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_get_queue(entity_id: str | None = None) -> list[dict[str, Any]]:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -881,7 +926,7 @@ async def api_submit_feedback(
     return RedirectResponse(url="/queue", status_code=303)
 
 
-@app.get("/api/v1/audit/verify")
+@app.get("/api/v1/audit/verify", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_verify_audit() -> dict[str, Any]:
     _, sqlite_store = get_stores()
     ok, msg = sqlite_store.verify_audit_chain()
@@ -889,7 +934,7 @@ async def api_verify_audit() -> dict[str, Any]:
     return {"verified": ok, "message": msg}
 
 
-@app.get("/api/v1/export/queue.csv")
+@app.get("/api/v1/export/queue.csv", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_export_queue_csv() -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -914,7 +959,7 @@ async def api_export_queue_csv() -> Response:
 # --- Production Features: Alert Explorer, Ingest Wizard, Blind Review, Tuning & Direct Reports ---
 
 
-@app.get("/alerts", response_class=HTMLResponse)
+@app.get("/alerts", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_alerts(
     request: Request,
     q: str = "",
@@ -929,25 +974,33 @@ async def view_alerts(
     df_ents = duckdb_store.query("SELECT entity_id FROM entity ORDER BY entity_id")
     all_entities = [r["entity_id"] for r in df_ents.iter_rows(named=True)]
 
-    # Build filtered DuckDB query
-    where_clauses = ["1=1"]
+    # Build filtered DuckDB query. Every user-supplied value is bound as a
+    # parameter; only fixed clause text is joined into the SQL string.
     if entity:
-        where_clauses.append(f"entity_id = '{entity}'")
+        require_valid_entity_id(entity)
+    where_clauses = ["1=1"]
+    where_params: list[Any] = []
+    if entity:
+        where_clauses.append("entity_id = ?")
+        where_params.append(entity)
     if severity:
-        where_clauses.append(f"severity_final = '{severity}'")
+        where_clauses.append("severity_final = ?")
+        where_params.append(severity)
     if actor_type:
-        where_clauses.append(f"closed_by_type = '{actor_type}'")
+        where_clauses.append("closed_by_type = ?")
+        where_params.append(actor_type)
     if q:
-        safe_q = q.replace("'", "''")
-        where_clauses.append(
-            f"(alert_id LIKE '%{safe_q}%' OR rule_id LIKE '%{safe_q}%' OR asset_id LIKE '%{safe_q}%')"
-        )
+        like_q = f"%{q}%"
+        where_clauses.append("(alert_id LIKE ? OR rule_id LIKE ? OR asset_id LIKE ?)")
+        where_params.extend([like_q, like_q, like_q])
 
     where_sql = " AND ".join(where_clauses)
 
     # Count total matching for pagination
     page_size = 25
-    total_matching_df = duckdb_store.query(f"SELECT count(*) as count FROM alert WHERE {where_sql}")
+    total_matching_df = duckdb_store.query(
+        f"SELECT count(*) as count FROM alert WHERE {where_sql}", where_params
+    )
     total_matching = total_matching_df.to_dicts()[0]["count"]
     total_pages = max(1, (total_matching + page_size - 1) // page_size)
     page = max(1, min(page, total_pages))
@@ -960,8 +1013,8 @@ async def view_alerts(
         FROM alert
         WHERE {where_sql}
         ORDER BY created_at DESC
-        LIMIT {page_size} OFFSET {offset}
-    """)
+        LIMIT {int(page_size)} OFFSET {int(offset)}
+    """, where_params)
 
     alerts_list = []
     for r in df_alerts.iter_rows(named=True):
@@ -1009,7 +1062,7 @@ async def view_alerts(
     )
 
 
-@app.get("/upload", response_class=HTMLResponse)
+@app.get("/upload", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_upload(request: Request, message: str = "") -> Response:
     duckdb_store, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -1055,6 +1108,11 @@ def handle_add_entity(
     if not clean_id:
         return RedirectResponse(
             url="/upload?message=Error:+Entity+ID+cannot+be+empty", status_code=303
+        )
+    if not is_valid_entity_id(clean_id):
+        return RedirectResponse(
+            url="/upload?message=Error:+Entity+ID+may+only+contain+letters,+digits,+'.',+'_'+and+'-'",
+            status_code=303,
         )
 
     # If "Other" sector was selected, use the custom sector text
@@ -1149,8 +1207,8 @@ def handle_add_entity(
 async def handle_delete_entity(
     entity_id: str, identity: Identity = Depends(require_role(*INGEST_RUN_ROLES))
 ) -> Response:
-    """Permanently delete an entity, its telemetric partitions, and recalculate portfolio."""
-    clean_id = entity_id.strip().upper()
+    """Permanently delete an entity, its data partitions, and recalculate portfolio."""
+    clean_id = require_valid_entity_id(entity_id.strip().upper())
     duckdb_store, sqlite_store = get_stores()
 
     # 1. Delete from SQLite
@@ -1162,10 +1220,18 @@ async def handle_delete_entity(
     cur.execute("DELETE FROM review_queue WHERE entity_id = ?", (clean_id,))
     sqlite_store.conn.commit()
 
-    # 2. Delete from DuckDB parquet files
-    for p in Path("data").rglob(f"entity_id={clean_id}"):
-        if p.is_dir():
-            shutil.rmtree(p, ignore_errors=True)
+    # 2. Delete from DuckDB parquet files: only the exact `entity_id=<id>`
+    # partition directory under each table (no glob patterns, so an ID can
+    # never match another entity's partitions), confined to the parquet root.
+    parquet_root = duckdb_store.parquet_dir
+    partition_name = f"entity_id={clean_id}"
+    if parquet_root.is_dir():
+        for table_dir in parquet_root.iterdir():
+            if not table_dir.is_dir():
+                continue
+            part = safe_join(parquet_root, f"{table_dir.name}/{partition_name}")
+            if part.is_dir() and part.name == partition_name:
+                shutil.rmtree(part, ignore_errors=True)
 
     # 3. Audit log
     sqlite_store.append_audit(
@@ -1187,16 +1253,21 @@ async def handle_delete_entity(
     )
 
 
-@app.get("/templates/{template_name}")
+@app.get("/templates/{template_name}", dependencies=[Depends(require_authenticated)])
 def download_template(template_name: str) -> Response:
     """Generate and serve canonical CSV schema templates or sample zip bundle."""
     templates_dir = Path("data/templates")
     templates_dir.mkdir(parents=True, exist_ok=True)
 
-    t_name = template_name.lower().replace(".csv", "")
+    t_name = template_name.lower().removesuffix(".csv").removesuffix(".zip")
+    # Allow-list: the name is used to build a file path, so only known template
+    # names are accepted (anything else, e.g. "..\\..\\x", is a 404).
+    is_bundle = t_name in ("bundle", "canonical_soc_submission_bundle", "canonical_soc_telemetry_bundle")
+    if not is_bundle and t_name not in TEMPLATE_CSV_CONTENT:
+        raise HTTPException(status_code=404, detail="Unknown template.")
 
-    if t_name == "bundle" or template_name.endswith(".zip"):
-        zip_path = templates_dir / "canonical_soc_telemetry_bundle.zip"
+    if is_bundle:
+        zip_path = templates_dir / "canonical_soc_submission_bundle.zip"
         with zipfile.ZipFile(zip_path, "w") as z:
             alert_csv = "alert_id,entity_id,rule_id,category,severity_orig,severity_final,asset_id,created_at,acknowledged_at,closed_at,closed_by,closed_by_type,disposition,status\nALT-001,CSE-DEMO,DET-BRUTE-FORCE,Credential Access,high,high,SRV-AUTH-01,2026-01-15T08:30:00Z,2026-01-15T08:35:00Z,2026-01-15T09:15:00Z,analyst_sharma,human,true_positive,closed\nALT-002,CSE-DEMO,DET-PORT-SCAN,Discovery,medium,low,SRV-WEB-02,2026-01-15T10:00:00Z,2026-01-15T10:01:00Z,2026-01-15T10:02:00Z,soar_bot,soar,false_positive,closed\n"
             z.writestr("alerts.csv", alert_csv)
@@ -1212,43 +1283,45 @@ def download_template(template_name: str) -> Response:
 
         return FileResponse(
             zip_path,
-            filename="canonical_soc_telemetry_bundle.zip",
+            filename="canonical_soc_submission_bundle.zip",
             media_type="application/zip",
         )
 
-    template_headers = {
-        "alerts": (
-            "alert_id,entity_id,rule_id,category,severity_orig,severity_final,asset_id,created_at,acknowledged_at,closed_at,closed_by,closed_by_type,disposition,status\n"
-            "ALT-001,CSE-01,DET-01,Threat Detection,high,high,ASSET-01,2026-01-15T08:30:00Z,2026-01-15T08:35:00Z,2026-01-15T09:15:00Z,analyst_1,human,true_positive,closed\n"
-        ),
-        "cases": (
-            "case_id,entity_id,alert_id,severity,status,opened_at,resolved_at,lead_analyst_id,root_cause\n"
-            "CAS-001,CSE-01,ALT-001,high,resolved,2026-01-15T08:40:00Z,2026-01-15T09:15:00Z,analyst_1,Malicious IP scan confirmed\n"
-        ),
-        "escalations": (
-            "escalation_id,alert_id,case_id,entity_id,from_tier,to_tier,escalated_at,acknowledged_at,outcome\n"
-            "ESC-001,ALT-001,CAS-001,CSE-01,Tier-1,Tier-2,2026-01-15T08:36:00Z,2026-01-15T08:42:00Z,contained\n"
-        ),
-        "closures": (
-            "closure_id,record_id,entity_id,closed_by_type,comment,duration_seconds,disposition\n"
-            "CLS-001,ALT-001,CSE-01,human,Malicious credential brute-force contained and host isolated.,2700,true_positive\n"
-        ),
-        "assets": (
-            "asset_id,entity_id,asset_type,criticality,zone,is_monitored\n"
-            "ASSET-01,CSE-01,domain_controller,4,core,true\n"
-            "ASSET-02,CSE-01,scada_gateway,4,ot_substation,true\n"
-        ),
-        "kpis": (
-            "entity_id,period,metric,severity,value\n"
-            "CSE-01,2026-Q1,mtta,all,15.0\n"
-            "CSE-01,2026-Q1,mttr,all,45.0\n"
-            "CSE-01,2026-Q1,sla_compliance,all,95.0\n"
-        ),
-    }
-    content = template_headers.get(t_name, template_headers["alerts"])
+    content = TEMPLATE_CSV_CONTENT[t_name]
     csv_file = templates_dir / f"{t_name}.csv"
     csv_file.write_text(content, encoding="utf-8")
     return FileResponse(csv_file, filename=f"{t_name}_template.csv", media_type="text/csv")
+
+
+TEMPLATE_CSV_CONTENT: dict[str, str] = {
+    "alerts": (
+        "alert_id,entity_id,rule_id,category,severity_orig,severity_final,asset_id,created_at,acknowledged_at,closed_at,closed_by,closed_by_type,disposition,status\n"
+        "ALT-001,CSE-01,DET-01,Threat Detection,high,high,ASSET-01,2026-01-15T08:30:00Z,2026-01-15T08:35:00Z,2026-01-15T09:15:00Z,analyst_1,human,true_positive,closed\n"
+    ),
+    "cases": (
+        "case_id,entity_id,alert_id,severity,status,opened_at,resolved_at,lead_analyst_id,root_cause\n"
+        "CAS-001,CSE-01,ALT-001,high,resolved,2026-01-15T08:40:00Z,2026-01-15T09:15:00Z,analyst_1,Malicious IP scan confirmed\n"
+    ),
+    "escalations": (
+        "escalation_id,alert_id,case_id,entity_id,from_tier,to_tier,escalated_at,acknowledged_at,outcome\n"
+        "ESC-001,ALT-001,CAS-001,CSE-01,Tier-1,Tier-2,2026-01-15T08:36:00Z,2026-01-15T08:42:00Z,contained\n"
+    ),
+    "closures": (
+        "closure_id,record_id,entity_id,closed_by_type,comment,duration_seconds,disposition\n"
+        "CLS-001,ALT-001,CSE-01,human,Malicious credential brute-force contained and host isolated.,2700,true_positive\n"
+    ),
+    "assets": (
+        "asset_id,entity_id,asset_type,criticality,zone,is_monitored\n"
+        "ASSET-01,CSE-01,domain_controller,4,core,true\n"
+        "ASSET-02,CSE-01,scada_gateway,4,ot_substation,true\n"
+    ),
+    "kpis": (
+        "entity_id,period,metric,severity,value\n"
+        "CSE-01,2026-Q1,mtta,all,15.0\n"
+        "CSE-01,2026-Q1,mttr,all,45.0\n"
+        "CSE-01,2026-Q1,sla_compliance,all,95.0\n"
+    ),
+}
 
 
 @app.post("/upload")
@@ -1257,9 +1330,13 @@ def handle_upload(
     target_entity: Annotated[str, Form()] = "",
     identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
 ) -> Response:
+    target_clean = target_entity.strip() or None
+    if target_clean is not None and not is_valid_entity_id(target_clean):
+        return RedirectResponse(
+            url="/upload?message=Error:+invalid+target+entity+ID", status_code=303
+        )
     duckdb_store, sqlite_store = get_stores()
     pipeline = IngestionPipeline(duckdb_store, sqlite_store)
-    target_clean = target_entity.strip() or None
 
     try:
         sqlite_store.record_live_event(
@@ -1272,12 +1349,17 @@ def handle_upload(
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             for uf in files:
-                dest = tmp_path / (uf.filename or "upload.csv")
+                # Only the base name of the client-supplied filename is used, so a
+                # name like "../../x.csv" cannot write outside the temp directory.
+                safe_name = Path((uf.filename or "").replace("\\", "/")).name or "upload.csv"
+                dest = tmp_path / safe_name
                 with open(dest, "wb") as f:
                     shutil.copyfileobj(uf.file, f)
-                # If ZIP, unpack
+                # If ZIP, validate every member path before unpacking anything.
                 if dest.suffix.lower() == ".zip":
                     with zipfile.ZipFile(dest, "r") as z:
+                        for member in z.namelist():
+                            safe_archive_member(member)
                         z.extractall(tmp_path)
 
             res = pipeline.ingest_directory(
@@ -1363,8 +1445,9 @@ def handle_trigger_demo(
     return RedirectResponse(url="/", status_code=303)
 
 
-@app.get("/blind-review", response_class=HTMLResponse)
+@app.get("/blind-review", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_blind_review(request: Request, entity_id: str = "CSE-02") -> Response:
+    require_valid_entity_id(entity_id)
     duckdb_store, sqlite_store = get_stores()
 
     df_ents = duckdb_store.query("SELECT entity_id FROM entity ORDER BY entity_id")
@@ -1373,7 +1456,7 @@ async def view_blind_review(request: Request, entity_id: str = "CSE-02") -> Resp
         entity_id = all_entities[0]
 
     # Compute raw objective signals without revealing risk scores
-    m_df = duckdb_store.query(f"""
+    m_df = duckdb_store.query("""
         SELECT
             count(*) as total_alerts,
             ROUND(quantile_cont(epoch(acknowledged_at - created_at) / 60.0, 0.5), 1) as median_mtta_min,
@@ -1381,38 +1464,40 @@ async def view_blind_review(request: Request, entity_id: str = "CSE-02") -> Resp
             count(CASE WHEN closed_by_type = 'soar' THEN 1 END) * 100.0 / greatest(count(*), 1) as soar_share,
             count(CASE WHEN disposition = 'false_positive' THEN 1 END) * 100.0 / greatest(count(*), 1) as fp_rate
         FROM alert
-        WHERE entity_id = '{entity_id}'
-    """).to_dicts()[0]
+        WHERE entity_id = ?
+    """, [entity_id]).to_dicts()[0]
 
     # Declared MTTR
     kpi_df = duckdb_store.query(
-        f"SELECT value FROM declared_kpi WHERE entity_id = '{entity_id}' AND metric = 'mttr' LIMIT 1"
+        "SELECT value FROM declared_kpi WHERE entity_id = ? AND metric = 'mttr' LIMIT 1",
+        [entity_id],
     )
     declared_mttr = kpi_df.to_dicts()[0]["value"] if not kpi_df.is_empty() else "N/A"
 
     # Escalations
     esc_df = duckdb_store.query(
-        f"SELECT count(*) as c FROM alert WHERE entity_id = '{entity_id}' AND severity_final IN ('high', 'critical')"
+        "SELECT count(*) as c FROM alert WHERE entity_id = ? AND severity_final IN ('high', 'critical')",
+        [entity_id],
     )
     tot_high = esc_df.to_dicts()[0]["c"] if not esc_df.is_empty() else 1
     esc_c_df = duckdb_store.query(
-        f"SELECT count(*) as c FROM escalation WHERE entity_id = '{entity_id}'"
+        "SELECT count(*) as c FROM escalation WHERE entity_id = ?", [entity_id]
     )
     tot_esc = esc_c_df.to_dicts()[0]["c"] if not esc_c_df.is_empty() else 0
     esc_rate = round((tot_esc / max(tot_high, 1)) * 100.0, 1)
 
     # Silent assets
-    silent_df = duckdb_store.query(f"""
+    silent_df = duckdb_store.query("""
         SELECT count(*) as c FROM asset
-        WHERE entity_id = '{entity_id}' AND criticality >= 3 AND asset_id NOT IN (
-            SELECT DISTINCT asset_id FROM log_source_daily WHERE entity_id = '{entity_id}'
+        WHERE entity_id = ? AND criticality >= 3 AND asset_id NOT IN (
+            SELECT DISTINCT asset_id FROM log_source_daily WHERE entity_id = ?
         )
-    """)
+    """, [entity_id, entity_id])
     silent_assets = silent_df.to_dicts()[0]["c"] if not silent_df.is_empty() else 0
 
     # Sample anonymized comments
     c_df = duckdb_store.query(
-        f"SELECT comment_norm_hash FROM closure WHERE entity_id = '{entity_id}' LIMIT 5"
+        "SELECT comment_norm_hash FROM closure WHERE entity_id = ? LIMIT 5", [entity_id]
     )
     sample_comments = [
         f"Normalised closure text hash: {r['comment_norm_hash']}" for r in c_df.to_dicts()
@@ -1479,6 +1564,7 @@ async def handle_blind_review_submit(
     examiner_notes: Annotated[str, Form()],
     identity: Identity = Depends(require_role(*REVIEW_ROLES)),
 ) -> Response:
+    require_valid_entity_id(entity_id)
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1")
@@ -1530,7 +1616,7 @@ async def handle_blind_review_submit(
     return RedirectResponse(url=f"/blind-review?entity_id={entity_id}", status_code=303)
 
 
-@app.get("/rules", response_class=HTMLResponse)
+@app.get("/rules", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_rules_catalog(
     request: Request, category: str = "", domain: str = "", q: str = ""
 ) -> Response:
@@ -1601,14 +1687,90 @@ async def view_rules_catalog(
     )
 
 
-@app.get("/tuning", response_class=HTMLResponse)
-async def view_tuning(request: Request, message: str = "") -> Response:
-    config_path = Path("config/rules.yaml")
-    rules_cfg = (
-        yaml.safe_load(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+# Every threshold the Tuning page can change. Each entry maps 1:1 to a key the
+# rule reads via self.params.get(key, default) (enforced by
+# tests/test_config_drift.py); labels describe the rule's REAL logic. The form
+# field for an entry is named "<RULE>__<key>", e.g. "EG04__max_comment_hash_share".
+TUNABLE_PARAMS: list[dict[str, Any]] = [
+    {"rule": "EG01", "key": "fast_share_threshold", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01,
+     "label": "EG01 - min share of closures faster than peer p5",
+     "help": "Flag when more than this share of human-closed High/Critical alerts close faster than the portfolio p5 close time with <= 1 workflow event."},
+    {"rule": "EG01", "key": "min_fast_count", "type": "int", "min": 1, "max": 100000, "step": 1,
+     "label": "EG01 - min number of such fast closures",
+     "help": "Minimum count of fast, minimally-worked closures required before EG01 can fire."},
+    {"rule": "EG04", "key": "max_comment_hash_share", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01,
+     "label": "EG04 - max share of closures in repeated-comment groups",
+     "help": "Flag when more than this share of human-closed alerts carry a closure comment whose normalized hash repeats at least the group size below."},
+    {"rule": "EG04", "key": "min_hash_group_size", "type": "int", "min": 2, "max": 100000, "step": 1,
+     "label": "EG04 - min repeats for a comment-hash group",
+     "help": "A normalized comment hash counts as boilerplate only if it repeats at least this many times."},
+    {"rule": "EG05", "key": "min_repeat_count", "type": "int", "min": 2, "max": 100000, "step": 1,
+     "label": "EG05 - min repeats of an all-benign (asset, rule) pair",
+     "help": "An (asset, rule) pair counts when it fired at least this many times and was always closed false-positive/benign."},
+    {"rule": "EG05", "key": "min_unaddressed_pairs", "type": "int", "min": 1, "max": 100000, "step": 1,
+     "label": "EG05 - min unremediated repeat pairs",
+     "help": "Flag when at least this many such pairs have no linked remediation ticket."},
+    {"rule": "EG10", "key": "mttr_gap_ratio_threshold", "type": "float", "min": 0.0, "max": 100.0, "step": 0.05,
+     "label": "EG10 - max relative gap, empirical vs declared MTTR",
+     "help": "Flag when (empirical - declared) / declared High/Critical MTTR exceeds this ratio (0.60 = 60%)."},
+    {"rule": "NS01", "key": "min_silent_days", "type": "int", "min": 1, "max": 3660, "step": 1,
+     "label": "NS01 - min zero-event days on a critical asset",
+     "help": "Flag monitored critical assets with at least this many days of zero log events (days need not be consecutive)."},
+    {"rule": "NS01", "key": "min_asset_criticality", "type": "int", "min": 1, "max": 5, "step": 1,
+     "label": "NS01 - min asset criticality considered",
+     "help": "Only assets at or above this criticality level are checked."},
+    {"rule": "NS02", "key": "min_peer_entity_count", "type": "int", "min": 1, "max": 100000, "step": 1,
+     "label": "NS02 - entities reporting a category for it to be 'standard'",
+     "help": "A category is expected of every entity when at least this many portfolio entities report it; its complete absence is flagged."},
+    {"rule": "NS03", "key": "max_night_share", "type": "float", "min": 0.0, "max": 1.0, "step": 0.01,
+     "label": "NS03 - max night-time (20:00-08:00) share of alerts",
+     "help": "Flag when the night-time share of an entity's alerts falls below this value."},
+    {"rule": "NS03", "key": "min_alert_volume", "type": "int", "min": 1, "max": 10000000, "step": 1,
+     "label": "NS03 - min alert volume before NS03 applies",
+     "help": "NS03 is only evaluated for entities with at least this many alerts."},
+]
+
+RULES_CONFIG_PATH = Path("config/rules.yaml")
+
+
+def _load_rules_config() -> dict[str, Any]:
+    if not RULES_CONFIG_PATH.exists():
+        return {"rules": {}}
+    return yaml.safe_load(RULES_CONFIG_PATH.read_text(encoding="utf-8")) or {"rules": {}}
+
+
+def _write_rules_config(cfg: dict[str, Any]) -> None:
+    """Write config/rules.yaml, preserving its leading comment header."""
+    header = ""
+    if RULES_CONFIG_PATH.exists():
+        lines = RULES_CONFIG_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
+        for line in lines:
+            if not line.startswith("#"):
+                break
+            header += line
+    RULES_CONFIG_PATH.write_text(
+        header + yaml.dump(cfg, sort_keys=False, width=100), encoding="utf-8"
     )
+
+
+def _tunable_param_rows(rules_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """TUNABLE_PARAMS annotated with each parameter's current configured value."""
+    rows = []
+    for spec in TUNABLE_PARAMS:
+        current = (
+            rules_cfg.get("rules", {}).get(spec["rule"], {}).get("params", {}).get(spec["key"])
+        )
+        rows.append({**spec, "field": f"{spec['rule']}__{spec['key']}", "value": current})
+    return rows
+
+
+@app.get("/tuning", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
+async def view_tuning(request: Request, message: str = "") -> Response:
+    rules_cfg = _load_rules_config()
     config_hash = (
-        hashlib.sha256(config_path.read_bytes()).hexdigest()[:16] if config_path.exists() else "N/A"
+        hashlib.sha256(RULES_CONFIG_PATH.read_bytes()).hexdigest()[:16]
+        if RULES_CONFIG_PATH.exists()
+        else "N/A"
     )
 
     return templates.TemplateResponse(
@@ -1618,6 +1780,7 @@ async def view_tuning(request: Request, message: str = "") -> Response:
             "active_tab": "tuning",
             "message": message,
             "rules_config": rules_cfg,
+            "tunable_params": _tunable_param_rows(rules_cfg),
             "config_hash": config_hash,
         },
     )
@@ -1625,52 +1788,50 @@ async def view_tuning(request: Request, message: str = "") -> Response:
 
 @app.post("/tuning/save")
 async def handle_tuning_save(
-    eg01_threshold: Annotated[int, Form()] = 120,
-    eg04_share: Annotated[float, Form()] = 0.40,
-    eg05_count: Annotated[int, Form()] = 5,
-    eg10_gap: Annotated[float, Form()] = 10.0,
-    ns01_days: Annotated[int, Form()] = 3,
-    ns02_prevalence: Annotated[float, Form()] = 80.0,
-    ns03_z: Annotated[float, Form()] = -2.0,
-    ns07_hours: Annotated[int, Form()] = 6,
+    request: Request,
     identity: Identity = Depends(require_role(*TUNING_ROLES)),
 ) -> Response:
-    config_path = Path("config/rules.yaml")
-    cfg = (
-        yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        if config_path.exists()
-        else {"rules": {}}
-    )
+    """Update rule thresholds in config/rules.yaml and re-run the assessment.
 
-    cfg.setdefault("rules", {})
-    cfg["rules"].setdefault("EG01", {})["threshold_seconds"] = eg01_threshold
-    cfg["rules"].setdefault("EG04", {})["max_comment_hash_share"] = eg04_share
-    cfg["rules"].setdefault("EG05", {})["repeat_count"] = eg05_count
-    cfg["rules"].setdefault("EG10", {})["tolerance_percent"] = eg10_gap
-    cfg["rules"].setdefault("NS01", {})["consecutive_days_zero_events"] = ns01_days
-    cfg["rules"].setdefault("NS02", {})["peer_prevalence_threshold"] = ns02_prevalence
-    cfg["rules"].setdefault("NS03", {})["robust_z_threshold"] = ns03_z
-    cfg["rules"].setdefault("NS07", {})["window_hours"] = ns07_hours
+    Only fields named "<RULE>__<key>" for an entry in TUNABLE_PARAMS are
+    accepted, and each is written to cfg["rules"][RULE]["params"][key] -- the
+    exact place the rule reads it from. Fields that are omitted are left
+    unchanged; out-of-range or non-numeric values are rejected (HTTP 422).
+    """
+    form = await request.form()
+    cfg = _load_rules_config()
+    rules = cfg.setdefault("rules", {})
+    changes: dict[str, dict[str, Any]] = {}
+    for spec in TUNABLE_PARAMS:
+        field = f"{spec['rule']}__{spec['key']}"
+        raw = form.get(field)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            value: float | int = float(str(raw)) if spec["type"] == "float" else int(str(raw))
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"{field} must be a number.") from None
+        if not (spec["min"] <= value <= spec["max"]):
+            raise HTTPException(
+                status_code=422, detail=f"{field} must be between {spec['min']} and {spec['max']}."
+            )
+        params = rules.setdefault(spec["rule"], {}).setdefault("params", {})
+        old = params.get(spec["key"])
+        if old != value:
+            changes[field] = {"old": old, "new": value}
+        params[spec["key"]] = value
 
-    config_path.write_text(yaml.dump(cfg, sort_keys=False), encoding="utf-8")
+    if changes:
+        _write_rules_config(cfg)
 
-    # Re-evaluate
+    # Re-evaluate with the (possibly) updated thresholds
     duckdb_store, sqlite_store = get_stores()
     runner = AssessmentRunner(duckdb_store, sqlite_store)
     res = runner.run_assessment(period="2026-Q1", actor=identity.username)
     sqlite_store.append_audit(
         action="tuning_save",
         actor=identity.username,
-        details={
-            "eg01_threshold": eg01_threshold,
-            "eg04_share": eg04_share,
-            "eg05_count": eg05_count,
-            "eg10_gap": eg10_gap,
-            "ns01_days": ns01_days,
-            "ns02_prevalence": ns02_prevalence,
-            "ns03_z": ns03_z,
-            "ns07_hours": ns07_hours,
-        },
+        details={"changes": changes, "run_id": res.get("run_id")},
     )
     duckdb_store.close()
     sqlite_store.close()
@@ -1679,11 +1840,20 @@ async def handle_tuning_save(
     return RedirectResponse(url=f"/tuning?message={msg}", status_code=303)
 
 
+RULEPACK_DISABLED_DETAIL = (
+    "Rule-pack signing is disabled on this server: SATSA_RULEPACK_SECRET is not configured "
+    "(or is unsafe). There is no built-in default key."
+)
+
+
 @app.get("/tuning/export-pack")
 async def handle_export_pack(
     identity: Identity = Depends(require_role(*RULEPACK_ROLES)),
-) -> FileResponse:
-    signer = RulePackSigner()
+) -> Response:
+    try:
+        signer = RulePackSigner()
+    except RulePackKeyError:
+        raise HTTPException(status_code=503, detail=RULEPACK_DISABLED_DETAIL) from None
     out_tar = Path("dist/rule_pack_active.tar.gz")
     signer.export_rule_pack(config_dir="config", output_path=out_tar, version="1.0.0")
     return FileResponse(
@@ -1698,15 +1868,21 @@ def handle_import_pack(
     pack_file: UploadFile = File(...),
     identity: Identity = Depends(require_role(*RULEPACK_ROLES)),
 ) -> Response:
+    try:
+        signer = RulePackSigner()
+    except RulePackKeyError:
+        raise HTTPException(status_code=503, detail=RULEPACK_DISABLED_DETAIL) from None
     _, sqlite_store = get_stores()
-    signer = RulePackSigner()
     with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tmp:
         shutil.copyfileobj(pack_file.file, tmp)
         tmp_path = Path(tmp.name)
 
     try:
         res = signer.import_rule_pack(
-            tmp_path, target_config_dir="config", sqlite_store=sqlite_store
+            tmp_path,
+            target_config_dir="config",
+            sqlite_store=sqlite_store,
+            actor=identity.username,
         )
         msg = f"Rule pack verified and installed! Version: {res.get('version')} | Files: {res.get('files_imported')}"
     except (ValueError, KeyError, OSError, RuntimeError) as e:
@@ -1722,8 +1898,9 @@ def handle_import_pack(
 # --- Direct Report Downloads ---
 
 
-@app.get("/reports/entity/{entity_id}/pdf")
+@app.get("/reports/entity/{entity_id}/pdf", dependencies=[Depends(require_authenticated)])
 async def download_entity_pdf(request: Request, entity_id: str) -> FileResponse:
+    require_valid_entity_id(entity_id)
     identity = get_current_identity(request)
     if identity:
         require_cse_access(entity_id, identity)
@@ -1741,8 +1918,9 @@ async def download_entity_pdf(request: Request, entity_id: str) -> FileResponse:
     )
 
 
-@app.get("/reports/entity/{entity_id}/html")
+@app.get("/reports/entity/{entity_id}/html", dependencies=[Depends(require_authenticated)])
 async def download_entity_html(request: Request, entity_id: str) -> FileResponse:
+    require_valid_entity_id(entity_id)
     identity = get_current_identity(request)
     if identity:
         require_cse_access(entity_id, identity)
@@ -1764,7 +1942,7 @@ async def download_entity_html(request: Request, entity_id: str) -> FileResponse
     )
 
 
-@app.get("/reports/portfolio/html")
+@app.get("/reports/portfolio/html", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def download_portfolio_html(request: Request) -> FileResponse:
     duckdb_store, sqlite_store = get_stores()
     rep = ReportGenerator(duckdb_store, sqlite_store)
@@ -1785,7 +1963,7 @@ async def download_portfolio_html(request: Request) -> FileResponse:
     )
 
 
-@app.get("/reports/export/findings-csv")
+@app.get("/reports/export/findings-csv", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def download_findings_csv(request: Request) -> FileResponse:
     duckdb_store, sqlite_store = get_stores()
     rep = ReportGenerator(duckdb_store, sqlite_store)
@@ -1806,7 +1984,7 @@ async def download_findings_csv(request: Request) -> FileResponse:
     )
 
 
-@app.get("/reports/export/queue-csv")
+@app.get("/reports/export/queue-csv", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def download_queue_csv() -> FileResponse:
     duckdb_store, sqlite_store = get_stores()
     rep = ReportGenerator(duckdb_store, sqlite_store)
@@ -1822,9 +2000,15 @@ async def download_queue_csv() -> FileResponse:
     )
 
 
-class TelemetryIngestPayload(BaseModel):
+# Supervisory review period label, e.g. "2026-Q1", "2026-H2" or "2026-03".
+PERIOD_RE = r"^\d{4}-(Q[1-4]|H[12]|0[1-9]|1[0-2])$"
+
+
+class BatchSubmissionPayload(BaseModel):
     entity_id: str = Field(..., description="Unique code for the CSE, e.g. CSE-11")
-    period: str = Field(default="2026-Q1", description="Supervisory review period")
+    period: str = Field(
+        default="2026-Q1", pattern=PERIOD_RE, description="Supervisory review period (e.g. 2026-Q1)"
+    )
     alerts: list[dict[str, Any]] = Field(
         default=[], description="List of alert metadata dictionaries"
     )
@@ -1836,76 +2020,87 @@ class TelemetryIngestPayload(BaseModel):
     )
     closures: list[dict[str, Any]] = Field(default=[], description="List of closure dictionaries")
     run_assessment_now: bool = Field(
-        default=True, description="Whether to trigger an immediate assessment run"
+        default=True, description="Whether to run the periodic assessment after the batch is stored"
     )
 
 
-@app.post("/api/v1/telemetry/ingest", tags=["Ingestion API"])
-async def api_telemetry_ingest(
-    payload: TelemetryIngestPayload,
+@app.post("/api/v1/submissions", tags=["Periodic Batch Submission"])
+async def api_batch_submission(
+    payload: BatchSubmissionPayload,
     identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
 ) -> dict[str, Any]:
     """
-    Direct Programmatic JSON REST Ingestion API.
-    Enables SIEM webhooks, SOAR playbooks, and automated pipeline integration
-    to submit structured telemetry directly to SAT-SA's DuckDB partitioned storage.
+    Submit ONE periodic batch (a CSE's alert/case/asset/closure records for a
+    supervisory review period) as JSON -- the programmatic equivalent of the
+    /upload file submission, used after the fact at each assessment cycle.
 
-    Requires an authenticated admin/supervisor session: automated clients must
-    first POST credentials to /login and retain the returned session cookie.
+    This is not a streaming or event-driven feed: each (entity_id, period) may be
+    submitted exactly once. A repeat submission for the same entity and period is
+    rejected with HTTP 409, so the endpoint cannot be used as a continuous
+    collection channel. Corrections to an already-submitted period go through a
+    supervised re-ingest (/upload) by an admin or supervisor.
+
+    Requires an authenticated admin/supervisor session (POST /login first and
+    retain the session cookie).
     """
     clean_id = payload.entity_id.strip().upper()
     if not clean_id:
         raise HTTPException(status_code=400, detail="entity_id is required")
+    require_valid_entity_id(clean_id)
+    for rows in (payload.alerts, payload.cases, payload.assets, payload.closures):
+        for row in rows:
+            row_eid = row.get("entity_id")
+            if row_eid and not is_valid_entity_id(str(row_eid)):
+                raise HTTPException(status_code=400, detail="Invalid entity_id in submitted rows.")
 
     duckdb_store, sqlite_store = get_stores()
-    ingested_counts: dict[str, int] = {}
+    try:
+        # Claim the (entity, period) slot first: it is unique, so a concurrent or
+        # repeated submission fails here before any data is written.
+        if not sqlite_store.claim_batch_submission(clean_id, payload.period, identity.username):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A batch for {clean_id} / {payload.period} has already been submitted. "
+                    "Each entity and period may be submitted once; use a supervised re-ingest "
+                    "via /upload for corrections."
+                ),
+            )
+        ingested_counts: dict[str, int] = {}
+        try:
+            # canonical DuckDB table for each payload section
+            for section, table, rows in (
+                ("alerts", "alert", payload.alerts),
+                ("cases", "case", payload.cases),
+                ("assets", "asset", payload.assets),
+                ("closures", "closure", payload.closures),
+            ):
+                if not rows:
+                    continue
+                for r in rows:
+                    if not r.get("entity_id"):
+                        r["entity_id"] = clean_id
+                duckdb_store.write_partitioned_parquet(table, pl.DataFrame(rows))
+                ingested_counts[section] = len(rows)
+        except Exception:
+            # Nothing usable was stored: free the slot so the batch can be resubmitted.
+            sqlite_store.release_batch_submission(clean_id, payload.period)
+            raise
 
-    if payload.alerts:
-        for a in payload.alerts:
-            if "entity_id" not in a or not a["entity_id"]:
-                a["entity_id"] = clean_id
-        df_alerts = pl.DataFrame(payload.alerts)
-        duckdb_store.write_partitioned_parquet("alert", df_alerts)
-        ingested_counts["alerts"] = len(payload.alerts)
+        sqlite_store.append_audit(
+            action="api_batch_submission",
+            actor=identity.username,
+            details={"entity_id": clean_id, "period": payload.period, "ingested_counts": ingested_counts},
+        )
 
-    if payload.cases:
-        for c in payload.cases:
-            if "entity_id" not in c or not c["entity_id"]:
-                c["entity_id"] = clean_id
-        df_cases = pl.DataFrame(payload.cases)
-        duckdb_store.write_partitioned_parquet("case_record", df_cases)
-        ingested_counts["cases"] = len(payload.cases)
-
-    if payload.assets:
-        for ass in payload.assets:
-            if "entity_id" not in ass or not ass["entity_id"]:
-                ass["entity_id"] = clean_id
-        df_assets = pl.DataFrame(payload.assets)
-        duckdb_store.write_partitioned_parquet("asset_inventory", df_assets)
-        ingested_counts["assets"] = len(payload.assets)
-
-    if payload.closures:
-        for cl in payload.closures:
-            if "entity_id" not in cl or not cl["entity_id"]:
-                cl["entity_id"] = clean_id
-        df_closures = pl.DataFrame(payload.closures)
-        duckdb_store.write_partitioned_parquet("closure", df_closures)
-        ingested_counts["closures"] = len(payload.closures)
-
-    sqlite_store.append_audit(
-        action="api_json_ingest",
-        actor=identity.username,
-        details={"entity_id": clean_id, "ingested_counts": ingested_counts},
-    )
-
-    run_id = None
-    if payload.run_assessment_now and any(ingested_counts.values()):
-        runner = AssessmentRunner(duckdb_store, sqlite_store)
-        res = runner.run_assessment(period=payload.period, actor=identity.username)
-        run_id = res.get("run_id")
-
-    duckdb_store.close()
-    sqlite_store.close()
+        run_id = None
+        if payload.run_assessment_now and any(ingested_counts.values()):
+            runner = AssessmentRunner(duckdb_store, sqlite_store)
+            res = runner.run_assessment(period=payload.period, actor=identity.username)
+            run_id = res.get("run_id")
+    finally:
+        duckdb_store.close()
+        sqlite_store.close()
 
     return {
         "status": "success",
@@ -1913,5 +2108,5 @@ async def api_telemetry_ingest(
         "period": payload.period,
         "ingested_counts": ingested_counts,
         "assessment_run_id": run_id,
-        "message": f"Successfully ingested {sum(ingested_counts.values())} records for {clean_id}",
+        "message": f"Stored periodic batch of {sum(ingested_counts.values())} records for {clean_id} / {payload.period}",
     }

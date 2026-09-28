@@ -11,6 +11,10 @@ services:
     volumes:
       - ./data:/app/data
       - ./reports:/app/reports
+    environment:
+      # Rule-pack signing key (>= 32 chars). Passed through from the host; left unset,
+      # rule-pack export/import are disabled (HTTP 503) -- there is no built-in key.
+      SATSA_RULEPACK_SECRET: ${SATSA_RULEPACK_SECRET:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/splash'); urllib.request.urlopen('http://127.0.0.1:8001/splash')"]

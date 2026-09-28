@@ -1,17 +1,13 @@
-"""Tests for Part 4/5: Live Admin <-> SAT-SA Activity and Telemetry Interaction."""
+"""Tests for the Admin Portal's activity feed (operator session monitor of SAT-SA's own users)."""
 
 import pytest
-from starlette.testclient import TestClient
 
-from satsa.admin.routes import router as admin_router
-from satsa.api.routes import app as satsa_app
 from satsa.store.sqlite import SQLiteStore
-from fastapi import FastAPI
 
 
 @pytest.fixture
 def clean_test_stores(tmp_path):
-    db_file = str(tmp_path / "telemetry_test.db")
+    db_file = str(tmp_path / "activity_feed_test.db")
     store = SQLiteStore(db_file)
     store.seed_default_admin()
     yield store, db_file

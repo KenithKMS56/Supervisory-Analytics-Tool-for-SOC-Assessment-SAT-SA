@@ -34,7 +34,7 @@ All figures below reflect **actual, reproducible measurements** recorded using S
 | **1,000,000 alerts** | **0.0941 seconds** | **10,623,549 rows / sec** |
 
 ### 2.2 End-to-End Supervisory Assessment Runtime
-*Workload: Ingested canonical dataset across 10 CSEs (5,650 alerts, 1,000 assets, 6 months daily telemetry), executing all 20 rules, computing robust statistics, SPC, probabilistic Noisy-OR domain scoring, generating finding cards, and ranking review queues:*
+*Workload (measured on an earlier, smaller 5,650-alert version of the synthetic dataset; the current default generator produces ~16,200 alerts, so re-run `satsa benchmark` for current timings): Ingested canonical dataset across 10 CSEs (5,650 alerts, 1,000 assets, 6 months daily telemetry), executing all 20 rules, computing robust statistics, SPC, probabilistic Noisy-OR domain scoring, generating finding cards, and ranking review queues:*
 
 - **Dataset Alert Count:** 5,650 alerts
 - **Total Execution Elapsed Time:** **0.686 seconds**
@@ -68,4 +68,4 @@ The supervisory requirement specifies completing a full 6-month assessment acros
 | SQLite State (`satsa.db`) | 200,000 records | N/A | **~45 MB** |
 | **Total Storage Required** | — | ~2.7 GB | **~438 MB** |
 
-*Even with 10 million total telemetric events, SAT-SA requires less than 1 GB of storage per assessment cycle, making it ideal for self-contained air-gapped forensic laptops and low-profile appliances.*
+*Even with 10 million submitted event records, SAT-SA requires less than 1 GB of storage per assessment cycle, making it ideal for self-contained air-gapped forensic laptops and low-profile appliances.*

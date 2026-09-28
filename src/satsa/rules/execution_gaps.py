@@ -39,14 +39,14 @@ class EG01FastClosure(BaseRule):
         )
 
         # Find target entity alerts closed faster than peer p5 with <= 1 workflow event
-        target_sql = f"""
+        target_sql = """
         WITH alt_events AS (
             SELECT a.alert_id, a.severity_final, a.closed_by,
                    epoch(a.closed_at) - epoch(a.created_at) as dur_sec,
                    count(w.ref_id) as event_cnt
             FROM alert a
             LEFT JOIN workflow_event w ON a.entity_id = w.entity_id AND w.ref_type = 'alert' AND a.alert_id = w.ref_id
-            WHERE a.entity_id = '{entity_id}'
+            WHERE a.entity_id = ?
               AND a.severity_final IN ('high', 'critical')
               AND a.closed_by_type = 'human'
               AND a.closed_at IS NOT NULL
@@ -54,17 +54,21 @@ class EG01FastClosure(BaseRule):
         )
         SELECT * FROM alt_events
         """
-        df = store.query(target_sql)
+        df = store.query(target_sql, [entity_id])
         if df.is_empty():
             return [], []
+
+        # Tunable: min share of closures faster than peer p5, and min count of such closures.
+        fast_share_threshold = float(self.params.get("fast_share_threshold", 0.15))
+        min_fast_count = int(self.params.get("min_fast_count", 5))
 
         total_n = df.shape[0]
         fast_df = df.filter((df["dur_sec"] < peer_p5) & (df["event_cnt"] <= 1))
         fast_count = fast_df.shape[0]
         share = fast_count / total_n
 
-        if share > 0.15 and fast_count >= 5:
-            score, conf = self.compute_rule_score(share / 0.15, total_n)
+        if share > fast_share_threshold and fast_count >= min_fast_count:
+            score, conf = self.compute_rule_score(share / fast_share_threshold, total_n)
             f_id = f"FND-EG01-{entity_id}-{run_id}"
             sample_ids = fast_df["alert_id"].head(10).to_list()
 
@@ -124,7 +128,7 @@ class EG02AckWithoutInvestigation(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        sql = """
         WITH alert_summary AS (
             SELECT
                 a.alert_id,
@@ -133,12 +137,12 @@ class EG02AckWithoutInvestigation(BaseRule):
             FROM alert a
             LEFT JOIN workflow_event w ON a.entity_id = w.entity_id AND w.ref_type = 'alert' AND a.alert_id = w.ref_id
             LEFT JOIN closure c ON a.entity_id = c.entity_id AND a.alert_id = c.ref_id
-            WHERE a.entity_id = '{entity_id}' AND a.closed_by_type = 'human'
+            WHERE a.entity_id = ? AND a.closed_by_type = 'human'
             GROUP BY a.alert_id, c.comment_len
         )
         SELECT * FROM alert_summary
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -202,17 +206,17 @@ class EG03CriticalWithoutEscalation(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        sql = """
         SELECT a.alert_id, a.category, a.disposition, count(e.esc_id) as esc_cnt
         FROM alert a
         LEFT JOIN escalation e ON a.entity_id = e.entity_id AND a.alert_id = e.ref_id
-        WHERE a.entity_id = '{entity_id}'
+        WHERE a.entity_id = ?
           AND a.severity_final = 'critical'
           AND a.disposition = 'true_positive'
         GROUP BY a.alert_id, a.category, a.disposition
         HAVING count(e.esc_id) = 0
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -272,37 +276,43 @@ class EG04TemplateDrivenInvestigations(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        # Tunable: max share of human closures in repeated-comment-hash groups, and the
+        # min size of a hash group to count as boilerplate.
+        max_comment_hash_share = float(self.params.get("max_comment_hash_share", 0.25))
+        min_hash_group_size = int(self.params.get("min_hash_group_size", 10))
+        sql = """
         SELECT
             c.comment_norm_hash,
             count(*) as repeats,
             min(a.alert_id) as sample_alert
         FROM alert a
         JOIN closure c ON a.entity_id = c.entity_id AND a.alert_id = c.ref_id
-        WHERE a.entity_id = '{entity_id}' AND a.closed_by_type = 'human'
+        WHERE a.entity_id = ? AND a.closed_by_type = 'human'
         GROUP BY c.comment_norm_hash
-        HAVING count(*) >= 10
+        HAVING count(*) >= ?
         ORDER BY repeats DESC
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id, min_hash_group_size])
         if df.is_empty():
             return [], []
 
-        total_human_sql = f"SELECT count(*) as total FROM alert WHERE entity_id = '{entity_id}' AND closed_by_type = 'human'"
-        total_res = store.query(total_human_sql)
+        total_human_sql = "SELECT count(*) as total FROM alert WHERE entity_id = ? AND closed_by_type = 'human'"
+        total_res = store.query(total_human_sql, [entity_id])
         total_human = total_res["total"][0] if not total_res.is_empty() else 1
 
         top_repeats = int(df["repeats"].sum())
         repeat_share = top_repeats / max(total_human, 1)
 
-        if repeat_share > 0.25:
-            score, conf = self.compute_rule_score(repeat_share / 0.25, total_human)
+        if repeat_share > max_comment_hash_share:
+            score, conf = self.compute_rule_score(
+                repeat_share / max_comment_hash_share, total_human
+            )
             f_id = f"FND-EG04-{entity_id}-{run_id}"
             sample_ids = df["sample_alert"].head(10).to_list()
 
             rationale = (
                 f"{top_repeats} of {total_human} ({repeat_share:.1%}) human-closed alerts "
-                f"share identical normalized comment hashes repeating >= 10 times."
+                f"share identical normalized comment hashes repeating >= {min_hash_group_size} times."
             )
             finding = Finding(
                 finding_id=f_id,
@@ -350,7 +360,11 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        # Tunable: min repeats of an all-benign (asset, rule) pair, and min number of
+        # such unremediated pairs before the entity is flagged.
+        min_repeat_count = int(self.params.get("min_repeat_count", 8))
+        min_unaddressed_pairs = int(self.params.get("min_unaddressed_pairs", 2))
+        sql = """
         WITH pairs AS (
             SELECT
                 asset_id,
@@ -358,14 +372,14 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
                 count(*) as pair_count,
                 count(CASE WHEN disposition IN ('false_positive', 'benign') THEN 1 END) as benign_count
             FROM alert
-            WHERE entity_id = '{entity_id}'
+            WHERE entity_id = ?
             GROUP BY asset_id, rule_id
-            HAVING count(*) >= 8 AND count(CASE WHEN disposition IN ('false_positive', 'benign') THEN 1 END) = count(*)
+            HAVING count(*) >= ? AND count(CASE WHEN disposition IN ('false_positive', 'benign') THEN 1 END) = count(*)
         ),
         remediated AS (
             SELECT DISTINCT linked_asset_id, linked_rule_id
             FROM remediation
-            WHERE entity_id = '{entity_id}'
+            WHERE entity_id = ?
         )
         SELECT p.asset_id, p.rule_id, p.pair_count
         FROM pairs p
@@ -373,15 +387,17 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
         WHERE r.linked_asset_id IS NULL
         ORDER BY p.pair_count DESC
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id, min_repeat_count, entity_id])
         if df.is_empty():
             return [], []
 
         unaddressed_pairs = df.shape[0]
         total_repeat_alerts = int(df["pair_count"].sum())
 
-        if unaddressed_pairs >= 2:
-            score, conf = self.compute_rule_score(unaddressed_pairs / 2.0, total_repeat_alerts)
+        if unaddressed_pairs >= min_unaddressed_pairs:
+            score, conf = self.compute_rule_score(
+                unaddressed_pairs / float(min_unaddressed_pairs), total_repeat_alerts
+            )
             f_id = f"FND-EG05-{entity_id}-{run_id}"
             sample_records = [
                 f"{row['asset_id']}::{row['rule_id']}" for row in df.head(5).iter_rows(named=True)
@@ -441,29 +457,29 @@ class EG06MetricGaming(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Check bulk closures with exact same minute by same actor
-        sql_bulk = f"""
+        sql_bulk = """
         SELECT
             closed_by,
             date_trunc('minute', closed_at) as close_minute,
             count(*) as cnt,
             min(alert_id) as sample_id
         FROM alert
-        WHERE entity_id = '{entity_id}' AND closed_by_type = 'human' AND closed_at IS NOT NULL
+        WHERE entity_id = ? AND closed_by_type = 'human' AND closed_at IS NOT NULL
         GROUP BY closed_by, date_trunc('minute', closed_at)
         HAVING count(*) >= 8
         """
-        df_bulk = store.query(sql_bulk)
+        df_bulk = store.query(sql_bulk, [entity_id])
 
         # Check deadline hugging: closed between 90% and 100% of SLA limit
-        sql_deadline = f"""
+        sql_deadline = """
         SELECT count(*) as total,
                count(CASE WHEN epoch(a.closed_at) - epoch(a.created_at) >= s.resolve_minutes * 60 * 0.90
                            AND epoch(a.closed_at) - epoch(a.created_at) <= s.resolve_minutes * 60 THEN 1 END) as hugging_cnt
         FROM alert a
         JOIN sla_policy s ON a.entity_id = s.entity_id AND a.severity_final = s.severity
-        WHERE a.entity_id = '{entity_id}' AND a.closed_by_type = 'human' AND a.closed_at IS NOT NULL
+        WHERE a.entity_id = ? AND a.closed_by_type = 'human' AND a.closed_at IS NOT NULL
         """
-        df_dead = store.query(sql_deadline)
+        df_dead = store.query(sql_deadline, [entity_id])
         dead_cnt = df_dead["hugging_cnt"][0] if not df_dead.is_empty() else 0
         total_alerts = df_dead["total"][0] if not df_dead.is_empty() else 1
         hugging_share = dead_cnt / max(total_alerts, 1)
@@ -525,17 +541,17 @@ class EG07AnalystImplausibility(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        sql = """
         SELECT
             closed_by,
             date_trunc('hour', closed_at) as close_hour,
             count(*) as hourly_closures
         FROM alert
-        WHERE entity_id = '{entity_id}' AND closed_by_type = 'human' AND closed_at IS NOT NULL
+        WHERE entity_id = ? AND closed_by_type = 'human' AND closed_at IS NOT NULL
         GROUP BY closed_by, date_trunc('hour', closed_at)
         HAVING count(*) >= 30
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -594,12 +610,12 @@ class EG08EscalationWithoutFollowThrough(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        sql = """
         SELECT esc_id, ref_id
         FROM escalation
-        WHERE entity_id = '{entity_id}' AND acknowledged_at IS NULL
+        WHERE entity_id = ? AND acknowledged_at IS NULL
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -658,13 +674,13 @@ class EG09BacklogAndAging(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        sql = """
         SELECT case_id, severity, opened_at
         FROM "case"
-        WHERE entity_id = '{entity_id}' AND status = 'open'
+        WHERE entity_id = ? AND status = 'open'
           AND epoch(now()) - epoch(opened_at) > 14 * 86400
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -720,21 +736,21 @@ class EG10KPIRadicalGap(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        sql = """
         WITH empirical AS (
             SELECT avg(epoch(closed_at) - epoch(created_at)) / 60.0 as emp_mttr
             FROM alert
-            WHERE entity_id = '{entity_id}' AND severity_final IN ('high', 'critical') AND closed_at IS NOT NULL
+            WHERE entity_id = ? AND severity_final IN ('high', 'critical') AND closed_at IS NOT NULL
         ),
         declared AS (
             SELECT avg(value) as dec_mttr
             FROM declared_kpi
-            WHERE entity_id = '{entity_id}' AND metric = 'MTTR' AND severity IN ('high', 'critical')
+            WHERE entity_id = ? AND metric = 'MTTR' AND severity IN ('high', 'critical')
         )
         SELECT e.emp_mttr, d.dec_mttr
         FROM empirical e, declared d
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id, entity_id])
         if df.is_empty():
             return [], []
 
@@ -743,9 +759,13 @@ class EG10KPIRadicalGap(BaseRule):
         if dec_mttr == 0.0 or emp_mttr == 0.0:
             return [], []
 
+        # Tunable: flag when empirical MTTR exceeds declared MTTR by more than this ratio.
+        mttr_gap_ratio_threshold = float(self.params.get("mttr_gap_ratio_threshold", 0.60))
         gap_ratio = (emp_mttr - dec_mttr) / max(dec_mttr, 1.0)
-        # If declared is > 60% better than empirical
-        if gap_ratio > 0.60:
+        if gap_ratio > mttr_gap_ratio_threshold:
+            # 0.50 is the score-normalisation constant (distance 1.0 at a 50% gap), kept
+            # separate from the detection threshold so retuning the threshold doesn't
+            # also silently rescale every EG10 score.
             score, conf = self.compute_rule_score(gap_ratio / 0.50, 100)
             f_id = f"FND-EG10-{entity_id}-{run_id}"
 
@@ -809,15 +829,15 @@ class EG11DispositionExtremes(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        sql = f"""
+        sql = """
         SELECT
             count(*) as total,
             count(CASE WHEN disposition IN ('false_positive', 'benign') THEN 1 END) as fp_count,
             count(CASE WHEN disposition = 'true_positive' THEN 1 END) as tp_count
         FROM alert
-        WHERE entity_id = '{entity_id}'
+        WHERE entity_id = ?
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 
@@ -875,19 +895,19 @@ class EG12WorkflowNonConformance(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Check Critical cases that skipped containment stage
-        sql = f"""
+        sql = """
         WITH case_actions AS (
             SELECT
                 c.case_id,
                 count(CASE WHEN w.action = 'contain' THEN 1 END) as contain_cnt
             FROM "case" c
             LEFT JOIN workflow_event w ON c.entity_id = w.entity_id AND w.ref_type = 'case' AND c.case_id = w.ref_id
-            WHERE c.entity_id = '{entity_id}' AND c.severity = 'critical'
+            WHERE c.entity_id = ? AND c.severity = 'critical'
             GROUP BY c.case_id
         )
         SELECT case_id FROM case_actions WHERE contain_cnt = 0
         """
-        df = store.query(sql)
+        df = store.query(sql, [entity_id])
         if df.is_empty():
             return [], []
 

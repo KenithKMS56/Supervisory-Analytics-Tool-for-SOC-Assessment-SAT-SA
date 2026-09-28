@@ -36,7 +36,7 @@ class ReportGenerator:
         gen_time = run_row["created_at"] if run_row else "N/A"
 
         # Entity info
-        df_ent = self.duckdb_store.query(f"SELECT * FROM entity WHERE entity_id = '{entity_id}'")
+        df_ent = self.duckdb_store.query("SELECT * FROM entity WHERE entity_id = ?", [entity_id])
         ent_info = (
             df_ent.to_dicts()[0]
             if not df_ent.is_empty()
@@ -104,7 +104,7 @@ class ReportGenerator:
       Entity Supervisory Risk Index: <strong>{risk_index:.1f} / 100</strong> &nbsp;
       <span class="badge {"badge-crit" if risk_index >= 50 else ("badge-mod" if risk_index >= 25 else "badge-low")}">{risk_band}</span>
     </p>
-    <p>This assessment synthesized operational SOC telemetry across 8 supervisory domains, evaluating deterministic execution gaps and negative space patterns without AI/ML models.</p>
+    <p>This assessment analysed the entity's periodic SOC submission across 8 supervisory domains, evaluating deterministic execution gaps and negative space patterns without AI/ML models.</p>
   </div>
 
   <div class="card">
