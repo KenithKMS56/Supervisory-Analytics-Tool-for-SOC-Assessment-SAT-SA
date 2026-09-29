@@ -368,6 +368,7 @@ def validate_cmd(
         f"({rules.get('true_positives')} of {rules.get('total_findings')} findings)"
     )
     _print_false_positives(rules)
+    _print_sensitivity(results.get("threshold_sensitivity", {}))
     console.print(
         f"  * Ranking Stability (+/-20%):[bold cyan]Spearman rho = {stab.get('spearman_rho_plus_20'):.4f}[/bold cyan]"
     )
@@ -412,6 +413,24 @@ def _print_false_positives(rules: dict) -> None:
         console.print(f"  * False positives on {label}: [yellow]{len(pairs)}[/yellow] {' '.join(pairs)}")
 
 
+def _print_sensitivity(sens: dict) -> None:
+    """Print which single-threshold perturbations changed a rule's outcome."""
+    if not sens:
+        return
+    console.print(
+        f"  * Threshold sensitivity (+/-{sens['perturbation_percent']}%): [yellow]{sens['changed']} of "
+        f"{sens['perturbations']}[/yellow] perturbations changed an outcome; not covered (no tunable threshold): "
+        f"{' '.join(sens['rules_not_covered'])}"
+    )
+    for r in sens["rows"]:
+        if r["changed"]:
+            out = r["outcome"]
+            console.print(
+                f"      {r['rule_id']} {r['param']} {r['baseline']} -> {r['tested']}: "
+                f"missed {out['fn'] or '-'}, false alarm {out['fp'] or '-'}"
+            )
+
+
 @app.command("validate-stress")
 def validate_stress_cmd(
     seed: int = typer.Option(9901, "--seed", "-s", help="Stress dataset random seed"),
@@ -433,7 +452,7 @@ def validate_stress_cmd(
     from satsa.store.duckdb import DuckDBStore
     from satsa.store.sqlite import SQLiteStore
     from satsa.synth.stress import save_stress_dataset
-    from satsa.validate.harness import ValidationHarness
+    from satsa.validate.harness import ValidationHarness, sensitivity_markdown
 
     console.print("[bold blue]Generating and evaluating the stress scenario dataset...[/bold blue]")
 
@@ -471,6 +490,7 @@ def validate_stress_cmd(
         f"({rules.get('true_positives')} of {rules.get('total_findings')} findings)"
     )
     _print_false_positives(rules)
+    _print_sensitivity(results.get("threshold_sensitivity", {}))
     fp_clean = rules.get("false_positives_on_clean_entities", [])
     fp_defect = rules.get("false_positives_on_defect_entities", [])
 
@@ -508,6 +528,7 @@ def validate_stress_cmd(
     ]
     for r_code, counts in rules.get("rule_breakdown", {}).items():
         md_lines.append(f"| `{r_code}` | {counts.get('tp', 0)} | {counts.get('fn', 0)} | {counts.get('fp', 0)} |")
+    md_lines += ["", "## Threshold sensitivity", "", *sensitivity_markdown(results.get("threshold_sensitivity", {}))]
     md_path.write_text("\n".join(md_lines), encoding="utf-8")
     console.print(f"\n[bold green][+] Stress report written to:[/bold green] [cyan]{md_path}[/cyan]")
 

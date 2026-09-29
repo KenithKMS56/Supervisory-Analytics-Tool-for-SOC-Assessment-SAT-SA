@@ -56,58 +56,57 @@ $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
 
 #### EG01: Fast Closures Without Investigation
 - **Purpose:** Detect rubber-stamping and premature dismissals of high-priority alerts.
-- **Logic:** Identifies High/Critical severity alerts closed in $t_{\text{close}} - t_{\text{create}} \le T_{\text{threshold}}$ (default 120 seconds) where workflow shows no intermediate actions and actor is human (not SOAR).
+- **Logic:** Among the entity's human-closed High/Critical alerts, the share closed faster than the portfolio-wide 5th-percentile close time (for human High/Critical closures) with at most one workflow event exceeds `fast_share_threshold` (0.15), with at least `min_fast_count` (5) such closures. SOAR/automation closures are excluded.
 - **Benign Explanations:** Automated playbook executions mislabeled as human; duplicate suppression rules in external SIEM.
-- **Examiner Checks:** Inspect closure logs for script execution IDs; verify if analyst could have reviewed payload within 2 minutes.
+- **Examiner Checks:** Inspect closure logs for script execution IDs; verify if analyst could have reviewed payload in the time recorded.
 
-#### EG02: Triage Without Action
-- **Purpose:** Surface alerts acknowledged but abandoned or left untouched past SLA.
-- **Logic:** Alerts where $t_{\text{touch}} - t_{\text{ack}} > T_{\text{max}}$ (default 4 hours) or where status transitioned to `in_progress` but no subsequent comments or escalations exist for >7 days.
+#### EG02: Acknowledged Without Investigation
+- **Purpose:** Surface alerts closed with no recorded investigative work.
+- **Logic:** Among human-closed alerts, the share with no `investigate` workflow event and a closure comment under 25 characters exceeds `max_uninvestigated_share` (0.15), with at least `min_uninvestigated_count` (5) such alerts.
 - **Benign Explanations:** Shift handover reassignments; consolidated investigation inside an external parent ticket.
 - **Examiner Checks:** Request ticket cross-reference in secondary ticketing tools.
 
 #### EG03: Missing Escalations
 - **Purpose:** Identify critical incidents closed at Tier-1 without Tier-2/Tier-3 SME or management review.
-- **Logic:** Alerts with `severity_final = 'critical'` and `disposition = 'true_positive'` that have zero linked records in `escalation` or `case`.
+- **Logic:** Any alert with `severity_final = 'critical'` and `disposition = 'true_positive'` that has no record in `escalation`. Zero tolerance: one such alert is a finding; there is no tunable threshold.
 - **Benign Explanations:** Tier-1 analyst possesses senior clearance/role; incident was handled in direct war-room chat.
 - **Examiner Checks:** Verify seniority of the closing analyst; inspect meeting minutes or external war-room logs.
 
 #### EG04: Template / Low-Effort Closure Comments
 - **Purpose:** Detect superficial closure documentation lacking technical justification.
-- **Logic:** Computes exact matches of normalized comment text and 4-gram shingles. Flagged if single hash accounts for $>40\%$ of closures or length $<15$ characters.
+- **Logic:** Human closures whose normalized comment hash repeats at least `min_hash_group_size` (10) times are summed; flagged when they exceed `max_comment_hash_share` (0.25) of all human closures. Comment shingles and comment length are not used.
 - **Benign Explanations:** Mandatory standardized dropdown resolution codes enforced by SOC management.
 - **Examiner Checks:** Check if detailed technical evidence is attached as external files or tickets.
 
 #### EG05: Repeat Alerts Without Root Cause Remediation
 - **Purpose:** Detect chronic alert fatigue and lack of permanent tuning.
-- **Logic:** Identifies `(asset_id, rule_id)` pairs generating $\ge 5$ alerts in 30 days, all closed as benign/FP, with zero linked records in `remediation`.
+- **Logic:** `(asset_id, rule_id)` pairs that fired at least `min_repeat_count` (8) times over the whole period, were always closed benign/FP, and have no matching `remediation` record; flagged when at least `min_unaddressed_pairs` (2) such pairs exist. There is no 30-day window.
+- **Known sensitivity:** on the synthetic data, lowering `min_repeat_count` to 6 makes EG05 fire on every clean entity from random repeats alone. Real alert streams are far more repetitive than uniform random data, so expect this rule to need calibration on real submissions (see `docs/validation.md` Section 4A).
 - **Benign Explanations:** Legacy system awaiting decommissioning; scheduled quarterly tuning backlog.
 - **Examiner Checks:** Review change request logs for scheduled tuning on the affected asset.
 
 #### EG06: Metric Gaming & SLA Distortions
 - **Purpose:** Detect artificial manipulation of SOC operational performance metrics.
-- **Sub-indicators:**
-  1. **Deadline Hugging:** Disproportionate clustering of closures in the final 10% of the SLA time window ($>35\%$ vs expected $10\%$).
-  2. **Bulk Closures:** Single analyst closing $\ge 20$ tickets with identical timestamps ($\pm 5$ seconds).
-  3. **Shift/Month-End Spikes:** Closure volume surges $>3\times$ daily median during final 2 hours of shifts.
-  4. **Severity Downgrades:** Critical/High downgraded to Low immediately prior to closure.
-  5. **MTTA vs MTTR Divergence:** Near-zero MTTA ($<2$ min) coupled with high MTTR ($>24$ hrs).
+- **Logic:** Flags either of two indicators:
+  1. **Bulk Closures:** one analyst closing at least `min_bulk_closures_per_minute` (8) human alerts within the same clock minute.
+  2. **Deadline Hugging:** more than `max_deadline_hugging_share` (0.25) of human closures landing between 90% and 100% of the severity's SLA resolve time.
+- **Not implemented:** shift/month-end spikes, severity downgrades and MTTA/MTTR divergence are not checked.
 
 #### EG07: Analyst Implausibility
-- **Purpose:** Detect superhuman or unlogged analyst workloads indicating script abuse or shared credentials.
-- **Logic:** Single analyst account closing $>25$ complex alerts per hour or performing actions outside declared shift hours.
+- **Purpose:** Detect superhuman analyst workloads indicating script abuse or shared credentials.
+- **Logic:** One analyst closing at least `min_closures_per_analyst_hour` (30) human alerts within a single clock hour. Activity outside declared shift hours is not checked.
 - **Benign Explanations:** Batched shift catch-up entry; shared service account used by junior rotation.
 - **Examiner Checks:** Inspect VPN and badge swipe logs for the named analyst during the event timestamps.
 
 #### EG08: Escalation Without Follow-Through
 - **Purpose:** Detect stalled escalations abandoned by senior tiers.
-- **Logic:** Records in `escalation` where $t_{\text{ack}} - t_{\text{esc}} > \text{SLA}$ or where escalation outcome is empty after 14 days.
+- **Logic:** At least `min_unacknowledged_escalations` (3) records in `escalation` with no acknowledgement timestamp. Acknowledgement delay against SLA is not checked.
 - **Benign Explanations:** Escalated to external third-party vendor (MSSP) without API sync.
 - **Examiner Checks:** Review MSSP portal tickets and emails for vendor acknowledgment.
 
 #### EG09: Backlog & Aging Accumulation
 - **Purpose:** Identify systemic queue stagnation.
-- **Logic:** Unresolved cases exceeding $3\times$ SLA or open cases with no recorded workflow activity for $\ge 14$ days.
+- **Logic:** At least `min_stale_cases` (3) cases with status `open` that were opened more than `stale_case_days` (14) days before the assessment runs. Workflow inactivity and SLA multiples are not checked.
 - **Benign Explanations:** Long-term forensic investigation awaiting legal or law-enforcement subpoena.
 - **Examiner Checks:** Confirm active case status in legal or incident management logs.
 
@@ -120,13 +119,13 @@ $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
 
 #### EG11: Disposition Extremes
 - **Purpose:** Detect abnormal classification skew indicative of alert tuning failure or detection blindspots.
-- **Logic:** False positive rate $>98\%$ across $\ge 200$ alerts without tuning, or exactly zero True Positives across 6-month review period.
+- **Logic:** With at least `min_alert_volume` (200) alerts, a false-positive/benign rate above `max_fp_rate` (0.98) or exactly zero True Positives over the review period.
 - **Benign Explanations:** Ultra-noisy commercial rule left in staging mode.
 - **Examiner Checks:** Verify if rule was active in production or marked as test/monitoring only.
 
 #### EG12: Workflow Non-Conformance
-- **Purpose:** Audit deterministic adherence to mandated step sequences.
-- **Logic:** Evaluates sequential execution of required workflow states per severity specified in `config/expected.yaml` (e.g., Critical: `triage` $\to$ `investigate` $\to$ `escalate` $\to$ `contain` $\to$ `close`). Flags cases with skipped or inverted steps.
+- **Purpose:** Audit adherence to the mandated containment step for critical incidents.
+- **Logic:** At least `min_skipped_cases` (2) Critical cases with no `contain` workflow event. Other stages and their order are not checked, and `config/expected.yaml` is not read by this rule.
 - **Benign Explanations:** Emergency containment executed out of band before ticket creation.
 - **Examiner Checks:** Examine emergency radio or messaging logs confirming containment timeline.
 
@@ -136,49 +135,49 @@ $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
 
 #### NS01: Silent Critical Assets
 - **Purpose:** Surface critical infrastructure components that have completely stopped generating security events.
-- **Logic:** Monitored assets with `criticality >= 3` exhibiting zero events in `log_source_daily` for $\ge 3$ consecutive days, or daily event rate $< P_5$ of peer assets.
+- **Logic:** Monitored assets with criticality at least `min_asset_criticality` (3) that have at least `min_silent_days` (3) days with zero events in `log_source_daily`. The days need not be consecutive; peer event rates are not compared.
 - **Benign Explanations:** Planned offline maintenance; air-gapped backup server on standby.
 - **Examiner Checks:** Request maintenance ticket or network ping history for the silent IP.
 
 #### NS02: Missing Alert Categories
 - **Purpose:** Detect blindspots in detection coverage where peers actively detect standard threat classes.
-- **Logic:** MITRE tactics/categories present in $\ge 80\%$ of peer entities but completely absent in this entity's detection catalog.
+- **Logic:** Alert categories reported by at least `min_peer_entity_count` (6) entities in the whole portfolio but absent from this entity's alerts. It compares against the whole portfolio, not a sector/size peer group, and uses alert categories, not MITRE tactics.
 - **Benign Explanations:** Entity relies on upstream ISP-managed cloud scrubbers for DDoS/Malware.
 - **Examiner Checks:** Verify third-party perimeter architecture and outsourced managed controls.
 
 #### NS03: Unexpectedly Low or Flat Activity
 - **Purpose:** Identify missing 24x7 coverage or logging collapse.
-- **Logic:** Alerts per asset robust z-score $\le -2.0$, CUSUM downward collapse, or night/weekend activity share $<2\%$ of peer median.
+- **Logic:** With at least `min_alert_volume` (100) alerts, the share created at night (20:00–08:00) is below `max_night_share` (0.03). Robust z-scores, CUSUM and weekend activity are not used by this rule.
 - **Benign Explanations:** 8x5 business application with no user activity outside business hours.
 - **Examiner Checks:** Review shift rosters to verify if 24x7 SOC shift coverage was formally contracted.
 
 #### NS04: Missing Records
 - **Purpose:** Detect audit trail truncation, record deletion, or unrecorded triage.
-- **Logic:** At least 3 High/Critical True Positive alerts with no linked case management record. Numeric sequence gaps in alert IDs (e.g., ALT-101 $\to$ ALT-105) are not part of this rule; they are reported by the ingest data-quality checks (`DQValidator.check_id_sequence_gaps`, shown on the DQ view).
+- **Logic:** At least `min_tp_without_case` (3) High/Critical True Positive alerts with no linked case management record. Numeric sequence gaps in alert IDs (e.g., ALT-101 $\to$ ALT-105) are not part of this rule; they are reported by the ingest data-quality checks (`DQValidator.check_id_sequence_gaps`, shown on the DQ view).
 - **Benign Explanations:** Deleted test alerts created during scheduled engineering validation.
 - **Examiner Checks:** Review change control records for test execution IDs.
 
 #### NS05: Rule Coverage & Inactive Signatures
 - **Purpose:** Detect stale, inactive, or unmaintained SIEM detection catalogs.
-- **Logic:** Proportion of enabled detection rules that have zero firings over 6 months; mapping coverage against mandatory MITRE baseline in `config/expected.yaml`.
+- **Logic:** More than `max_dormant_share` (0.40), and at least `min_dormant_rules` (5), of the entity's enabled detection rules produced no alert over the period. MITRE baseline coverage is not checked.
 - **Benign Explanations:** Narrow, high-fidelity custom detection for rare zero-day indicators.
 - **Examiner Checks:** Verify if test attacks/adversary simulations have validated rule logic.
 
 #### NS06: Inventory vs. Telemetry Reconciliation
-- **Purpose:** Detect shadow assets (unregistered devices generating alerts) and ghost assets (registered devices sending zero logs).
-- **Logic:** Cross-references `asset` inventory table against unique `asset_id` values appearing in `alert` and `log_source_daily`.
+- **Purpose:** Detect ghost assets (registered devices sending zero logs).
+- **Logic:** At least `min_ghost_assets` (2) inventory assets with no alerts and no (or only zero-count) `log_source_daily` rows. Shadow assets (unregistered devices generating alerts) are not checked.
 - **Benign Explanations:** DHCP hostname churn; recently decommissioned hardware not yet purged from CMDB.
 - **Examiner Checks:** Reconcile active IP addresses with network core switch ARP tables.
 
 #### NS07: Absent External Regulatory Reporting
 - **Purpose:** Identify statutory reporting non-compliance for critical cybersecurity incidents.
-- **Logic:** Identifies confirmed critical True Positive incidents lacking a linked record in `external_report` within statutory time window (default 6 hours).
+- **Logic:** Any Critical case with no matching record in `external_report`. Zero tolerance, no tunable threshold. Presence only: whether the report was filed within a statutory window is not checked (documented follow-up).
 - **Benign Explanations:** Preliminary verbal notification provided to regulator before formal portal filing.
 - **Examiner Checks:** Check NCIIPC official incident hotline communications log.
 
 #### NS08: Submission Completeness & Data Quality Deficits
 - **Purpose:** Detect data withholding, incomplete log submissions, or corrupt data drops.
-- **Logic:** Assesses missing temporal dates, high null-rates on mandatory audit fields, and sudden $>50\%$ drops in ingested volume compared to preceding quarters.
+- **Logic:** The entity's alerts cover fewer than the 6 months of the review period. Null rates are reported by the ingest data-quality checks and volume drops by NS03; neither is part of this rule.
 - **Benign Explanations:** SIEM migration occurred during the reporting period.
 - **Examiner Checks:** Request migration documentation and revised ingestion extracts.
 

@@ -283,7 +283,9 @@ class NS04MissingRecords(BaseRule):
         df_tp = store.query(sql_tp, [entity_id])
         tp_without_case = df_tp.shape[0] if not df_tp.is_empty() else 0
 
-        if tp_without_case >= 3:
+        # Tunable: High/Critical TP alerts with no case needed before flagging.
+        min_tp_without_case = int(self.params.get("min_tp_without_case", 3))
+        if tp_without_case >= min_tp_without_case:
             score, conf = self.compute_rule_score(tp_without_case / 3.0, tp_without_case)
             f_id = f"FND-NS04-{entity_id}-{run_id}"
             sample_ids = df_tp["alert_id"].head(5).to_list()
@@ -357,7 +359,11 @@ class NS05RuleCoverageGaps(BaseRule):
         dormant_rules = df.filter(df["fired_count"] == 0)["rule_id"].to_list()
         dormant_share = len(dormant_rules) / max(total_rules, 1)
 
-        if dormant_share > 0.40 and len(dormant_rules) >= 5:
+        # Tunable: max share and min count of enabled rules that never fired.
+        # The score normalisation (0.40) stays fixed.
+        max_dormant_share = float(self.params.get("max_dormant_share", 0.40))
+        min_dormant_rules = int(self.params.get("min_dormant_rules", 5))
+        if dormant_share > max_dormant_share and len(dormant_rules) >= min_dormant_rules:
             score, conf = self.compute_rule_score(dormant_share / 0.40, total_rules)
             f_id = f"FND-NS05-{entity_id}-{run_id}"
 
@@ -423,7 +429,9 @@ class NS06InventoryVsTelemetry(BaseRule):
             return [], []
 
         ghost_assets = df["asset_id"].to_list()
-        if len(ghost_assets) >= 2:
+        # Tunable: inventory assets with no telemetry and no alerts needed before flagging.
+        min_ghost_assets = int(self.params.get("min_ghost_assets", 2))
+        if len(ghost_assets) >= min_ghost_assets:
             score, conf = self.compute_rule_score(len(ghost_assets) / 2.0, len(ghost_assets))
             f_id = f"FND-NS06-{entity_id}-{run_id}"
 

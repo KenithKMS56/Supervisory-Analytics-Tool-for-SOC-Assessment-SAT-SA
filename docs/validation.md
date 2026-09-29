@@ -30,9 +30,13 @@ September 2026, 8 rules (EG07, EG08, EG09, EG11, EG12, NS05, NS07, NS08) had non
 ever shown to stay quiet. Their new defects are, like the rest of Section 2, built to clearly
 exceed each threshold; only EG04 and EG02 are tested near a threshold (Section 2A).
 
+Threshold sensitivity: each of the 17 rules with tunable thresholds is re-run with every threshold
+moved ±20% (Section 4A). Two rules, EG05 and EG11, turn clean entities into findings under a modest
+move, so their thresholds sit close to the synthetic data's normal background.
+
 What neither synthetic scenario covers:
-- **Threshold sensitivity.** No rule threshold is perturbed (Section 4 perturbs scoring weights
-  only), so nothing here says how precision and recall move as thresholds move.
+- **Realistic distributions.** Thresholds are only probed against uniformly random synthetic data;
+  real alert streams are heavy-tailed, which matters most for EG05 and EG11 (Section 4A).
 - **Scale.** 21 injected (entity, rule) defects and 3 clean entities; one finding more or less moves
   precision by several points.
 
@@ -110,7 +114,7 @@ Added in September 2026 so that every rule has a positive case (each sized to cr
 ## 2. Detector-Implementation Correctness Results (Primary Dataset)
 
 `satsa validate` against the ground truth in Section 1, with every finding counted (see
-Section 0.1). Figures from run `RUN-20260929175400749877-b3723c48`; regenerate with
+Section 0.1). Figures from run `RUN-20260929190127377530-7e1661fd`; regenerate with
 `satsa validate`, and see `docs/validation_report.md` for the per-rule table.
 
 | Evaluation Metric | Measured Result | Benchmark Target | Verdict |
@@ -203,9 +207,38 @@ no longer feed it.
 The harness perturbed all 8 capability domain **weights** by **$\pm 20\%$** on the primary dataset:
 - **+20% Perturbation:** Spearman rank correlation $\rho = \mathbf{1.0000}$.
 - **-20% Perturbation:** Spearman rank correlation $\rho = \mathbf{1.0000}$.
-- **Conclusion:** on this dataset, the entity ranking is stable under domain-weight changes. Rule
-  detection thresholds were **not** perturbed, so this says nothing about how findings (and
-  therefore precision and recall) change as thresholds move.
+- **Conclusion:** on this dataset, the entity ranking is stable under domain-weight changes. This
+  does not move rule detection thresholds; Section 4A does.
+
+### 4A. Rule Threshold Sensitivity
+
+`satsa validate` and `satsa validate-stress` move each tunable rule threshold by −20% and +20%, one
+at a time (integers move by at least 1; shares and rates are capped at 1.0), re-run that rule on
+every entity, and score it against the ground truth. 17 of the 20 rules have tunable thresholds;
+EG03 and NS07 are zero-tolerance and NS08 checks the fixed 6-month review period, so they have none.
+Full tables: Section 7 of `docs/validation_report.md` and `docs/validation_stress_report.md`.
+
+**Primary dataset: 5 of 54 perturbations change an outcome.**
+
+| Threshold | Moved to | Effect | What it means |
+|---|---|---|---|
+| EG05 `min_repeat_count` 8 | 6 | False alarms on 6 entities, including all 3 clean ones | **Thin margin against noise.** Random repeats alone produce enough all-benign (asset, rule) pairs at 6. Real alert streams are far more repetitive than uniform random data (a few noisy rules generate most alerts), so expect EG05 to fire widely on real submissions until calibrated. |
+| EG11 `max_fp_rate` 0.98 | 0.784 | False alarms on 8 of 10 entities | The synthetic entities' normal FP/benign rate is about 91%. Real SOCs commonly run at 95–99%, so the 0.98 threshold may sit close to normal on real data as well. |
+| EG05 `min_unaddressed_pairs` 2 | 3 | Misses CSE-09 | The injected defect has exactly 2 pairs: margin chosen when it was built. |
+| EG07 `min_closures_per_analyst_hour` 30 | 36 | Misses CSE-08 | The injected burst is 35 closures: margin chosen when it was built. |
+| NS05 `max_dormant_share` 0.40 | 0.48 | Misses CSE-09 | The injected catalog is 45% dormant: margin chosen when it was built. |
+
+**Stress scenario: 4 of 54.** Raising EG04's share to 0.30 loses both borderline defects
+(STRESS-01 at 27.5%, STRESS-02 at 30%), and raising its group size to 12 loses STRESS-01; lowering
+EG05's repeat count to 6 or its pair count to 1 flags the noisy clean STRESS-03. These are the
+near-threshold cases the scenario was built to contain, so they confirm the sweep sees them.
+
+**Reading this.** The last three primary rows and all stress rows reflect margins chosen when the
+synthetic data was built, not properties of real SOCs. The two informative rows are EG05 and EG11,
+where a modest move turns clean entities into findings: those thresholds sit close to the
+synthetic data's normal background, and are the first candidates for calibration in a pilot. The
+other 49 primary perturbations change nothing, which only says the other injected defects were
+built with more than 20% margin.
 
 ---
 
@@ -272,7 +305,7 @@ These are not historical examiner findings. They are also deliberately **not** t
 SAT-SA's own findings: labels copied from the tool's output would make recall and precision 100%
 by construction.
 
-**Result** (primary dataset, run `RUN-20260929175400749877-b3723c48`):
+**Result** (primary dataset, run `RUN-20260929190127377530-7e1661fd`):
 
 | Measure | Value | What it means |
 |---|---|---|

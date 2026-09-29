@@ -17,7 +17,7 @@ from satsa.rules.registry import RuleRegistry
 from satsa.store.sqlite import SQLiteStore
 from satsa.synth.generator import SyntheticDataGenerator
 from satsa.synth.stress import generate_stress_dataset
-from satsa.validate.harness import ShadowPilotAdapter, ValidationHarness
+from satsa.validate.harness import ShadowPilotAdapter, ValidationHarness, _perturb
 
 RUN = "RUN-TEST-INTEGRITY"
 
@@ -92,6 +92,20 @@ def test_missed_defects_are_named(tmp_path):
     store.close()
     assert res["missed_defects"] == ["E-2:NS01"]
     assert res["overall_recall"] == 0.5
+
+
+# ------------------------------------------------------------------ threshold sensitivity
+
+
+def test_perturb_always_moves_integer_thresholds():
+    assert _perturb(0.25, 1.2) == 0.3
+    assert _perturb(8, 0.8) == 6
+    assert _perturb(2, 0.8) == 1  # 1.6 rounds back to 2, so it is moved by one
+    assert _perturb(2, 1.2) == 3
+    assert _perturb(1, 0.8) == 1  # never below 1
+    assert _perturb(True, 1.2) is True
+    assert _perturb(0.98, 1.2) == 1.0  # a rate never exceeds 100%
+    assert _perturb(0.6, 1.2) == 0.72
 
 
 # ------------------------------------------------------------------ shadow-pilot precision

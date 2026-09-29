@@ -28,13 +28,26 @@ ALLOWED_TOP_LEVEL = {"name", "version", "domain", "level", "min_sample", "severi
 RULE_CLASSES = {cls.id: cls for cls in RuleRegistry.RULE_CLASSES}
 EXPECTED_PARAMS = {
     "EG01": {"fast_share_threshold": 0.15, "min_fast_count": 5},
+    "EG02": {"max_uninvestigated_share": 0.15, "min_uninvestigated_count": 5},
     "EG04": {"max_comment_hash_share": 0.25, "min_hash_group_size": 10},
     "EG05": {"min_repeat_count": 8, "min_unaddressed_pairs": 2},
+    "EG06": {"min_bulk_closures_per_minute": 8, "max_deadline_hugging_share": 0.25},
+    "EG07": {"min_closures_per_analyst_hour": 30},
+    "EG08": {"min_unacknowledged_escalations": 3},
+    "EG09": {"stale_case_days": 14, "min_stale_cases": 3},
     "EG10": {"mttr_gap_ratio_threshold": 0.60},
+    "EG11": {"min_alert_volume": 200, "max_fp_rate": 0.98},
+    "EG12": {"min_skipped_cases": 2},
     "NS01": {"min_silent_days": 3, "min_asset_criticality": 3},
     "NS02": {"min_peer_entity_count": 6},
     "NS03": {"max_night_share": 0.03, "min_alert_volume": 100},
+    "NS04": {"min_tp_without_case": 3},
+    "NS05": {"max_dormant_share": 0.40, "min_dormant_rules": 5},
+    "NS06": {"min_ghost_assets": 2},
 }
+# EG03 and NS07 are zero-tolerance (one unescalated critical TP / one unreported critical
+# incident is a finding) and NS08 checks the fixed 6-month review period: no knobs.
+UNTUNABLE_RULES = {"EG03", "NS07", "NS08"}
 
 
 def _cfg() -> dict:
@@ -74,6 +87,12 @@ def test_no_stray_top_level_keys():
 
 def test_every_rule_in_yaml_exists():
     assert set(_cfg()["rules"]) == set(RULE_CLASSES)
+
+
+def test_every_rule_is_tunable_or_deliberately_knob_free():
+    """A hardcoded threshold can't be tuned or covered by the threshold-sensitivity sweep."""
+    assert set(EXPECTED_PARAMS) | UNTUNABLE_RULES == set(RULE_CLASSES)
+    assert not set(EXPECTED_PARAMS) & UNTUNABLE_RULES
 
 
 def test_tuning_page_offers_exactly_the_yaml_params():

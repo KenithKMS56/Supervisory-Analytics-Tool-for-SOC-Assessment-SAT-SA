@@ -229,8 +229,9 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 > confirm the code implements its documented logic. A scenario with a borderline threshold, an
 > ambiguous dual-rule case and a noisy clean entity is run via `satsa validate-stress` -- see
 > [`docs/validation.md`](docs/validation.md) Section 2A. Every one of the 20 rules has at least
-> one injected defect (enforced by a test), but only EG02 and EG04 are tested near their threshold,
-> and no threshold is varied. Neither scenario is a substitute for the Shadow-Pilot mode
+> one injected defect (enforced by a test). Every tunable threshold (17 rules) is also moved ±20%
+> to measure margin: EG05 and EG11 turn clean entities into findings under a modest move and are
+> the first calibration candidates for real data (Section 4A). Neither scenario is a substitute for the Shadow-Pilot mode
 > (Section 5) against real historical examiner findings, which has not yet been run against real
 > NCIIPC/CSE data.
 >
@@ -248,9 +249,10 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 | **Defect Precision** (primary, unambiguous dataset; every finding counted) | **100.0%** (21 of 21 findings; 0 false positives on any entity) | $\ge 85.0\%$ | Meets target |
 | **Stress Scenario Defect Precision** (borderline/ambiguous/noisy, synthetic) | **100.0%** (3 of 3 findings) | n/a -- reported for transparency | Synthetic; thresholds known when built |
 | **Review-Effort Lift** (primary dataset) | **5.50x** (the whole 109-alert queue vs random; every budget exceeds the queue, so 1%, 2% and 5% are identical). *Recomputed on a like-for-like alert basis -- see docs/validation.md Section 3.* | $\ge 5.00x$ | Meets target; not a budget curve |
-| **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations; thresholds not perturbed) | $\ge 0.8500$ | Meets target |
+| **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations) | $\ge 0.8500$ | Meets target |
+| **Rule Threshold Sensitivity** (primary dataset) | **5 of 54** single-threshold ±20% moves change an outcome: EG05 and EG11 raise false alarms on clean entities; EG05, EG07 and NS05 lose an injected defect built just over its threshold | n/a -- reported for transparency | EG05/EG11 need calibration on real data |
 | **DuckDB Scan Throughput** | **10,623,549 rows/second** | $\ge 1,000,000$ | Measured, exceeds target |
-| **Automated Test Suite** | **704 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.13 from freshly generated data; CI runs 3.11 and 3.13 | 100% passing | Verified locally on 3.13 |
+| **Automated Test Suite** | **716 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.13 from freshly generated data; CI runs 3.11 and 3.13 | 100% passing | Verified locally on 3.13 |
 
 ---
 
