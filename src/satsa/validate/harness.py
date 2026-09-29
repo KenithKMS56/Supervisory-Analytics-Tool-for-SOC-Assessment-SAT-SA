@@ -6,6 +6,8 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from satsa.rules.base import BaseRule
+from satsa.rules.registry import RuleRegistry
 from satsa.scoring.scorer import ScoringEngine
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
@@ -180,6 +182,62 @@ TARGETS = {
     "f1": 0.85,
     "stability": 0.85,
 }
+
+
+SENSITIVITY_FACTORS = (0.8, 1.2)
+
+
+def _perturb(value: Any, factor: float) -> Any:
+    """Scale a threshold; integers move by at least 1 in the factor's direction (min 1).
+
+    Floats in (0, 1] are shares or rates, so they are capped at 1.0.
+    """
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return value
+    if isinstance(value, int):
+        moved = round(value * factor)
+        if moved == value:
+            moved = value + (1 if factor > 1 else -1)
+        return max(1, moved)
+    scaled = round(value * factor, 4)
+    return min(scaled, 1.0) if 0 < value <= 1 else scaled
+
+
+def sensitivity_markdown(sens: dict[str, Any]) -> list[str]:
+    """Markdown table of the threshold-sensitivity sweep."""
+    if not sens or not sens.get("rows"):
+        return ["*No tunable thresholds were found to perturb.*"]
+
+    def fmt(out: dict[str, list[str]]) -> str:
+        parts = [f"TP {len(out['tp'])}", f"FN {len(out['fn'])}", f"FP {len(out['fp'])}"]
+        extra = [f"missed {', '.join(out['fn'])}"] if out["fn"] else []
+        extra += [f"false alarm {', '.join(out['fp'])}"] if out["fp"] else []
+        return " / ".join(parts) + (f" ({'; '.join(extra)})" if extra else "")
+
+    lines = [
+        (
+            f"{sens['changed']} of {sens['perturbations']} single-threshold perturbations "
+            f"(±{sens['perturbation_percent']}%) changed that rule's outcome."
+        ),
+        "",
+        "| Rule | Threshold | Baseline | Tested | Outcome at baseline | Outcome when tested |",
+        "|---|---|---|---|---|---|",
+    ]
+    for r in sens["rows"]:
+        flag = " **changed**" if r["changed"] else ""
+        lines.append(
+            f"| `{r['rule_id']}` | `{r['param']}` | {r['baseline']} | {r['tested']} ({r['change']}) | "
+            f"{fmt(r['baseline_outcome'])} | {fmt(r['outcome'])}{flag} |"
+        )
+    lines += [
+        "",
+        (
+            f"Not covered: {', '.join(sens['rules_not_covered'])} have no tunable threshold (no `params` in "
+            "`config/rules.yaml`): EG03 and NS07 are zero-tolerance and NS08 checks the fixed 6-month "
+            "review period. A rule showing TP 0 / FN 0 has no injected defect in this dataset."
+        ),
+    ]
+    return lines
 
 
 def _verdict(value: float, target: float) -> str:
@@ -575,6 +633,65 @@ class ValidationHarness:
             "audit_message": msg,
         }
 
+    def _rule_outcome(
+        self, rule_cls: type[BaseRule], params: dict[str, Any], entities: list[str]
+    ) -> dict[str, list[str]]:
+        """Run one rule with the given params on every entity and score it against ground truth."""
+        rule = rule_cls(config_override={"params": params})
+        injected = {d["entity_id"] for d in self.ground_truth.get("defects", []) if d["rule_id"] == rule.id}
+        detected = {e for e in entities if rule.evaluate(e, self.duckdb_store, [], "SENSITIVITY")[0]}
+        return {
+            "tp": sorted(detected & injected),
+            "fn": sorted(injected - detected),
+            "fp": sorted(detected - injected),
+        }
+
+    def evaluate_threshold_sensitivity(
+        self, rules_config_path: Path | str = "config/rules.yaml"
+    ) -> dict[str, Any]:
+        """Move each tunable rule threshold by -20% and +20% and re-score that rule.
+
+        Unlike evaluate_stability (scoring weights only), this re-runs the detection rules
+        themselves, so it shows how much margin each injected defect and each clean entity
+        has. Integer params always move by at least 1; shares and rates are capped at 1.0.
+        Rules with no `params` in config cannot be perturbed and are listed as not covered.
+        """
+        registry = RuleRegistry(rules_config_path)
+        entities = self.duckdb_store.query("SELECT DISTINCT entity_id FROM entity ORDER BY entity_id")[
+            "entity_id"
+        ].to_list()
+        rows: list[dict[str, Any]] = []
+        not_covered: list[str] = []
+        for rule in registry.get_all_rules():
+            if not rule.params:
+                not_covered.append(rule.id)
+                continue
+            base = self._rule_outcome(type(rule), rule.params, entities)
+            for key, value in rule.params.items():
+                for factor in SENSITIVITY_FACTORS:
+                    tested = _perturb(value, factor)
+                    out = self._rule_outcome(type(rule), {**rule.params, key: tested}, entities)
+                    rows.append(
+                        {
+                            "rule_id": rule.id,
+                            "param": key,
+                            "baseline": value,
+                            "tested": tested,
+                            "change": f"{factor - 1:+.0%}",
+                            "baseline_outcome": base,
+                            "outcome": out,
+                            "changed": out != base,
+                        }
+                    )
+        return {
+            "perturbation_percent": round((SENSITIVITY_FACTORS[1] - 1) * 100),
+            "rows": rows,
+            "perturbations": len(rows),
+            "changed": sum(r["changed"] for r in rows),
+            "rules_covered": sorted({r["rule_id"] for r in rows}),
+            "rules_not_covered": sorted(not_covered),
+        }
+
     def run_full_validation(self, run_id: str | None = None) -> dict[str, Any]:
         """Execute complete validation suite."""
         run_id = run_id or self.get_latest_run_id()
@@ -582,6 +699,7 @@ class ValidationHarness:
         rule_res = self.evaluate_rule_detection(run_id)
         lift_res = self.evaluate_review_effort_lift(run_id)
         stability_res = self.evaluate_stability(run_id)
+        sensitivity_res = self.evaluate_threshold_sensitivity()
         audit_res = self.verify_audit_and_determinism()
 
         return {
@@ -590,6 +708,7 @@ class ValidationHarness:
             "rule_detection": rule_res,
             "review_effort_lift": lift_res,
             "stability": stability_res,
+            "threshold_sensitivity": sensitivity_res,
             "audit": audit_res,
         }
 
@@ -654,6 +773,7 @@ class ValidationHarness:
             "stability": _verdict(rho_min, TARGETS["stability"]),
             "audit": "PASS" if audit.get("audit_chain_valid") else "FAIL",
         }
+        sens = results.get("threshold_sensitivity", {})
         confounder_lines = self._confounder_findings(rules)
         fp_clean = rules.get("false_positives_on_clean_entities", [])
         fp_defect = rules.get("false_positives_on_defect_entities", [])
@@ -762,9 +882,19 @@ class ValidationHarness:
                 f"- Spearman rank correlation with -20% weights: **{stability.get('spearman_rho_minus_20'):.4f}**",
                 (
                     f"- **Conclusion:** {'The entity ranking is stable' if verdicts['stability'] == 'PASS' else 'The entity ranking is NOT stable'} "
-                    "under this domain-weight perturbation. Rule detection thresholds were not perturbed, so this says "
-                    "nothing about how findings change as thresholds move."
+                    "under this domain-weight perturbation. This does not move rule detection thresholds; "
+                    "Section 7 does."
                 ),
+                "",
+                "## 7. Rule Threshold Sensitivity",
+                (
+                    "Each tunable rule threshold is moved by -20% and +20% on its own, and that rule is re-run on "
+                    "every entity and scored against the ground truth. A changed outcome means an injected defect "
+                    "or a clean entity sits within 20% of that threshold. The synthetic defects were built with the "
+                    "thresholds in hand, so this measures their margin, not real-world robustness."
+                ),
+                "",
+                *sensitivity_markdown(results.get("threshold_sensitivity", {})),
             ]
         )
 
@@ -822,6 +952,19 @@ class ValidationHarness:
   </div>
 
   {shadow_html(shadow_result)}
+
+  <div class="card">
+    <h2>Rule Threshold Sensitivity (±{sens.get("perturbation_percent", 20)}%)</h2>
+    <p>{sens.get("changed", 0)} of {sens.get("perturbations", 0)} single-threshold perturbations changed that rule's outcome.
+    Rules with no tunable threshold, not covered: {escape(", ".join(sens.get("rules_not_covered", [])) or "none")}.
+    Full table in <code>docs/validation_report.md</code> Section 7.</p>
+    <table>
+      <thead><tr><th>Rule</th><th>Threshold</th><th>Baseline</th><th>Tested</th><th>Outcome changed</th></tr></thead>
+      <tbody>
+        {"".join(f"<tr><td>{escape(r['rule_id'])}</td><td>{escape(r['param'])}</td><td>{r['baseline']}</td><td>{r['tested']} ({r['change']})</td><td>{'yes' if r['changed'] else 'no'}</td></tr>" for r in sens.get("rows", []))}
+      </tbody>
+    </table>
+  </div>
 
   <div class="footer">
     <div>National Critical Information Infrastructure Protection Centre (NCIIPC)</div>

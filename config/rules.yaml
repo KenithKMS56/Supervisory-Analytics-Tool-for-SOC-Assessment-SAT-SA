@@ -1,8 +1,8 @@
 # SAT-SA rule configuration.
 #
-# Per rule: display metadata, min_sample and severity_weight (read by BaseRule), and --
-# only for the rules that expose tunable thresholds -- a `params` block whose keys are read
-# by that rule via self.params.get(key, default). Defaults in code equal the values below,
+# Per rule: display metadata, min_sample and severity_weight (read by BaseRule), and a
+# `params` block whose keys are read by that rule via self.params.get(key, default). Every
+# rule has one except EG03 and NS07 (zero tolerance) and NS08 (fixed 6-month period). Defaults in code equal the values below,
 # so removing a key does not change behaviour. tests/test_config_drift.py fails if a key
 # here is not read by its rule, or if stray top-level keys appear.
 rules:
@@ -25,7 +25,11 @@ rules:
     level: entity
     min_sample: 15
     severity_weight: 80
-    description: Alerts acknowledged then closed with zero investigative events and brief closure note.
+    description: Share of human-closed alerts with no 'investigate' workflow event and a closure comment
+      under 25 characters exceeds max_uninvestigated_share, with at least min_uninvestigated_count such alerts.
+    params:
+      max_uninvestigated_share: 0.15
+      min_uninvestigated_count: 5
   EG03:
     name: Critical Closed without Escalation
     version: 1.0.0
@@ -33,8 +37,7 @@ rules:
     level: alert
     min_sample: 5
     severity_weight: 95
-    description: Critical/High true-positives closed without an escalation record or marked false-positive
-      with trivial comments.
+    description: Any Critical true-positive alert with no escalation record (zero tolerance, no threshold).
   EG04:
     name: Template-Driven Investigations
     version: 1.0.0
@@ -66,8 +69,12 @@ rules:
     level: entity
     min_sample: 20
     severity_weight: 90
-    description: Composite indicator detecting deadline-hugging, bulk/identical-timestamp closures, month-end
-      spikes, and severity downgrades.
+    description: Bulk closures (at least min_bulk_closures_per_minute human closures by one analyst in the
+      same minute) or deadline-hugging (more than max_deadline_hugging_share of human closures landing
+      in the last 10% of the SLA resolve window).
+    params:
+      min_bulk_closures_per_minute: 8
+      max_deadline_hugging_share: 0.25
   EG07:
     name: Analyst Implausibility
     version: 1.0.0
@@ -75,8 +82,10 @@ rules:
     level: entity
     min_sample: 20
     severity_weight: 75
-    description: Closures per analyst-hour exceeding realistic human capacity or concentrated heavily
-      outside declared shifts.
+    description: One analyst closes at least min_closures_per_analyst_hour human-closed alerts within a
+      single clock hour.
+    params:
+      min_closures_per_analyst_hour: 30
   EG08:
     name: Escalation without Follow-Through
     version: 1.0.0
@@ -84,8 +93,10 @@ rules:
     level: entity
     min_sample: 5
     severity_weight: 85
-    description: Escalated alerts or cases lacking tier-2/tier-3 acknowledgment within SLA or unlinked
-      to an active case.
+    description: At least min_unacknowledged_escalations escalations with no Tier-2 acknowledgement
+      timestamp.
+    params:
+      min_unacknowledged_escalations: 3
   EG09:
     name: Backlog and Aging
     version: 1.0.0
@@ -93,8 +104,11 @@ rules:
     level: entity
     min_sample: 10
     severity_weight: 70
-    description: Open cases exceeding multiples of resolution SLA or exhibiting no workflow activity for
-      14+ days.
+    description: At least min_stale_cases cases still open more than stale_case_days days after they
+      were opened.
+    params:
+      stale_case_days: 14
+      min_stale_cases: 3
   EG10:
     name: KPI Reconciliation Gap
     version: 1.0.0
@@ -114,8 +128,11 @@ rules:
     level: entity
     min_sample: 200
     severity_weight: 80
-    description: 'Abnormal disposition distribution: false positive rate > 98% with no tuning, or 0 true
-      positives over 6 months.'
+    description: 'Abnormal disposition distribution: with at least min_alert_volume alerts, a false-positive/benign
+      rate above max_fp_rate or zero true positives.'
+    params:
+      min_alert_volume: 200
+      max_fp_rate: 0.98
   EG12:
     name: Workflow Non-Conformance
     version: 1.0.0
@@ -123,8 +140,10 @@ rules:
     level: entity
     min_sample: 15
     severity_weight: 80
-    description: Cases with skipped or out-of-order mandatory workflow stages (triage, investigate, escalate,
-      contain, close).
+    description: At least min_skipped_cases Critical cases with no 'contain' workflow stage. (Other stage
+      orderings are not checked.)
+    params:
+      min_skipped_cases: 2
   NS01:
     name: Silent Critical Assets
     version: 1.0.0
@@ -167,8 +186,10 @@ rules:
     level: entity
     min_sample: 10
     severity_weight: 90
-    description: At least 3 High/Critical True Positive alerts with no linked incident case. (ID sequence
-      gaps are flagged by the ingest data-quality checks, not by this rule.)
+    description: At least min_tp_without_case High/Critical True Positive alerts with no linked incident
+      case. (ID sequence gaps are flagged by the ingest data-quality checks, not by this rule.)
+    params:
+      min_tp_without_case: 3
   NS05:
     name: Rule Coverage Gaps
     version: 1.0.0
@@ -176,8 +197,11 @@ rules:
     level: entity
     min_sample: 20
     severity_weight: 75
-    description: High share of enabled SIEM detection rules that have never fired or critical MITRE techniques
-      completely uncovered.
+    description: More than max_dormant_share (and at least min_dormant_rules) of enabled SIEM detection
+      rules never fired an alert in the period. (MITRE technique coverage is not checked.)
+    params:
+      max_dormant_share: 0.4
+      min_dormant_rules: 5
   NS06:
     name: Inventory vs Telemetry
     version: 1.0.0
@@ -185,8 +209,10 @@ rules:
     level: entity
     min_sample: 10
     severity_weight: 85
-    description: Assets in asset inventory never emitting alerts (ghost assets) or uninventoried assets
-      generating alerts (shadow assets).
+    description: At least min_ghost_assets inventory assets with no log events and no alerts (ghost assets).
+      (Uninventoried "shadow" assets are not checked.)
+    params:
+      min_ghost_assets: 2
   NS07:
     name: Absent External Reporting
     version: 1.0.0
@@ -204,5 +230,5 @@ rules:
     level: entity
     min_sample: 1
     severity_weight: 90
-    description: Missing monthly batches, severe volume drop vs historical baseline, or high null rate
-      in mandatory fields.
+    description: Alerts cover fewer than the 6 months of the review period (a missing monthly batch).
+      (Volume drops are NS03's concern; null rates are reported by the ingest data-quality checks.)

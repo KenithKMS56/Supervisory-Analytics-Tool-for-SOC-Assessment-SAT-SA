@@ -98,6 +98,15 @@ def test_stress_scenario_runs_end_to_end():
     assert len(fps) == rules["false_positives"]
     assert rules["total_findings"] == rules["true_positives"] + rules["false_positives"]
 
+    # The sweep must see the borderline case it was built for: raising EG04's share
+    # threshold by 20% (0.25 -> 0.30) loses STRESS-01's 27.5% defect.
+    sens = results["threshold_sensitivity"]
+    assert sens["rules_not_covered"] == ["EG03", "NS07", "NS08"]
+    eg04_up = next(
+        r for r in sens["rows"] if r["rule_id"] == "EG04" and r["param"] == "max_comment_hash_share" and r["tested"] > 0.25
+    )
+    assert eg04_up["changed"] and "STRESS-01" in eg04_up["outcome"]["fn"]
+
 
 def test_stress_dataset_is_isolated_from_primary_demo_dataset():
     """Stress entities must never collide with the primary CSE-01..CSE-10 demo IDs,

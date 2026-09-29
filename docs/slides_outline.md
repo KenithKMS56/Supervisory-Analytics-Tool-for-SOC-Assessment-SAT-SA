@@ -39,7 +39,8 @@
   - **Injected Defect Recall / Precision:** **100.0%** (21/21 defects found; 21 of 21 findings correct, every finding counted).
   - **Review-Effort Lift:** **5.5x** the defect-affected alert rate of random sampling across the whole 109-alert review queue, on the synthetic dataset.
   - **Ranking Stability:** Spearman $\rho = \mathbf{1.0000}$ under $\pm 20\%$ domain-weight perturbations.
-  - **Limits:** every rule has an injected defect, but thresholds are not varied; real accuracy needs a shadow pilot on historical examiner workpapers.
+  - **Threshold Sensitivity:** every tunable threshold moved ±20%; EG05 and EG11 sit close to normal background and need calibration on real data.
+  - **Limits:** all synthetic; real accuracy needs a shadow pilot on historical examiner workpapers.
 
 ---
 
