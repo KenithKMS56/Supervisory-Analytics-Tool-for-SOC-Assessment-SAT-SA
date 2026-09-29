@@ -17,3 +17,4 @@ reports/
 data/*.db-shm
 data/*.db-wal
 data/templates/*.zip
+data/templates/*.csv
