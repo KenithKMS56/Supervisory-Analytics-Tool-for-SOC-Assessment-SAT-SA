@@ -226,23 +226,31 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 > full. The rows below (other than throughput and test count) are a **correctness check**, not an
 > empirical real-world accuracy benchmark: the synthetic defects are deliberately built to clearly
 > exceed each rule's own threshold, so near-100% scores are expected by construction and mainly
-> confirm the code implements its documented logic. A genuinely harder scenario (borderline
-> threshold, ambiguous dual-rule case, noisy clean entity) is run via `satsa validate-stress` and
-> reports real, imperfect numbers (currently ~60% precision on that harder set) -- see
-> [`docs/validation.md`](docs/validation.md) Section 2A. Neither is a substitute for the
-> Shadow-Pilot mode (Section 5) against real historical examiner findings, which has not yet been
-> run against real NCIIPC/CSE data.
+> confirm the code implements its documented logic. A scenario with a borderline threshold, an
+> ambiguous dual-rule case and a noisy clean entity is run via `satsa validate-stress` -- see
+> [`docs/validation.md`](docs/validation.md) Section 2A. 8 of the 20 rules (EG07, EG08, EG09,
+> EG11, EG12, NS05, NS07, NS08) have no injected defect in either dataset, so their ability to
+> detect anything is untested. Neither scenario is a substitute for the Shadow-Pilot mode
+> (Section 5) against real historical examiner findings, which has not yet been run against real
+> NCIIPC/CSE data.
+>
+> **Correction (September 2026):** earlier versions of this table reported 100% precision on the
+> primary dataset and ~60% on the stress scenario. The harness only counted false positives on the
+> three clean entities and exempted NS05/EG12/EG10; counted honestly, that run's precision was 38%
+> (13/34 findings). The stress figure came from generator artifacts. The causes (generator bugs and
+> an EG10 severity-mismatch defect) are fixed and precision now counts every finding -- see
+> [`docs/validation.md`](docs/validation.md) Section 0.1.
 
 | Metric | Result | Target | Status |
 | :--- | :--- | :--- | :--- |
 | **Injected Defect Recall** (primary, unambiguous dataset) | **100.0%** (13/13 defects caught) | $\ge 90.0\%$ | Meets target |
-| **Entity Rank Precision@7** (primary, unambiguous dataset) | **100.0%** (top-7 entities ranked accurately) | $\ge 85.0\%$ | Meets target |
-| **False-Alarm Precision** (primary, unambiguous dataset) | **100.0%** (0 false hits on clean entities) | $\ge 95.0\%$ | Meets target |
-| **Stress Scenario Defect Precision** (harder, ambiguous dataset) | **~60.0%** (2 false positives on noisy clean entity) | n/a -- reported for transparency | Genuinely imperfect |
-| **Review-Effort Lift** (primary dataset) | **5.97x** at a 1% audit budget (4.13x at 2%, 1.65x at 5%). *Corrected from a stale 16.60x -- see docs/hardening_log.md.* | $\ge 5.00x$ | Meets target at the 1% budget only |
-| **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ perturbations) | $\ge 0.9000$ | Meets target |
+| **Entity Rank Precision@7** (primary, unambiguous dataset) | **100.0%** (top-7 entities ranked accurately) | $\ge 90.0\%$ | Meets target |
+| **Defect Precision** (primary, unambiguous dataset; every finding counted) | **100.0%** (13 of 13 findings; 0 false positives on any entity) | $\ge 85.0\%$ | Meets target |
+| **Stress Scenario Defect Precision** (borderline/ambiguous/noisy, synthetic) | **100.0%** (3 of 3 findings) | n/a -- reported for transparency | Synthetic; thresholds known when built |
+| **Review-Effort Lift** (primary dataset) | **10.69x** (the whole 109-alert queue vs random; every budget exceeds the queue, so 1%, 2% and 5% are identical). *Recomputed on a like-for-like alert basis -- see docs/validation.md Section 3.* | $\ge 5.00x$ | Meets target; not a budget curve |
+| **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations; thresholds not perturbed) | $\ge 0.8500$ | Meets target |
 | **DuckDB Scan Throughput** | **10,623,549 rows/second** | $\ge 1,000,000$ | Measured, exceeds target |
-| **Automated Test Suite** | **596 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.11 and 3.13 from a clean clone | 100% passing | Verified |
+| **Automated Test Suite** | **702 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.13 from freshly generated data; CI runs 3.11 and 3.13 | 100% passing | Verified locally on 3.13 |
 
 ---
 

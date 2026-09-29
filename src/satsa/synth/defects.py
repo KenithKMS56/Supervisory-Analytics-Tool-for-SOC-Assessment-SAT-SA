@@ -15,25 +15,28 @@ from satsa.models.canonical import (
 )
 
 
-def inject_cse02_kpi_gap(
-    kpis: list[DeclaredKPI], actual_mttr_critical: float
-) -> tuple[list[DeclaredKPI], dict[str, Any]]:
-    """CSE-02: Declared KPI reconciliation gap (claims 30m MTTR, actual is 4+ hours)."""
+def inject_cse02_kpi_gap(kpis: list[DeclaredKPI]) -> tuple[list[DeclaredKPI], dict[str, Any]]:
+    """CSE-02: Declared KPI reconciliation gap.
+
+    CSE-02's alerts are generated like every other entity's (empirical MTTR of
+    roughly 45 min critical / 90 min high); only its declaration is gamed, to 35
+    minutes for both severities.
+    """
     updated_kpis = []
     for k in kpis:
         if k.entity_id == "CSE-02" and k.metric == "MTTR" and k.severity in ["critical", "high"]:
-            # Declare gamed/fabricated MTTR (e.g. 35 mins vs actual ~240 mins)
-            k_copy = k.model_copy(update={"value": 35.0})
-            updated_kpis.append(k_copy)
+            updated_kpis.append(k.model_copy(update={"value": 35.0}))
         else:
             updated_kpis.append(k)
 
     defect_info = {
         "rule_id": "EG10",
         "defect_type": "kpi_reconciliation_gap",
-        "description": "Declared MTTR is 35 minutes while empirical MTTR is > 200 minutes.",
+        "description": (
+            "Declared High/Critical MTTR of 35 minutes, well below the empirical MTTR recomputed "
+            "from CSE-02's own alert timestamps (roughly 45 min critical, 90 min high)."
+        ),
         "declared_mttr": 35.0,
-        "empirical_mttr_approx": actual_mttr_critical,
     }
     return updated_kpis, defect_info
 
@@ -167,15 +170,22 @@ def inject_cse08_missing_space(
         else:
             kept_alerts.append(a)
 
-    # 2. Injected ID sequence gaps: Modify IDs of CSE-08 to jump unexpectedly
-    # e.g., CSE08-ALT-0001 ... CSE08-ALT-0020, then CSE08-ALT-0200
-    for idx, a in enumerate(kept_alerts):
-        if a.entity_id == "CSE-08" and idx > 25:
-            # Add gap
+    # 2. Injected ID sequence gap: CSE-08's first 25 alerts keep their IDs, the rest
+    # jump by 500. The caller must apply the returned id_map to every child table
+    # (workflow_event, closure, escalation); renaming only the alerts orphans those
+    # records and makes EG02/EG03 fire on CSE-08 for defects nobody injected.
+    id_map: dict[str, str] = {}
+    cse08_seen = 0
+    for a in kept_alerts:
+        if a.entity_id != "CSE-08":
+            continue
+        cse08_seen += 1
+        if cse08_seen > 25:
             parts = a.alert_id.split("-")
             if len(parts) == 3 and parts[2].isdigit():
-                new_num = int(parts[2]) + 500
-                a.alert_id = f"{parts[0]}-{parts[1]}-{new_num:06d}"
+                new_id = f"{parts[0]}-{parts[1]}-{int(parts[2]) + 500:06d}"
+                id_map[a.alert_id] = new_id
+                a.alert_id = new_id
 
     # 3. True Positives without cases: Remove case links for CSE-08 TP alerts
     tp_alerts = [
@@ -192,6 +202,7 @@ def inject_cse08_missing_space(
         "removed_categories": list(banned_categories),
         "tp_without_case_count": len(tp_alerts),
         "sequence_gap_injected": True,
+        "id_map": id_map,
     }
     return kept_alerts, kept_cases, defect_info
 

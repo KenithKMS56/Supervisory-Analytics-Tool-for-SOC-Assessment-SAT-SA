@@ -252,7 +252,11 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
 
 
 class NS04MissingRecords(BaseRule):
-    """NS04: Missing records (ID sequence gaps, TP alerts without case)."""
+    """NS04: Missing records (High/Critical TP alerts with no linked case).
+
+    ID sequence gaps are a data-quality check at ingest (DQValidator.check_id_sequence_gaps),
+    not part of this rule.
+    """
 
     id = "NS04"
     name = "Missing Records"

@@ -358,14 +358,16 @@ def validate_cmd(
 
     console.print("\n[bold green][+] Validation Benchmark Results:[/bold green]")
     console.print(
-        f"  * Entity Rank Precision@7: [bold cyan]{ranking.get('precision_at_k', 0) * 100:.1f}%[/bold cyan]"
+        f"  * Entity Rank Precision@k: [bold cyan]{ranking.get('precision_at_k', 0) * 100:.1f}%[/bold cyan]"
     )
     console.print(
         f"  * Injected Defect Recall:  [bold cyan]{rules.get('overall_recall', 0) * 100:.1f}%[/bold cyan] ({rules.get('true_positives')}/{rules.get('total_injected_defects')})"
     )
     console.print(
-        f"  * Overall Defect Precision:[bold cyan]{rules.get('overall_precision', 0) * 100:.1f}%[/bold cyan]"
+        f"  * Overall Defect Precision:[bold cyan]{rules.get('overall_precision', 0) * 100:.1f}%[/bold cyan] "
+        f"({rules.get('true_positives')} of {rules.get('total_findings')} findings)"
     )
+    _print_false_positives(rules)
     console.print(
         f"  * Ranking Stability (+/-20%):[bold cyan]Spearman rho = {stab.get('spearman_rho_plus_20'):.4f}[/bold cyan]"
     )
@@ -376,16 +378,21 @@ def validate_cmd(
     console.print("\n[bold]Review-Effort Lift Table (vs Random Sampling):[/bold]")
     for b_k, b_v in lift.get("budgets", {}).items():
         console.print(
-            f"  * Budget {b_k}: [yellow]{b_v['defects_found']} defects found[/yellow] | Hit Rate = {b_v['hit_rate_top_k'] * 100:.1f}% vs {b_v['random_baseline_hit_rate'] * 100:.2f}% random | [bold green]Lift = {b_v['lift_factor']:.2f}x[/bold green]"
+            f"  * Budget {b_k}: [yellow]{b_v['defects_found']}/{b_v['records_examined']} queue alerts affected"
+            f"{' (queue exhausted)' if b_v['queue_exhausted'] else ''}[/yellow] | Hit Rate = {b_v['hit_rate_top_k'] * 100:.1f}% vs {b_v['random_baseline_hit_rate'] * 100:.2f}% random | [bold green]Lift = {b_v['lift_factor']:.2f}x[/bold green]"
         )
 
     if shadow_res and shadow_res.get("status") == "success":
         n = shadow_res["total_confirmed_issues"]
+        precision = shadow_res["workpaper_precision"]
+        precision_text = "n/a" if precision is None else f"{precision * 100:.1f}%"
         console.print(
             "\n[bold]Shadow Pilot Evaluation:[/bold] "
             f"{shadow_res['total_manual_reviews']} workpaper rows ({n} confirmed) | "
             f"finding recall {shadow_res['rule_finding_recall'] * 100:.1f}% ({shadow_res['matched_findings']}/{n}) | "
-            f"queue record recall {shadow_res['queue_record_recall'] * 100:.1f}% ({shadow_res['matched_queue']}/{n})"
+            f"queue record recall {shadow_res['queue_record_recall'] * 100:.1f}% ({shadow_res['matched_queue']}/{n}) | "
+            f"precision {precision_text} | "
+            f"{len(shadow_res['findings_unadjudicated'])} findings not adjudicated"
         )
     elif shadow_res:
         console.print(f"\n[bold]Shadow Pilot Evaluation:[/bold] {shadow_res}")
@@ -393,6 +400,16 @@ def validate_cmd(
     console.print("\n[bold green][+] Validation reports generated:[/bold green]")
     console.print(f"  * Markdown: [cyan]{md_file}[/cyan]")
     console.print(f"  * HTML:     [cyan]{html_file}[/cyan]")
+
+
+def _print_false_positives(rules: dict) -> None:
+    """Print which (entity, rule) findings counted as false positives."""
+    for label, key in (
+        ("clean entities", "false_positives_on_clean_entities"),
+        ("defect entities (rule not injected)", "false_positives_on_defect_entities"),
+    ):
+        pairs = rules.get(key, [])
+        console.print(f"  * False positives on {label}: [yellow]{len(pairs)}[/yellow] {' '.join(pairs)}")
 
 
 @app.command("validate-stress")
@@ -450,19 +467,23 @@ def validate_stress_cmd(
         f"({rules.get('true_positives')}/{rules.get('total_injected_defects')})"
     )
     console.print(
-        f"  * Overall Defect Precision:[bold cyan]{rules.get('overall_precision', 0) * 100:.1f}%[/bold cyan]"
+        f"  * Overall Defect Precision:[bold cyan]{rules.get('overall_precision', 0) * 100:.1f}%[/bold cyan] "
+        f"({rules.get('true_positives')} of {rules.get('total_findings')} findings)"
     )
-    console.print(f"  * False Positives: [yellow]{rules.get('false_positives')}[/yellow]")
+    _print_false_positives(rules)
+    fp_clean = rules.get("false_positives_on_clean_entities", [])
+    fp_defect = rules.get("false_positives_on_defect_entities", [])
 
     md_path = Path(output_md)
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_lines = [
         "# SAT-SA Stress Scenario Validation Report",
         "",
-        "> This is the HARDER, more realistic companion to docs/validation.md. Unlike the primary",
-        "> synthetic dataset (whose injected defects clearly exceed each rule's threshold by design),",
-        "> this scenario injects a borderline-threshold case, an ambiguous dual-rule case, and a",
-        "> noisy true-negative case. These numbers are NOT expected to be 100%.",
+        "> Companion to docs/validation.md. Unlike the primary synthetic dataset (whose injected",
+        "> defects clearly exceed each rule's threshold by design), this scenario injects a",
+        "> borderline-threshold case, an ambiguous dual-rule case, and a noisy true-negative case.",
+        "> It is still synthetic and built against the rules' own thresholds, so a perfect score",
+        "> shows the rules behave as specified near those thresholds, not real-world accuracy.",
         "",
         f"**Run ID:** `{res['run_id']}` | **Seed:** `{seed}`",
         "",
@@ -471,8 +492,15 @@ def validate_stress_cmd(
         f"| Entity Rank Precision@k | {ranking.get('precision_at_k', 0) * 100:.1f}% |",
         f"| Entity Rank Recall@k | {ranking.get('recall_at_k', 0) * 100:.1f}% |",
         f"| Injected Defect Recall | {rules.get('overall_recall', 0) * 100:.1f}% ({rules.get('true_positives')}/{rules.get('total_injected_defects')}) |",
-        f"| Overall Defect Precision | {rules.get('overall_precision', 0) * 100:.1f}% |",
+        f"| Overall Defect Precision | {rules.get('overall_precision', 0) * 100:.1f}% ({rules.get('true_positives')} of {rules.get('total_findings')} findings) |",
         f"| False Positives | {rules.get('false_positives')} |",
+        "",
+        "Every finding whose (entity, rule) pair is not an injected defect counts as a false positive, on any",
+        "entity and for any rule.",
+        "",
+        f"- False positives on the clean entity: {', '.join(fp_clean) or 'none'}",
+        f"- False positives on defect entities (rule not injected there): {', '.join(fp_defect) or 'none'}",
+        f"- Missed defects: {', '.join(rules.get('missed_defects', [])) or 'none'}",
         "",
         "## Per-rule breakdown",
         "| Rule ID | TP | FN | FP |",

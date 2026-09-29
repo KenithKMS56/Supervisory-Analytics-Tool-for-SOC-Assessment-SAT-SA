@@ -76,15 +76,20 @@ def test_internal_soc_provider_is_excluded_even_with_enough_entities():
     assert results == []
 
 
-def test_excluded_rule_ids_never_trigger_systemic_correlation():
-    """NS05/EG12/EG10 are known-near-universal in the synthetic dataset and excluded
-    from correlation so they don't produce a misleading portfolio-wide 'systemic' finding.
-    """
-    detector = SystemicCorrelationDetector()
+def test_excluded_rule_ids_never_trigger_systemic_correlation(tmp_path):
+    """A rule the operator lists in excluded_rule_ids is never correlated."""
+    cfg = tmp_path / "systemic.yaml"
+    cfg.write_text("systemic:\n  min_entity_count: 3\n  excluded_rule_ids: [NS05]\n", encoding="utf-8")
+    detector = SystemicCorrelationDetector(cfg)
     entities = _entities({"A-01": "MSSP-X", "A-02": "MSSP-X", "A-03": "MSSP-X"})
     findings = [_finding("A-01", "NS05"), _finding("A-02", "NS05"), _finding("A-03", "NS05")]
     results = detector.evaluate(entities, findings, run_id="RUN-TEST")
     assert results == []
+
+
+def test_default_config_excludes_no_rules():
+    """No rule is silently exempt from systemic correlation out of the box."""
+    assert SystemicCorrelationDetector().excluded_rule_ids == set()
 
 
 def test_different_rules_do_not_get_grouped_together():

@@ -23,12 +23,10 @@ systemic:
   excluded_attribute_values:
     - internal
 
-  # Rule IDs excluded from systemic correlation because they are known to
-  # fire near-universally in the current synthetic dataset for reasons
-  # unrelated to any shared vendor (see docs/validation.md's note on EG10/
-  # EG12/NS05), so correlating on them would produce a misleading "systemic"
-  # finding covering nearly the whole portfolio rather than a genuine signal.
-  excluded_rule_ids:
-    - NS05
-    - EG12
-    - EG10
+  # Rule IDs never correlated, for rules an operator knows fire across the
+  # portfolio for reasons unrelated to any shared vendor. Empty by default:
+  # NS05, EG12 and EG10 used to be listed because they fired on nearly every
+  # entity in the synthetic dataset, but that came from generator bugs (fixed)
+  # and an EG10 severity mismatch (fixed), not from the portfolio. Excluding a
+  # rule here also hides a genuine shared-vendor pattern in it.
+  excluded_rule_ids: []

@@ -113,8 +113,8 @@ $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
 
 #### EG10: KPI Reconciliation Gap
 - **Purpose:** Detect discrepancies between declared regulatory KPIs and KPIs recomputed from submitted records.
-- **Logic:** Recomputes MTTA, MTTR, and SLA achievement percentage directly from canonical timestamps. Flags relative discrepancy $>10\%$ against values in `declared_kpi`.
-- **Formula:** $\text{Gap} = \frac{|\text{Declared} - \text{Empirical}|}{\max(\text{Declared}, \text{Empirical})}$.
+- **Logic:** Recomputes MTTR (created → closed) from canonical alert timestamps for each of High and Critical, and compares it with the declared MTTR for the same severities only, each weighted by its alert count. Flags when the empirical MTTR exceeds the declared MTTR by more than `mttr_gap_ratio_threshold` (default 0.60). MTTA and SLA achievement are not reconciled by this rule.
+- **Formula:** $\text{Gap} = \frac{\text{Empirical} - \text{Declared}}{\max(\text{Declared}, 1)}$, where both sides are alert-count-weighted over the declared severities. Only under-declaration (empirical slower than declared) is flagged.
 - **Benign Explanations:** Different timezone assumptions; exclusion of maintenance hours in declared SLA calculation.
 - **Examiner Checks:** Verify official SLA calculation formula submitted by entity leadership.
 
@@ -152,9 +152,9 @@ $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
 - **Benign Explanations:** 8x5 business application with no user activity outside business hours.
 - **Examiner Checks:** Review shift rosters to verify if 24x7 SOC shift coverage was formally contracted.
 
-#### NS04: Missing Records & Sequence Gaps
+#### NS04: Missing Records
 - **Purpose:** Detect audit trail truncation, record deletion, or unrecorded triage.
-- **Logic:** Numeric sequence gaps in auto-incrementing alert/case IDs (e.g., ALT-101 $\to$ ALT-105 missing 102, 103, 104) or True Positive alerts with no case management record.
+- **Logic:** At least 3 High/Critical True Positive alerts with no linked case management record. Numeric sequence gaps in alert IDs (e.g., ALT-101 $\to$ ALT-105) are not part of this rule; they are reported by the ingest data-quality checks (`DQValidator.check_id_sequence_gaps`, shown on the DQ view).
 - **Benign Explanations:** Deleted test alerts created during scheduled engineering validation.
 - **Examiner Checks:** Review change control records for test execution IDs.
 
@@ -199,9 +199,9 @@ runs once per assessment, AFTER all per-entity rules, and looks ACROSS the whole
   rendered in its own portfolio dashboard section (`/`), never folded into any individual entity's
   finding cards.
 - **Exclusions:** `soc_provider=internal` is never correlated on (shared in-house negligence isn't
-  evidence of a shared-vendor problem), and `config/systemic.yaml`'s `excluded_rule_ids` (NS05,
-  EG12, EG10) are excluded because they are known to fire near-universally in the current synthetic
-  dataset for reasons unrelated to any shared vendor (see docs/validation.md).
+  evidence of a shared-vendor problem). `config/systemic.yaml`'s `excluded_rule_ids` lets an
+  operator exclude rules known to fire portfolio-wide for non-vendor reasons; it is empty by
+  default, because excluding a rule also hides a genuine shared-vendor pattern in it.
 - **Rationale for supervisors:** a cluster of identical findings under one shared provider points at
   that provider's own process or detection-engineering practices as the likely root cause, which
   changes the appropriate supervisory response from "counsel this one entity" to "examine this

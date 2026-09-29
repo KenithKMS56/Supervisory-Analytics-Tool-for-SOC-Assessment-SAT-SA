@@ -21,6 +21,10 @@ turned out to be wrong, the correction is stated here rather than silently fixed
 | Stress scenario | P@k 100%, recall 3/3, precision 60.0%, 2 FP (EG05, NS08) | identical | Unchanged |
 | **Review-effort lift, 1% budget** | README/slides/demo claimed **16.60x** | **5.97x** (4.13x at 2%, 1.65x at 5%) | **Corrected headline**, see Step 13 |
 
+> **Superseded by Step 18.** The precision, stress and lift rows above were measured with a harness
+> that counted false positives only on clean entities and exempted NS05/EG12/EG10. Note the table's
+> own "Demo run findings: 34" next to 13 injected defects: honest precision was 38%, not 100%.
+
 ## Step 0 — Baseline
 Done. Outputs saved to a scratch directory for diffing: bootstrap, pytest, validate,
 validate-stress, ruff, mypy, and copies of both validation reports.
@@ -280,3 +284,17 @@ The only differences in the validation report are the run ID and the audit-entry
 - **Report.** `satsa validate --shadow-csv …` stores its evaluation before writing the report. Section 5 of `docs/validation_report.md` and `.html` now shows the latest stored result for the report's run, with a caveat that the figures are only as independent as the labels. Without the flag, the report still shows the last stored result.
 - **Tests.** `tests/test_shadow_pilot.py`; the RBAC matrix lists both routes as analyst-only.
 
+
+## Step 18 — Validation scoring and generator correctness — done, verified
+
+- **The precision figures were wrong in both directions.** The primary report's 100% precision came from `ValidationHarness.evaluate_rule_detection`, which counted a false positive only on the three clean entities and exempted NS05, EG12 and EG10 there. That run had 34 findings for 13 injected defects: honest precision was 38%. The stress report's 60% came from generator artifacts: stress entities spanned ~1 month, so NS08 (6-month completeness) fired on all three, and the "clean" STRESS-03 was one asset with every alert benign and no tickets, i.e. EG05's own defect.
+- **Harness.** Every finding not in the ground truth is now a false positive, split into clean-entity and defect-entity lists, with missed defects named. Report verdicts are computed against targets (they were hardcoded `PASS`), confounder lines are measured rather than fixed prose, and the stability conclusion no longer claims threshold robustness (only domain weights are perturbed).
+- **Lift.** Now alert-for-alert on both sides; queue exhaustion is reported instead of dividing by the full budget. On the corrected data every budget exceeds the 109-alert queue, so the three budgets report the same 10.69x.
+- **Generator bugs fixed.** Alerts now use each entity's own rule catalog (NS05 fired everywhere); critical cases get a containment lifecycle (EG12 fired everywhere); CSE-08's alert renumbering now carries its closures, workflow events and escalations (EG02/EG03 fired on the small-entity confounder); MTTR is declared for High and Critical at healthy values, and CSE-02's EG10 description no longer claims ">200 min actual".
+- **Rule defect fixed.** EG10 compared empirical High+Critical MTTR against whichever severities were declared. It now compares declared severities only, weighted by alert count. `config/rules.yaml` and `docs/analytics_methodology.md` (which described MTTA/SLA reconciliation at 10%) now match the code. NS04's docs no longer claim it detects ID sequence gaps (the ingest DQ check does).
+- **Stress generator.** 6-month span over four assets per entity; STRESS-03 has realistic noise, including near-miss repeat-alert patterns that must not trip EG05.
+- **Shadow pilot.** `ShadowPilotAdapter` now computes workpaper precision from rule-level `not_an_issue` rows and lists unadjudicated findings separately rather than counting them as false positives. Shown in the CLI, the report, the `/shadow-pilot` page and the audit entry.
+- **Fabricated UI numbers removed.** The entity profile's KPI reconciliation panel was hardcoded (CSE-02 always "35 vs 240 min", every other entity "55 vs 52"), and its radar "peer median" was a fixed list. Both are now computed from the data (peer median only with ≥3 peers).
+- **Systemic detector.** `config/systemic.yaml` no longer excludes NS05/EG12/EG10 by default; the exclusion existed only to hide the generator artifacts.
+- **Result.** Primary and stress precision are both 100% with every finding counted. That is not a stronger claim than before: it shows the corrected generator and the rules agree on synthetic data. 8 of 20 rules have no injected defect anywhere. See `docs/validation.md` §0–0.1.
+- **Verified.** Full suite 702 passed / 0 failed / 33 skipped on Python 3.13 from freshly generated data (4 PDF/bundle tests run from a short path because of the Windows 260-character limit in the scratch copy); `satsa validate`, `satsa validate-stress`, ruff and mypy clean. Regression tests: `tests/test_validation_integrity.py`.
