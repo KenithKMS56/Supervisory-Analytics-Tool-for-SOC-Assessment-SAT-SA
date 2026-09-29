@@ -24,10 +24,18 @@ from satsa.models.canonical import (
 )
 from satsa.synth.defects import (
     inject_cse02_kpi_gap,
+    inject_cse02_unreported_incidents,
     inject_cse03_fast_critical_closures,
+    inject_cse03_unacknowledged_escalations,
+    inject_cse05_stale_open_cases,
     inject_cse07_metric_gaming_and_templates,
+    inject_cse07_no_true_positives,
+    inject_cse08_analyst_burst,
     inject_cse08_missing_space,
+    inject_cse09_dormant_rules,
     inject_cse09_repeat_alerts,
+    inject_cse09_skipped_containment,
+    inject_cse10_missing_month,
     inject_cse10_volume_collapse_and_night_flatline,
 )
 from satsa.synth.ground_truth import GroundTruth, InjectedDefect
@@ -769,6 +777,46 @@ class SyntheticDataGenerator:
                 description="Zero 24x7 night activity and 85% mid-period volume collapse.",
             )
         )
+
+        # Defects for the rules the original ground truth never exercised (see defects.py).
+        alerts, cse10_month_info = inject_cse10_missing_month(alerts)
+        coverage_defects = [
+            ("CSE-08", "EG07", "analyst_implausible_throughput",
+             inject_cse08_analyst_burst(alerts, closures, workflows, self.rng),
+             "One analyst closed 35 alerts within a single hour."),
+            ("CSE-03", "EG08", "unacknowledged_escalations",
+             inject_cse03_unacknowledged_escalations(escalations),
+             "Four escalations with no Tier-2 acknowledgement."),
+            ("CSE-05", "EG09", "stale_open_cases",
+             inject_cse05_stale_open_cases(cases),
+             "Four high-severity cases left open for months."),
+            ("CSE-07", "EG11", "no_true_positives",
+             inject_cse07_no_true_positives(alerts, closures),
+             "Every alert closed false positive/benign: no true positive in six months."),
+            ("CSE-09", "EG12", "skipped_containment",
+             inject_cse09_skipped_containment(cases, workflows),
+             "Three critical cases closed without the mandatory 'contain' stage."),
+            ("CSE-09", "NS05", "dormant_detection_rules",
+             inject_cse09_dormant_rules(detection_rules),
+             "25 enabled legacy detection rules that never fired (45% of the catalog)."),
+            ("CSE-02", "NS07", "unreported_critical_incidents",
+             inject_cse02_unreported_incidents(cases, external_reports),
+             "Two critical incidents with no external NCIIPC report."),
+            ("CSE-10", "NS08", "missing_submission_month",
+             cse10_month_info,
+             f"No alerts submitted for June 2026 ({cse10_month_info['dropped_alerts']} alerts withheld)."),
+        ]
+        for entity_id, rule_id, defect_type, info, description in coverage_defects:
+            ground_truth_defects.append(
+                InjectedDefect(
+                    entity_id=entity_id,
+                    rule_id=rule_id,
+                    defect_type=defect_type,
+                    affected_ids=info["affected_ids"],
+                    share=0.0,
+                    description=description,
+                )
+            )
 
         # Build GroundTruth
         ground_truth = GroundTruth(

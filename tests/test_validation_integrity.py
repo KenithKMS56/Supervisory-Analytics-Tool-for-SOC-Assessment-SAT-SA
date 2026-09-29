@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from satsa.rules.registry import RuleRegistry
 from satsa.store.sqlite import SQLiteStore
 from satsa.synth.generator import SyntheticDataGenerator
 from satsa.synth.stress import generate_stress_dataset
@@ -145,11 +146,14 @@ def test_alerts_fire_rules_from_the_entitys_own_catalog(primary):
 
 
 def test_every_critical_case_records_containment(primary):
-    """A missing case lifecycle made EG12 fire on every entity."""
-    data, _ = primary
+    """A missing case lifecycle made EG12 fire on every entity. Only the cases of the
+    injected EG12 defect may skip containment."""
+    data, gt = primary
+    injected = {cid for d in gt.defects if d.rule_id == "EG12" for cid in d.affected_ids}
     contained = {w.ref_id for w in data["workflow_event"] if w.ref_type == "case" and w.action == "contain"}
-    critical = [c.case_id for c in data["case"] if c.severity == "critical"]
-    assert critical and all(cid in contained for cid in critical)
+    critical = {c.case_id for c in data["case"] if c.severity == "critical"}
+    assert injected and injected <= critical
+    assert critical - contained == injected
 
 
 def test_cse08_renumbering_keeps_child_records_attached(primary):
@@ -171,6 +175,21 @@ def test_mttr_is_declared_for_every_severity_eg10_compares(primary):
             declared[k.entity_id].add(k.severity)
     assert all(sev >= {"high", "critical"} for sev in declared.values())
     assert len(declared) == 10
+
+
+def test_every_rule_has_an_injected_defect(primary):
+    """A rule with no injected defect is only ever shown to stay quiet, never to detect.
+    Every registered rule must be exercised by the primary or the stress ground truth."""
+    _, gt = primary
+    _, stress_gt = generate_stress_dataset()
+    covered = {d.rule_id for d in gt.defects} | {d.rule_id for d in stress_gt.defects}
+    registered = {cls.id for cls in RuleRegistry.RULE_CLASSES}
+    assert registered - covered == set()
+
+
+def test_coverage_defects_leave_clean_entities_clean(primary):
+    _, gt = primary
+    assert {d.entity_id for d in gt.defects}.isdisjoint(gt.clean_entities)
 
 
 # ------------------------------------------------------------------ stress generator bugs

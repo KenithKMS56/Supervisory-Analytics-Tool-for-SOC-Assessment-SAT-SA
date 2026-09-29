@@ -24,13 +24,16 @@ Section 2A adds a **stress scenario**: a second synthetic dataset with a borderl
 a case ambiguous between two rules, and a noisy clean entity. It is still built against the rules'
 own thresholds, so it tests threshold behaviour near the edge, not real-world accuracy.
 
+Rule coverage: every one of the 20 rules has at least one injected defect (19 in the primary
+dataset, EG02 in the stress scenario), enforced by `tests/test_validation_integrity.py`. Until
+September 2026, 8 rules (EG07, EG08, EG09, EG11, EG12, NS05, NS07, NS08) had none and were only
+ever shown to stay quiet. Their new defects are, like the rest of Section 2, built to clearly
+exceed each threshold; only EG04 and EG02 are tested near a threshold (Section 2A).
+
 What neither synthetic scenario covers:
-- **8 of the 20 rules have no injected defect in either dataset:** EG07, EG08, EG09, EG11, EG12,
-  NS05, NS07, NS08. Nothing here shows those rules can detect anything; the validation only shows
-  they do not fire on this synthetic data.
 - **Threshold sensitivity.** No rule threshold is perturbed (Section 4 perturbs scoring weights
   only), so nothing here says how precision and recall move as thresholds move.
-- **Scale.** 13 injected (entity, rule) defects and 3 clean entities; one finding more or less moves
+- **Scale.** 21 injected (entity, rule) defects and 3 clean entities; one finding more or less moves
   precision by several points.
 
 ### 0.1 Correction: how precision was previously counted (September 2026)
@@ -77,7 +80,7 @@ deterministic synthetic generator (`satsa generate-data`) that models 10 Critica
 (CSE-01 through CSE-10) over a 6-month period across 5 critical infrastructure sectors.
 
 ### 1.1 Injected Operational Defects (Positive Cases)
-Ground truth injects 13 (entity, rule) defects into 7 entities:
+Ground truth injects 21 (entity, rule) defects into 7 entities:
 - **CSE-02 (Banking Large):** Declared High/Critical MTTR of 35 min against an empirical MTTR of
   roughly 45 min (critical) / 90 min (high) recomputed from its own alert timestamps $\to$ **EG10**.
 - **CSE-03 (Telecom Large):** Premature rubber-stamp closures ($<240$s) $\to$ **EG01**; Critical True Positives closed without escalation $\to$ **EG03**.
@@ -87,6 +90,15 @@ Ground truth injects 13 (entity, rule) defects into 7 entities:
 - **CSE-08 (Telecom Small):** Complete absence of peer threat categories (Malware, DoS, Phishing) $\to$ **NS02**; High/Critical TP alerts with no case record $\to$ **NS04**. (CSE-08 also has an injected alert-ID sequence gap; that is reported by the ingest data-quality checks, not by NS04.)
 - **CSE-09 (Oil & Gas Large):** High repeat alert pairs without root-cause remediation tickets $\to$ **EG05**.
 - **CSE-10 (Transport Small):** Total nighttime logging collapse (zero 24x7 coverage) and mid-period volume drop $\to$ **NS03**.
+
+Added in September 2026 so that every rule has a positive case (each sized to cross only its own rule):
+- **CSE-08:** One analyst closes 35 alerts inside a single hour (spread over distinct minutes, so not EG06's bulk pattern) $\to$ **EG07**.
+- **CSE-03:** Four escalations with no Tier-2 acknowledgement $\to$ **EG08**.
+- **CSE-05:** Four high-severity cases left open for months $\to$ **EG09**.
+- **CSE-07:** No true positive recorded in six months (every alert closed FP/benign) $\to$ **EG11**.
+- **CSE-09:** Three critical cases closed without the mandatory 'contain' stage $\to$ **EG12**; 25 enabled legacy rules that never fired (45% of its catalog) $\to$ **NS05**.
+- **CSE-02:** Two critical incidents with no external NCIIPC report $\to$ **NS07**.
+- **CSE-10:** No alerts submitted for June 2026 $\to$ **NS08**.
 
 ### 1.2 Clean Baselines & Controlled Confounders (Negative Cases)
 - **Clean Baselines (CSE-01, CSE-04, CSE-06):** Entities operating with disciplined triage, timely escalations, balanced dispositions, and consistent 24x7 logging.
@@ -98,15 +110,15 @@ Ground truth injects 13 (entity, rule) defects into 7 entities:
 ## 2. Detector-Implementation Correctness Results (Primary Dataset)
 
 `satsa validate` against the ground truth in Section 1, with every finding counted (see
-Section 0.1). Figures from run `RUN-20260929160403009485-d5980d82`; regenerate with
+Section 0.1). Figures from run `RUN-20260929175400749877-b3723c48`; regenerate with
 `satsa validate`, and see `docs/validation_report.md` for the per-rule table.
 
 | Evaluation Metric | Measured Result | Benchmark Target | Verdict |
 |---|---|---|---|
 | **Entity Rank Precision@7** | **100.0%** (7/7) | $\ge 90.0\%$ | **PASS** |
 | **Entity Rank Recall@7** | **100.0%** (7/7) | $\ge 90.0\%$ | **PASS** |
-| **Injected Defect Recall** | **100.0%** (13/13) | $\ge 90.0\%$ | **PASS** |
-| **Overall Defect Precision** | **100.0%** (13 of 13 findings; 0 false positives on any entity) | $\ge 85.0\%$ | **PASS** |
+| **Injected Defect Recall** | **100.0%** (21/21) | $\ge 90.0\%$ | **PASS** |
+| **Overall Defect Precision** | **100.0%** (21 of 21 findings; 0 false positives on any entity) | $\ge 85.0\%$ | **PASS** |
 | **Overall Defect F1 Score** | **1.0000** | $\ge 0.8500$ | **PASS** |
 | **Ranking Stability (±20% domain weights)** | **Spearman $\rho = 1.0000$ / $1.0000$** | $\ge 0.8500$ | **PASS** |
 | **Cryptographic Audit Chain** | **Intact** | Zero Tampering | **PASS** |
@@ -117,7 +129,7 @@ defect; 0 findings on the small-band entities (CSE-08, CSE-10) for rules not inj
 These are correctness-check results, not a real-world accuracy benchmark; see Section 0.
 
 ### 2.1 Entity Ranking Confirmation
-- **Top 7 Ranked Entities (All Injected):** CSE-02, CSE-03, CSE-07, CSE-08, CSE-09, CSE-05, CSE-10
+- **Top 7 Ranked Entities (All Injected):** CSE-02, CSE-03, CSE-07, CSE-09, CSE-08, CSE-05, CSE-10
 - **Bottom 3 Entities (All Clean Baselines):** CSE-01, CSE-04, CSE-06
 
 *(Exact risk indices vary slightly between regenerations of the synthetic dataset; run `satsa validate` for the current run's numbers.)*
@@ -165,14 +177,17 @@ items and non-alert ground-truth IDs are excluded from both.
 
 | Audit Budget (% of Alerts) | Budget | Queue Alerts Examined | Affected Alerts Found | Queue Hit Rate | Random Sampling Rate | Lift Factor |
 |---|---|---|---|---|---|---|
-| **1%** | 162 | 109 (queue exhausted) | 14 | **12.8%** | 1.20% | **10.69x** |
-| **2%** | 324 | 109 (queue exhausted) | 14 | **12.8%** | 1.20% | **10.69x** |
-| **5%** | 811 | 109 (queue exhausted) | 14 | **12.8%** | 1.20% | **10.69x** |
+| **1%** | 162 | 109 (queue exhausted) | 16 | **14.7%** | 2.67% | **5.50x** |
+| **2%** | 325 | 109 (queue exhausted) | 16 | **14.7%** | 2.67% | **5.50x** |
+| **5%** | 812 | 109 (queue exhausted) | 16 | **14.7%** | 2.67% | **5.50x** |
 
-*Reading this table:* the queue holds only 109 alert items (120 items in total), fewer than even
+*Reading this table:* the queue holds only 109 alert items (134 items in total), fewer than even
 the 1% budget, so every budget examines the whole queue and reports the same figure. The lift is
-therefore "the whole queue vs. random", not a curve over budgets. As with Section 2, treat it as a
-design check of the prioritisation logic on synthetic data, not a real-world lift guarantee.
+therefore "the whole queue vs. random", not a curve over budgets. The figure moves with the ground
+truth: adding the EG11 defect (about 200 CSE-07 alerts relabelled, all counted as affected) raised
+the random baseline from 1.20% to 2.67% and cut lift from 10.69x to 5.50x without any change to the
+queue. As with Section 2, treat it as a design check of the prioritisation logic on synthetic data,
+not a real-world lift guarantee.
 
 *Correction history:* this table previously reported 16.60x (stale, older dataset) and then
 5.97x / 4.13x / 1.65x. The 5.97x-era calculation counted non-alert ground-truth IDs (asset IDs,
@@ -247,7 +262,7 @@ through `satsa validate --shadow-csv` end to end and shows what the adapter repo
 (`data/generated/shadow_pilot_standin.csv`, built by `scripts/build_shadow_standin.py`) is made
 from the synthetic generator's own injected defects, the same `ground_truth.json` that Section 2
 uses, relabelled as workpaper rows:
-- **22 `confirmed` rows**: each of the 13 injected defects, carrying up to 5 of its affected
+- **47 `confirmed` rows**: each of the 21 injected defects, carrying up to 5 of its affected
   record IDs (the first by sort order).
 - **60 rule-level `not_an_issue` rows**: every one of the 20 rules cleared for each of the three
   clean entities (nothing was injected there).
@@ -257,22 +272,24 @@ These are not historical examiner findings. They are also deliberately **not** t
 SAT-SA's own findings: labels copied from the tool's output would make recall and precision 100%
 by construction.
 
-**Result** (primary dataset, run `RUN-20260929160403009485-d5980d82`):
+**Result** (primary dataset, run `RUN-20260929175400749877-b3723c48`):
 
 | Measure | Value | What it means |
 |---|---|---|
-| `rule_finding_recall` | **1.0** (22/22 confirmed rows) | Restates Section 2's 13/13 recall in workpaper form (same ground truth). Not new evidence. |
-| `queue_record_recall` | **0.545** (12/22) | 12 labelled records are in the review queue: 8 CSE-03 alerts (EG01, EG03), two assets (NS01, NS06), a category (NS02) and an asset (EG05). |
-| `workpaper_precision` | **1.0** (13/13 adjudicated findings) | Restates Section 2's precision: the cleared rows come from the same ground truth. Not new evidence. |
+| `rule_finding_recall` | **1.0** (47/47 confirmed rows) | Restates Section 2's 21/21 recall in workpaper form (same ground truth). Not new evidence. |
+| `queue_record_recall` | **0.532** (25/47) | 25 labelled records are in the review queue. |
+| `workpaper_precision` | **1.0** (21/21 adjudicated findings) | Restates Section 2's precision: the cleared rows come from the same ground truth. Not new evidence. |
 | Unadjudicated findings | **0** | The stand-in adjudicates every entity it names; a real workpaper will not. |
 | Cleared records in the queue | **0/15** | None of the individually cleared clean-entity alerts were queued. |
-| Queue coverage of *all* affected IDs | 29/220; at least one queue item for 8 of 13 defects | Computed by the build script over every affected ID, not just the capped sample. |
+| Queue coverage of *all* affected IDs | 44/498; at least one queue item for 13 of 21 defects | Computed by the build script over every affected ID, not just the capped sample. |
 
 **Reading the queue figure.** The review queue samples up to 30 items per entity (70% top-risk,
-30% stratified random; 120 items in this run). It is built to put *examples* of each triggered rule
+30% stratified random; 134 items in this run). It is built to put *examples* of each triggered rule
 in front of an examiner, not to list every affected record, so record-level recall is expected to be
-low for large defects: 14 of the 195 EG01 fast-closure alerts are queued. Entity-level defects such
-as EG10, EG04, EG06, NS03 and NS04 have marker IDs that are not queue records.
+low for large defects: 14 of the 195 EG01 fast-closure alerts and 2 of the 204 EG11 relabelled
+alerts are queued. EG07's burst alerts (0/35) are not queued because EG07's evidence is the analyst,
+not the alerts, and NS05's dormant rules (0/25) are not queue records. Entity-level defects such as
+EG10, EG04, EG06, NS03, NS04 and NS08 have marker IDs that are not queue records.
 
 **What still requires real data.** Actual historical NCIIPC/CSE examiner workpapers. Until
 SAT-SA is run against those, this section and Sections 2 and 2A are synthetic only.
