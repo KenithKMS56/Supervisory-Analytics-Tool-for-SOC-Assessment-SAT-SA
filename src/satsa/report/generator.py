@@ -29,7 +29,6 @@ from satsa.report.pdf_charts import (
 from satsa.report.pdf_layout import (
     CONTENT_W,
     INK,
-    NOTICE,
     PANEL,
     RULE,
     STYLES,
@@ -349,8 +348,6 @@ class ReportGenerator:
                 ),
                 st["lead"],
             ),
-            Spacer(1, 4),
-            Paragraph(esc(NOTICE), st["notice"]),
             Spacer(1, 10),
         ]
         big = ParagraphStyle(
@@ -829,7 +826,6 @@ class ReportGenerator:
             )
             for b in benign:
                 story.append(Paragraph(esc(b), st["body"], bulletText="•"))
-        story += [Spacer(1, 10), Paragraph(esc(NOTICE), st["notice"])]
 
         return build_pdf(
             path, story, meta, f"Finding Report  |  {f['entity_id']}  |  {f['rule_id']}"

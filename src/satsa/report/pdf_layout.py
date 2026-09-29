@@ -48,9 +48,6 @@ RULE = colors.HexColor("#e2e8f0")
 PANEL = colors.HexColor("#f8fafc")
 TECH_BG = colors.HexColor("#f1f5f9")
 TECH_BORDER = colors.HexColor("#cbd5e1")
-NOTICE_RED = colors.HexColor("#b91c1c")
-
-NOTICE = "Indicators requiring supervisory review; not a compliance determination."
 
 
 def esc(value: Any) -> str:
@@ -79,7 +76,6 @@ STYLES: dict[str, ParagraphStyle] = {
     "body": _style("body"),
     "lead": _style("lead", fontSize=10.5, leading=15, textColor=MUTED),
     "small": _style("small", fontSize=8, leading=10.5, textColor=MUTED),
-    "notice": _style("notice", fontName="Helvetica-Bold", fontSize=8.5, textColor=NOTICE_RED),
     "headline": _style(
         "headline", fontName="Helvetica-Bold", fontSize=12.5, leading=16.5, textColor=INK
     ),
@@ -133,21 +129,11 @@ class _NumberedCanvas(rl_canvas.Canvas):
 
 
 def _draw_footer(c: rl_canvas.Canvas, meta: RunMeta) -> None:
+    """A plain rule above the page number; the footer carries no wording."""
     y = MARGIN_BOTTOM - 8 * mm
     c.setStrokeColor(RULE)
     c.setLineWidth(0.8)
     c.line(MARGIN_X, y + 10, PAGE_W - MARGIN_X, y + 10)
-    c.setFont("Helvetica-Bold", 7.5)
-    c.setFillColor(NOTICE_RED)
-    c.drawString(MARGIN_X, y, NOTICE)
-    c.setFont("Helvetica", 7)
-    c.setFillColor(MUTED)
-    c.drawString(
-        MARGIN_X,
-        y - 6 * mm + 4,
-        f"Run {meta.run_id}  |  Config {meta.config_hash}  |  Generated {meta.created_at}"
-        "  |  Offline engine",
-    )
 
 
 def _draw_header(c: rl_canvas.Canvas, report_label: str) -> None:
