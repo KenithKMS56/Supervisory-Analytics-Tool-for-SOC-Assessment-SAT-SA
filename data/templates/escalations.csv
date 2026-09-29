@@ -1,2 +1,0 @@
-escalation_id,alert_id,case_id,entity_id,from_tier,to_tier,escalated_at,acknowledged_at,outcome
-ESC-001,ALT-001,CAS-001,CSE-01,Tier-1,Tier-2,2026-01-15T08:36:00Z,2026-01-15T08:42:00Z,contained

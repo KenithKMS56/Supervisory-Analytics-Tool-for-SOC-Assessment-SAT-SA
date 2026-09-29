@@ -27,6 +27,7 @@
   </main>
 
   {% set current_identity = get_identity(request) %}
+  {% set nav_is_analyst = current_identity and is_analyst(current_identity.role) %}
   {% if current_identity and not hide_nav %}
   <!-- iOS 26 Inspired Floating Fixed Bottom Navigation Bar -->
   <nav class="floating-bottom-nav" id="floatingBottomNav" aria-label="Primary Application Navigation">
@@ -43,6 +44,9 @@
         <span class="nav-text">Portfolio</span>
       </a>
 
+      {# Role-adaptive nav: the engine-room pages are the analyst's only; the
+         examiner's workspace is portfolio, entities, review queue and blind review. #}
+      {% if nav_is_analyst %}
       <!-- 2. Alert Explorer -->
       <a href="/alerts" class="floating-nav-item {% if active_tab == 'alerts' %}active{% endif %}" title="Alert Explorer">
         <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -51,6 +55,7 @@
         </svg>
         <span class="nav-text">Alert Explorer</span>
       </a>
+      {% endif %}
 
       <!-- 3. Review Queue -->
       <a href="/queue" class="floating-nav-item {% if active_tab == 'queue' %}active{% endif %}" title="Review Queue">
@@ -61,6 +66,7 @@
         <span class="nav-text">Review Queue</span>
       </a>
 
+      {% if nav_is_analyst %}
       <!-- 4. Upload & Ingest -->
       <a href="/upload" class="floating-nav-item {% if active_tab == 'upload' %}active{% endif %}" title="Upload & Ingest">
         <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -70,6 +76,7 @@
         </svg>
         <span class="nav-text">Upload &amp; Ingest</span>
       </a>
+      {% endif %}
 
       <!-- 5. Configuration & Audit Popover Menu -->
       <div class="floating-nav-item-wrapper floating-nav-config" id="navConfig">
@@ -79,12 +86,12 @@
                 aria-haspopup="true"
                 aria-expanded="false"
                 onclick="satsaToggleConfigMenu(event)"
-                title="Configuration &amp; Audit">
+                title="{% if nav_is_analyst %}Configuration &amp; Audit{% else %}Review Tools{% endif %}">
           <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
           </svg>
-          <span class="nav-text">Config &amp; Audit</span>
+          <span class="nav-text">{% if nav_is_analyst %}Config &amp; Audit{% else %}Review Tools{% endif %}</span>
           <svg class="floating-nav-caret" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
             <polyline points="18 15 12 9 6 15"></polyline>
           </svg>
@@ -95,6 +102,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
             Blind Review
           </a></li>
+          {% if nav_is_analyst %}
           <li role="none"><a role="menuitem" href="/rules" class="{% if active_tab == 'rules' %}active{% endif %}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
             Rules Catalog
@@ -111,6 +119,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 14 14"></polyline></svg>
             Runs &amp; Audit
           </a></li>
+          {% endif %}
 
           <!-- Air-Gapped Status & Theme Settings inside Popover -->
           <li role="none" class="floating-nav-popover-meta">
@@ -151,6 +160,7 @@
       {% if current_identity %}
         <div class="floating-nav-identity" title="Logged in as {{ current_identity.username }} ({{ current_identity.role }}){% if current_identity.cse_id %} | Scoped: {{ current_identity.cse_id }}{% endif %}{% if current_identity.org_id %} | Org: {{ current_identity.org_name or current_identity.org_id }}{% endif %}">
           <span class="floating-nav-user-chip">{{ current_identity.username }}</span>
+          <span style="font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: rgba(59, 130, 246, 0.12); color: var(--accent-blue); font-weight: 600;">{% if nav_is_analyst %}NCIIPC Analyst{% elif is_examiner(current_identity.role) %}NCIIPC Examiner{% else %}{{ current_identity.role }}{% endif %}</span>
           {% if current_identity.cse_id %}
             <span style="font-size: 0.65rem; padding: 2px 5px; border-radius: 4px; background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); font-family: 'JetBrains Mono', monospace; font-weight: 600;" title="Scoped CSE: {{ current_identity.cse_id }}">{{ current_identity.cse_id }}</span>
           {% endif %}

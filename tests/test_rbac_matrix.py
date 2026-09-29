@@ -5,7 +5,7 @@ an explicit {(method, path): allowed_roles} table below; a completeness check
 fails if a route is added without being classified, so nothing can slip in
 ungated by accident.
 
-For every route x role in {anonymous, examiner, supervisor, admin}:
+For every route x role in {anonymous, examiner, analyst, admin}:
   - anonymous on a gated route -> 401 (or a 303 to /login for browser page GETs)
   - a role not in the table's allowed set -> 403
   - an allowed role -> anything except 401/403
@@ -27,14 +27,17 @@ from satsa.admin.routes import ADMIN_COOKIE_NAME
 from satsa.api.routes import app as satsa_app
 from satsa.store.sqlite import SQLiteStore
 
-ROLES = ("anonymous", "examiner", "supervisor", "admin")
+ROLES = ("anonymous", "examiner", "analyst", "admin")
 PUBLIC = "PUBLIC"
-ALL = frozenset({"examiner", "supervisor", "admin"})  # every signed-in NCIIPC role
+# SAT-SA's two operators. `admin` works the Admin Portal only and is refused on
+# every gated SAT-SA route.
+ALL = frozenset({"examiner", "analyst"})
 SUP_READ = ALL
-REVIEW = ALL
-INGEST = frozenset({"supervisor", "admin"})
-TUNING = frozenset({"supervisor", "admin"})
-RULEPACK = frozenset({"supervisor", "admin"})
+ANALYST = frozenset({"analyst"})  # engine room: ingest, runs, tuning, raw telemetry, audit
+REVIEW = frozenset({"examiner"})  # review decisions (separation of duties)
+INGEST = ANALYST
+TUNING = ANALYST
+RULEPACK = ANALYST
 ADMIN_ONLY = frozenset({"admin"})
 
 # (method, path) -> (allowed roles or PUBLIC, is_browser_page)
@@ -49,26 +52,28 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("GET", "/entity/{entity_id}"): (ALL, True),
     ("GET", "/finding/{finding_id}"): (ALL, True),
     ("GET", "/queue"): (ALL, True),
-    ("GET", "/dq"): (ALL, True),
-    ("GET", "/audit"): (ALL, True),
-    ("GET", "/runs"): (ALL, True),
-    ("GET", "/alerts"): (ALL, True),
-    ("GET", "/upload"): (ALL, True),
+    ("GET", "/dq"): (ANALYST, True),
+    ("GET", "/audit"): (ANALYST, True),
+    ("GET", "/runs"): (ANALYST, True),
+    ("GET", "/alerts"): (ANALYST, True),
+    ("GET", "/upload"): (ANALYST, True),
     ("GET", "/blind-review"): (ALL, True),
-    ("GET", "/rules"): (ALL, True),
-    ("GET", "/tuning"): (ALL, True),
-    ("GET", "/templates/{template_name}"): (ALL, False),
+    ("GET", "/rules"): (ANALYST, True),
+    ("GET", "/tuning"): (ANALYST, True),
+    ("GET", "/templates/{template_name}"): (ANALYST, False),
     ("GET", "/reports/entity/{entity_id}/pdf"): (ALL, False),
     ("GET", "/reports/entity/{entity_id}/html"): (ALL, False),
     ("GET", "/api/v1/runs"): (SUP_READ, False),
     ("GET", "/api/v1/entities"): (SUP_READ, False),
     ("GET", "/api/v1/findings"): (SUP_READ, False),
     ("GET", "/api/v1/queue"): (SUP_READ, False),
-    ("GET", "/api/v1/audit/verify"): (SUP_READ, False),
-    ("GET", "/api/v1/export/queue.csv"): (SUP_READ, False),
+    ("GET", "/api/v1/audit/verify"): (ANALYST, False),
+    ("GET", "/api/v1/export/queue.csv"): (ANALYST, False),
     ("GET", "/reports/portfolio/html"): (SUP_READ, False),
-    ("GET", "/reports/export/findings-csv"): (SUP_READ, False),
-    ("GET", "/reports/export/queue-csv"): (SUP_READ, False),
+    ("GET", "/reports/portfolio/pdf"): (SUP_READ, False),
+    ("GET", "/reports/finding/{finding_id}/pdf"): (SUP_READ, False),
+    ("GET", "/reports/export/findings-csv"): (ANALYST, False),
+    ("GET", "/reports/export/queue-csv"): (ANALYST, False),
     ("POST", "/api/v1/feedback"): (REVIEW, False),
     ("POST", "/blind-review/submit"): (REVIEW, False),
     ("POST", "/upload"): (INGEST, False),
@@ -140,8 +145,7 @@ def _check(resp, allowed, is_page, role):
 
 SATSA_PASSWORDS = {
     "examiner": "ChangeMe-Examiner#2026",
-    "supervisor": "ChangeMe-Supervisor#2026",
-    "admin": "ChangeMe-Admin#2026",
+    "analyst": "ChangeMe-Analyst#2026",
 }
 
 
@@ -151,8 +155,16 @@ def satsa_clients():
     for role, pw in SATSA_PASSWORDS.items():
         c = TestClient(satsa_app)
         r = c.post("/login", data={"username": role, "password": pw}, follow_redirects=False)
-        assert r.status_code == 303
+        assert r.status_code == 303 and "error" not in r.headers["location"]
         clients[role] = c
+    # Admins are refused at SAT-SA's /login, so the admin client carries a
+    # directly created session: a stale or forged one must still be refused.
+    store = SQLiteStore("data/satsa.db")
+    token = store.create_session("admin", "admin")
+    store.close()
+    admin = TestClient(satsa_app)
+    admin.cookies.set(satsa_routes.SESSION_COOKIE_NAME, token)
+    clients["admin"] = admin
     return clients
 
 
@@ -234,13 +246,13 @@ def admin_env(tmp_path_factory):
     store.seed_default_organisations_and_cses()
     store.seed_default_admin()
     store.create_user("rbac_examiner", "examiner", "Passphrase#12345")
-    store.create_user("rbac_supervisor", "supervisor", "Passphrase#12345")
+    store.create_user("rbac_analyst", "analyst", "Passphrase#12345")
     store.create_user("rbac_target", "examiner", "Passphrase#12345")
     tokens = {
-        # Sessions are created directly: examiners/supervisors can't log in to
+        # Sessions are created directly: examiners/analysts can't log in to
         # the portal, but a stale or forged session must still be refused.
         "examiner": store.create_admin_session("rbac_examiner", "examiner"),
-        "supervisor": store.create_admin_session("rbac_supervisor", "supervisor"),
+        "analyst": store.create_admin_session("rbac_analyst", "analyst"),
         "admin": store.create_admin_session("nciipc_admin", "NCIIPC Super Administrator"),
     }
     yield store, tokens
@@ -269,7 +281,7 @@ def test_admin_rbac(route, role, admin_env):
     _check(resp, allowed, is_page, role)
 
 
-@pytest.mark.parametrize("role", ["anonymous", "examiner", "supervisor"])
+@pytest.mark.parametrize("role", ["anonymous", "examiner", "analyst"])
 def test_admin_websocket_refuses_non_admin(role, admin_env):
     client = _admin_client(admin_env, role)
     with pytest.raises(WebSocketDisconnect) as exc, client.websocket_connect("/ws/activity"):
@@ -283,11 +295,11 @@ def test_admin_websocket_accepts_admin(admin_env):
         assert ws is not None
 
 
-def test_supervisor_cannot_log_in_to_admin_portal(admin_env):
+def test_analyst_cannot_log_in_to_admin_portal(admin_env):
     store, _ = admin_env
     admin_app.state.store = store
     resp = TestClient(admin_app).post(
-        "/login", data={"username": "rbac_supervisor", "password": "Passphrase#12345"}
+        "/login", data={"username": "rbac_analyst", "password": "Passphrase#12345"}
     )
     assert resp.status_code == 401
     assert "Invalid administrative credentials" in resp.text

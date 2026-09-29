@@ -4,10 +4,12 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
 import shutil
 import tempfile
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -19,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from satsa.admin.rbac import SATSA_OPERATOR_ROLES, is_analyst, is_examiner
 from satsa.auth.session import (
     SESSION_COOKIE_NAME,
     Identity,
@@ -29,26 +32,38 @@ from satsa.auth.session import (
 )
 from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
 from satsa.explain.finding_card import FindingCard
-from satsa.ingest.pipeline import IngestionPipeline
+from satsa.ingest.pipeline import IngestionPipeline, default_entity_record
 from satsa.models.outputs import ExaminerFeedback
-from satsa.report.generator import ReportGenerator
+from satsa.report.generator import ReportGenerator, ReportNotFoundError
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
-from satsa.security import is_valid_entity_id, safe_archive_member, safe_join
+from satsa.security import (
+    is_valid_entity_id,
+    is_valid_finding_id,
+    is_valid_run_id,
+    safe_archive_member,
+    safe_join,
+)
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
 from satsa.synth.generator import SyntheticDataGenerator
 
 # Roles permitted for each protected action category, matching
-# docs/functional_design.md Section 2 (User Personas & Permissions).
-INGEST_RUN_ROLES = ("admin", "supervisor")
-TUNING_ROLES = ("admin", "supervisor")
-RULEPACK_ROLES = ("admin", "supervisor")
-REVIEW_ROLES = ("examiner", "supervisor", "admin")
-# Portfolio-wide data (bulk JSON APIs, portfolio/CSV exports) spans every
-# entity, so it is limited to NCIIPC supervisory roles; CSE-scoped identities
-# (SOC Analyst, CSE Viewer, ...) are denied rather than shown other CSEs' data.
-SUPERVISORY_READ_ROLES = ("examiner", "supervisor", "admin")
+# docs/functional_design.md Section 2 (User Personas & Permissions). SAT-SA has
+# two operators: the analyst runs the pipeline (ingest, runs, tuning, raw
+# telemetry, audit ledger) and the examiner makes the review decisions. Keeping
+# the two apart is deliberate separation of duties: whoever tunes the rules
+# can't also sign off the findings. Administrators use the Admin Portal (:8000)
+# and are refused here (see enforce_auth_middleware and handle_login).
+ANALYST_ROLES = ("analyst",)
+INGEST_RUN_ROLES = ANALYST_ROLES
+TUNING_ROLES = ANALYST_ROLES
+RULEPACK_ROLES = ANALYST_ROLES
+REVIEW_ROLES = ("examiner",)
+# Executive views, dossiers and read APIs, open to both operators.
+SUPERVISORY_READ_ROLES = ("analyst", "examiner")
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="SAT-SA Supervisory API",
@@ -68,6 +83,10 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # (or lack thereof) in the nav bar without every route handler needing to
 # thread it through its own context dict.
 templates.env.globals["get_identity"] = get_current_identity
+# Role-adaptive views: templates decide what to show from these, never from
+# raw role strings, so every alias of a role (e.g. "NCIIPC Analyst") matches.
+templates.env.globals["is_analyst"] = is_analyst
+templates.env.globals["is_examiner"] = is_examiner
 
 
 # Paths anyone may reach without a session. Everything else requires one; the
@@ -78,6 +97,10 @@ PUBLIC_PREFIXES = ("/static/", "/docs")
 # Non-page GET endpoints (JSON APIs and file downloads): an anonymous request
 # gets 401 rather than a login redirect.
 NON_PAGE_PREFIXES = ("/api/", "/reports/", "/templates/", "/tuning/export-pack")
+NOT_SATSA_OPERATOR = (
+    "This account is not a SAT-SA operator account (analyst or examiner). "
+    "NCIIPC administrators use the Admin Portal at :8000."
+)
 
 
 def _is_public_path(path: str) -> bool:
@@ -97,7 +120,8 @@ async def enforce_auth_middleware(request: Request, call_next):
     if _is_public_path(path):
         return await call_next(request)
 
-    if get_current_identity(request) is None:
+    identity = get_current_identity(request)
+    if identity is None:
         if request.method == "GET" and not path.startswith(NON_PAGE_PREFIXES):
             import urllib.parse
 
@@ -106,6 +130,11 @@ async def enforce_auth_middleware(request: Request, call_next):
         return JSONResponse(
             {"detail": "Authentication required. Please log in at /login."}, status_code=401
         )
+    # Only the two SAT-SA operator roles get past here. A session held by any
+    # other role (an administrator, a CSE-scoped account, or one opened before
+    # it was refused at login) is denied on every gated path.
+    if identity.role not in SATSA_OPERATOR_ROLES:
+        return JSONResponse({"detail": NOT_SATSA_OPERATOR}, status_code=403)
 
     return await call_next(request)
 
@@ -277,6 +306,16 @@ async def handle_login(
         )
         return RedirectResponse(
             url=f"/login?error={err_msg}&blocked=1&next={safe_next}", status_code=303
+        )
+
+    if identity_row["role"] not in SATSA_OPERATOR_ROLES:
+        sqlite_store.append_audit(
+            action="login_denied_role", actor=uname, details={"role": identity_row["role"]}
+        )
+        sqlite_store.close()
+        return RedirectResponse(
+            url=f"/login?error={urllib.parse.quote_plus(NOT_SATSA_OPERATOR)}&next={safe_next}",
+            status_code=303,
         )
 
     token = sqlite_store.create_session(identity_row["username"], identity_row["role"])
@@ -762,7 +801,7 @@ async def view_review_queue(request: Request) -> Response:
     )
 
 
-@app.get("/dq", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
+@app.get("/dq", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_dq_coverage(request: Request) -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -798,8 +837,8 @@ async def view_dq_coverage(request: Request) -> Response:
     )
 
 
-@app.get("/audit", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
-@app.get("/runs", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
+@app.get("/audit", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
+@app.get("/runs", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_runs_audit(request: Request) -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -926,7 +965,7 @@ async def api_submit_feedback(
     return RedirectResponse(url="/queue", status_code=303)
 
 
-@app.get("/api/v1/audit/verify", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
+@app.get("/api/v1/audit/verify", dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def api_verify_audit() -> dict[str, Any]:
     _, sqlite_store = get_stores()
     ok, msg = sqlite_store.verify_audit_chain()
@@ -934,7 +973,7 @@ async def api_verify_audit() -> dict[str, Any]:
     return {"verified": ok, "message": msg}
 
 
-@app.get("/api/v1/export/queue.csv", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
+@app.get("/api/v1/export/queue.csv", dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def api_export_queue_csv() -> Response:
     _, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -959,7 +998,7 @@ async def api_export_queue_csv() -> Response:
 # --- Production Features: Alert Explorer, Ingest Wizard, Blind Review, Tuning & Direct Reports ---
 
 
-@app.get("/alerts", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
+@app.get("/alerts", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_alerts(
     request: Request,
     q: str = "",
@@ -1062,7 +1101,7 @@ async def view_alerts(
     )
 
 
-@app.get("/upload", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
+@app.get("/upload", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_upload(request: Request, message: str = "") -> Response:
     duckdb_store, sqlite_store = get_stores()
     cur = sqlite_store.conn.cursor()
@@ -1253,7 +1292,7 @@ async def handle_delete_entity(
     )
 
 
-@app.get("/templates/{template_name}", dependencies=[Depends(require_authenticated)])
+@app.get("/templates/{template_name}", dependencies=[Depends(require_role(*ANALYST_ROLES))])
 def download_template(template_name: str) -> Response:
     """Generate and serve canonical CSV schema templates or sample zip bundle."""
     templates_dir = Path("data/templates")
@@ -1395,6 +1434,13 @@ def handle_upload(
                     f"Batch ingested successfully! [{row_str}] | Entities: {detected} | "
                     f"Assessment: {run_res.get('findings_count', 0)} findings flagged."
                 )
+                skipped = res.get("unattributed_rows") or {}
+                if skipped:
+                    counts = ", ".join(f"{t}: {n}" for t, n in sorted(skipped.items()))
+                    msg += (
+                        f" | Warning: rows with no entity_id were not stored [{counts}]; "
+                        "add an entity_id column or choose a target entity."
+                    )
     except (ValueError, KeyError, OSError, RuntimeError) as e:
         msg = f"Ingestion error: {e}"
     finally:
@@ -1616,7 +1662,7 @@ async def handle_blind_review_submit(
     return RedirectResponse(url=f"/blind-review?entity_id={entity_id}", status_code=303)
 
 
-@app.get("/rules", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
+@app.get("/rules", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_rules_catalog(
     request: Request, category: str = "", domain: str = "", q: str = ""
 ) -> Response:
@@ -1764,7 +1810,7 @@ def _tunable_param_rows(rules_cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-@app.get("/tuning", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
+@app.get("/tuning", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_tuning(request: Request, message: str = "") -> Response:
     rules_cfg = _load_rules_config()
     config_hash = (
@@ -1898,24 +1944,122 @@ def handle_import_pack(
 # --- Direct Report Downloads ---
 
 
+REPORTS_DIR = Path("reports")
+_REPORT_NOT_FOUND_DETAIL = {
+    "Entity": "Entity not found",
+    "Finding": "Finding not found",
+    "Assessment run": "Assessment run not found",
+    "Report data": "No assessment results stored for this run",
+}
+
+
+def require_valid_run_id(run_id: str | None) -> str | None:
+    """Reject an externally supplied run_id that fails satsa.security.RUN_ID_RE (HTTP 400)."""
+    if run_id is not None and not is_valid_run_id(run_id):
+        raise HTTPException(status_code=400, detail="Invalid run_id.")
+    return run_id
+
+
+def _pdf_response(
+    request: Request,
+    report_kind: str,
+    prepare: Callable[[ReportGenerator], tuple[str, Callable[[Path], Path]]],
+    entity_id: str | None = None,
+) -> FileResponse:
+    """Build a PDF report and return it as a download, with clean 404/500 errors.
+
+    `prepare` resolves the report's data (raising ReportNotFoundError or an
+    HTTPException) and returns the download filename plus a build function.
+    The filename contains only validated IDs; the file is built atomically, so a
+    failure never leaves a partial PDF behind.
+    """
+    duckdb_store, sqlite_store = get_stores()
+    try:
+        rep = ReportGenerator(duckdb_store, sqlite_store)
+        try:
+            filename, build = prepare(rep)
+            out_path = safe_join(REPORTS_DIR, filename)
+            build(out_path)
+        except ReportNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail=_REPORT_NOT_FOUND_DETAIL.get(exc.what, "Not found")
+            ) from None
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("PDF report generation failed (%s)", report_kind)
+            raise HTTPException(status_code=500, detail="Report generation failed.") from None
+        identity = get_current_identity(request)
+        actor = identity.username if identity else "operator"
+        role = identity.role if identity else "examiner"
+        for event in ("REPORT_GENERATED", "REPORT_DOWNLOADED"):
+            sqlite_store.record_live_event(
+                event, actor=actor, role=role, entity_id=entity_id, details={"report": report_kind}
+            )
+    finally:
+        duckdb_store.close()
+        sqlite_store.close()
+
+    return FileResponse(path=out_path, filename=filename, media_type="application/pdf")
+
+
 @app.get("/reports/entity/{entity_id}/pdf", dependencies=[Depends(require_authenticated)])
-async def download_entity_pdf(request: Request, entity_id: str) -> FileResponse:
+async def download_entity_pdf(
+    request: Request, entity_id: str, run_id: str | None = None
+) -> FileResponse:
     require_valid_entity_id(entity_id)
+    require_valid_run_id(run_id)
     identity = get_current_identity(request)
     if identity:
         require_cse_access(entity_id, identity)
-    duckdb_store, sqlite_store = get_stores()
-    rep = ReportGenerator(duckdb_store, sqlite_store)
-    pdf_path = Path(f"reports/{entity_id}_supervisory_report.pdf")
-    rep.generate_entity_pdf(entity_id, pdf_path)
-    duckdb_store.close()
-    sqlite_store.close()
 
-    return FileResponse(
-        path=pdf_path,
-        filename=f"{entity_id}_NCIIPC_Supervisory_Report.pdf",
-        media_type="application/pdf",
-    )
+    def prepare(rep: ReportGenerator) -> tuple[str, Callable[[Path], Path]]:
+        meta = rep.resolve_run(run_id)
+        return (
+            f"SAT-SA_CSE_{entity_id}_Report_{meta.run_id}.pdf",
+            lambda path: rep.generate_entity_pdf(entity_id, path, meta.run_id),
+        )
+
+    return _pdf_response(request, "entity_pdf", prepare, entity_id=entity_id)
+
+
+@app.get("/reports/portfolio/pdf", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
+async def download_portfolio_pdf(request: Request, run_id: str | None = None) -> FileResponse:
+    require_valid_run_id(run_id)
+
+    def prepare(rep: ReportGenerator) -> tuple[str, Callable[[Path], Path]]:
+        meta = rep.resolve_run(run_id)
+        return (
+            f"SAT-SA_Portfolio_Report_{meta.run_id}.pdf",
+            lambda path: rep.generate_portfolio_pdf(path, meta.run_id),
+        )
+
+    return _pdf_response(request, "portfolio_pdf", prepare)
+
+
+@app.get(
+    "/reports/finding/{finding_id}/pdf",
+    dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))],
+)
+async def download_finding_pdf(request: Request, finding_id: str) -> FileResponse:
+    if not is_valid_finding_id(finding_id):
+        raise HTTPException(status_code=400, detail="Invalid finding_id.")
+    identity = get_current_identity(request)
+
+    def prepare(rep: ReportGenerator) -> tuple[str, Callable[[Path], Path]]:
+        row = rep.sqlite_store.conn.execute(
+            "SELECT entity_id FROM findings WHERE finding_id = ?", (finding_id,)
+        ).fetchone()
+        if row is None:
+            raise ReportNotFoundError("Finding")
+        if identity:
+            require_cse_access(row["entity_id"], identity)
+        return (
+            f"SAT-SA_Finding_{finding_id}.pdf",
+            lambda path: rep.generate_finding_pdf(finding_id, path),
+        )
+
+    return _pdf_response(request, "finding_pdf", prepare)
 
 
 @app.get("/reports/entity/{entity_id}/html", dependencies=[Depends(require_authenticated)])
@@ -1963,7 +2107,7 @@ async def download_portfolio_html(request: Request) -> FileResponse:
     )
 
 
-@app.get("/reports/export/findings-csv", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
+@app.get("/reports/export/findings-csv", dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def download_findings_csv(request: Request) -> FileResponse:
     duckdb_store, sqlite_store = get_stores()
     rep = ReportGenerator(duckdb_store, sqlite_store)
@@ -1984,7 +2128,7 @@ async def download_findings_csv(request: Request) -> FileResponse:
     )
 
 
-@app.get("/reports/export/queue-csv", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
+@app.get("/reports/export/queue-csv", dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def download_queue_csv() -> FileResponse:
     duckdb_store, sqlite_store = get_stores()
     rep = ReportGenerator(duckdb_store, sqlite_store)
@@ -2038,9 +2182,9 @@ async def api_batch_submission(
     submitted exactly once. A repeat submission for the same entity and period is
     rejected with HTTP 409, so the endpoint cannot be used as a continuous
     collection channel. Corrections to an already-submitted period go through a
-    supervised re-ingest (/upload) by an admin or supervisor.
+    supervised re-ingest (/upload) by an analyst.
 
-    Requires an authenticated admin/supervisor session (POST /login first and
+    Requires an authenticated analyst session (POST /login first and
     retain the session cookie).
     """
     clean_id = payload.entity_id.strip().upper()
@@ -2067,6 +2211,8 @@ async def api_batch_submission(
                 ),
             )
         ingested_counts: dict[str, int] = {}
+        submitted_eids: set[str] = set()
+        new_entities: list[dict[str, Any]] = []
         try:
             # canonical DuckDB table for each payload section
             for section, table, rows in (
@@ -2080,8 +2226,17 @@ async def api_batch_submission(
                 for r in rows:
                     if not r.get("entity_id"):
                         r["entity_id"] = clean_id
+                    submitted_eids.add(str(r["entity_id"]))
                 duckdb_store.write_partitioned_parquet(table, pl.DataFrame(rows))
                 ingested_counts[section] = len(rows)
+
+            # The assessment (and so every UI view) only covers registered
+            # entities, so a CSE first seen in this batch is registered here,
+            # exactly as the /upload pipeline auto-registers one.
+            registered = set(duckdb_store.query("SELECT entity_id FROM entity")["entity_id"].to_list())
+            new_entities = [default_entity_record(e) for e in sorted(submitted_eids - registered)]
+            if new_entities:
+                duckdb_store.write_partitioned_parquet("entity", pl.DataFrame(new_entities))
         except Exception:
             # Nothing usable was stored: free the slot so the batch can be resubmitted.
             sqlite_store.release_batch_submission(clean_id, payload.period)
@@ -2090,7 +2245,12 @@ async def api_batch_submission(
         sqlite_store.append_audit(
             action="api_batch_submission",
             actor=identity.username,
-            details={"entity_id": clean_id, "period": payload.period, "ingested_counts": ingested_counts},
+            details={
+                "entity_id": clean_id,
+                "period": payload.period,
+                "ingested_counts": ingested_counts,
+                "entities_registered": [e["entity_id"] for e in new_entities],
+            },
         )
 
         run_id = None

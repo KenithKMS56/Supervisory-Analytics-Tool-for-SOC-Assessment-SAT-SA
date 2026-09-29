@@ -188,6 +188,47 @@ class SQLiteStore:
                 )
                 """
             )
+        if "identities" in tables:
+            self._migrate_supervisor_to_analyst()
+
+    def _migrate_supervisor_to_analyst(self) -> None:
+        """Rename the legacy `supervisor` role to `analyst` (SAT-SA's technical operator).
+
+        The untouched demo account (username `supervisor`, default passphrase) also
+        becomes username `analyst` with the new default passphrase; an account whose
+        passphrase was rotated keeps its username. Audit rows are left as they are:
+        rewriting historical actors would break the hash chain.
+        """
+        from satsa.auth.identities import generate_salt, hash_passphrase, verify_passphrase
+
+        cur = self.conn.cursor()
+        # Checked before the role rewrite below, so the PBKDF2 verify runs at most once.
+        cur.execute(
+            "SELECT pass_hash, pass_salt FROM identities WHERE username = 'supervisor' AND role = 'supervisor'"
+        )
+        demo = cur.fetchone()
+        cur.execute("SELECT 1 FROM identities WHERE username = 'analyst'")
+        analyst_exists = cur.fetchone() is not None
+        with self.conn:
+            if (
+                demo is not None
+                and not analyst_exists
+                and verify_passphrase("ChangeMe-Supervisor#2026", demo["pass_salt"], demo["pass_hash"])
+            ):
+                salt = generate_salt()
+                self.conn.execute("DELETE FROM sessions WHERE username = 'supervisor'")
+                self.conn.execute("DELETE FROM admin_sessions WHERE username = 'supervisor'")
+                self.conn.execute(
+                    "UPDATE identities SET username = 'analyst', pass_hash = ?, pass_salt = ? "
+                    "WHERE username = 'supervisor'",
+                    (hash_passphrase("ChangeMe-Analyst#2026", salt), salt.hex()),
+                )
+            self.conn.execute(
+                "UPDATE identities SET role = 'analyst' WHERE role IN ('supervisor', 'NCIIPC_SUPERVISOR')"
+            )
+            self.conn.execute(
+                "UPDATE identities SET role = 'NCIIPC Analyst' WHERE role = 'NCIIPC Supervisor'"
+            )
 
     def _init_tables(self) -> None:
         """Create tables if not existing."""
@@ -648,7 +689,7 @@ class SQLiteStore:
     # --- Auth: Identities & Sessions (local, offline RBAC) ---
 
     def seed_default_identities(self) -> bool:
-        """Seed the built-in demo admin/supervisor/examiner identities if the table is empty.
+        """Seed the built-in demo admin/analyst/examiner identities if the table is empty.
 
         Returns True if identities were seeded, False if identities already existed
         (never overwrites an operator's rotated credentials).

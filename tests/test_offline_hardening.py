@@ -104,7 +104,7 @@ def _real_ids() -> dict[str, str]:
     store = SQLiteStore("data/satsa.db")
     try:
         finding = store.conn.execute(
-            "SELECT finding_id, entity_id FROM findings ORDER BY rowid DESC LIMIT 1"
+            "SELECT finding_id, entity_id, run_id FROM findings ORDER BY rowid DESC LIMIT 1"
         ).fetchone()
     finally:
         store.close()
@@ -115,6 +115,17 @@ def _real_ids() -> dict[str, str]:
         "template_name": "alerts.csv",
         "username": "examiner",
     }
+
+
+def _run_id_of(finding_id: str) -> str:
+    store = SQLiteStore("data/satsa.db")
+    try:
+        row = store.conn.execute(
+            "SELECT run_id FROM findings WHERE finding_id = ?", (finding_id,)
+        ).fetchone()
+    finally:
+        store.close()
+    return row["run_id"]
 
 
 def _get_paths(app) -> list[str]:
@@ -135,10 +146,11 @@ def _fill(path: str, ids: dict[str, str]) -> str:
 def test_every_get_route_is_offline_and_healthy(socket_guard, monkeypatch):
     monkeypatch.setenv("SATSA_RULEPACK_SECRET", "offline-sweep-secret-" + "x" * 32)
     ids = _real_ids()
+    ids["run_id"] = _run_id_of(ids["finding_id"])
     results: dict[str, int] = {}
 
     satsa = TestClient(satsa_app)
-    r = satsa.post("/login", data={"username": "admin", "password": "ChangeMe-Admin#2026"},
+    r = satsa.post("/login", data={"username": "analyst", "password": "ChangeMe-Analyst#2026"},
                    follow_redirects=False)
     assert r.status_code == 303
     satsa_paths = _get_paths(satsa_app)
@@ -162,6 +174,22 @@ def test_every_get_route_is_offline_and_healthy(socket_guard, monkeypatch):
 
     assert "/api/activity/stream" in admin_paths and "/api/activity/recent" in admin_paths
     assert "/users" in admin_paths and "/portfolio" in satsa_paths
+
+    # The PDF report routes (ReportLab charts included) are part of the sweep and
+    # produce real PDFs fully offline, pinned to the finding's own run.
+    pdf_paths = [
+        "/reports/portfolio/pdf",
+        "/reports/entity/{entity_id}/pdf",
+        "/reports/finding/{finding_id}/pdf",
+    ]
+    assert set(pdf_paths) <= set(satsa_paths)
+    for path in pdf_paths:
+        url = _fill(path, ids)
+        resp = satsa.get(url, params=None if "finding" in path else {"run_id": ids["run_id"]})
+        results[f"satsa GET {url} (pinned run)"] = resp.status_code
+        assert resp.status_code == 200, (url, resp.text[:200])
+        assert resp.content.startswith(b"%PDF")
+
     assert socket_guard == [], f"outbound connection attempts: {socket_guard}"
     server_errors = {k: v for k, v in results.items() if v >= 500}
     assert not server_errors, server_errors

@@ -5,9 +5,12 @@ from collections.abc import Callable
 from fastapi import HTTPException, Request
 from pydantic import BaseModel
 
+from satsa.admin.rbac import ANALYST_ROLE_NAMES
 from satsa.store.sqlite import SQLiteStore
 
 SESSION_COOKIE_NAME = "satsa_session"
+
+ANALYST_NAMES: set[str] = set(ANALYST_ROLE_NAMES)
 
 
 class Identity(BaseModel):
@@ -28,9 +31,11 @@ ROLE_ALIASES: dict[str, set[str]] = {
     "admin": {"admin", "NCIIPC Super Administrator", "NCIIPC_SUPER_ADMINISTRATOR"},
     "NCIIPC Super Administrator": {"admin", "NCIIPC Super Administrator", "NCIIPC_SUPER_ADMINISTRATOR"},
     "NCIIPC_SUPER_ADMINISTRATOR": {"admin", "NCIIPC Super Administrator", "NCIIPC_SUPER_ADMINISTRATOR"},
-    "supervisor": {"supervisor", "NCIIPC Supervisor", "NCIIPC_SUPERVISOR"},
-    "NCIIPC Supervisor": {"supervisor", "NCIIPC Supervisor", "NCIIPC_SUPERVISOR"},
-    "NCIIPC_SUPERVISOR": {"supervisor", "NCIIPC Supervisor", "NCIIPC_SUPERVISOR"},
+    # NCIIPC Analyst (the technical operator, formerly "supervisor"). The legacy
+    # supervisor names stay in this set so a row not yet migrated by
+    # SQLiteStore._ensure_migrations still resolves. Deliberately disjoint from
+    # the CSE-side "SOC Analyst" role.
+    **dict.fromkeys(ANALYST_NAMES, ANALYST_NAMES),
     "examiner": {"examiner", "NCIIPC Examiner", "NCIIPC_EXAMINER"},
     "NCIIPC Examiner": {"examiner", "NCIIPC Examiner", "NCIIPC_EXAMINER"},
     "NCIIPC_EXAMINER": {"examiner", "NCIIPC Examiner", "NCIIPC_EXAMINER"},
@@ -117,21 +122,19 @@ def require_role(*allowed_roles: str) -> Callable[[Request], Identity]:
 def require_cse_access(target_cse_id: str, identity: Identity) -> None:
     """Enforce server-side boundary: a user assigned to a specific CSE cannot access another CSE.
 
-    NCIIPC Supervisory roles (NCIIPC Super Administrator, NCIIPC Supervisor,
-    NCIIPC Examiner, admin, supervisor, examiner) possess multi-entity supervisory
+    NCIIPC Supervisory roles (NCIIPC Super Administrator, NCIIPC Analyst,
+    NCIIPC Examiner, admin, analyst, examiner) possess multi-entity supervisory
     oversight. Entity-scoped roles (CSE Administrator, SOC Manager, SOC Analyst,
     CSE Viewer) are strictly constrained to their designated identity.cse_id.
     """
     SUPERVISORY_ROLES = {
         "NCIIPC Super Administrator",
-        "NCIIPC Supervisor",
         "NCIIPC Examiner",
         "admin",
-        "supervisor",
         "examiner",
         "NCIIPC_SUPER_ADMINISTRATOR",
-        "NCIIPC_SUPERVISOR",
         "NCIIPC_EXAMINER",
+        *ANALYST_NAMES,
     }
     if identity.role in SUPERVISORY_ROLES:
         return

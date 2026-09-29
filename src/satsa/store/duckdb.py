@@ -278,30 +278,50 @@ class DuckDBStore:
         if not target_dir.exists():
             return
 
-        parquet_glob = str(target_dir / "**" / "*.parquet")
-        files = list(target_dir.glob("**/*.parquet"))
+        files = sorted(target_dir.glob("**/*.parquet"))
         if not files:
             return
 
-        escaped_glob = parquet_glob.replace("\\", "/")
         escaped_table_name = f'"{table_name}"' if table_name == "case" else table_name
-        try:
-            self.conn.execute(f"DELETE FROM {escaped_table_name}")
-            if table_name == "entity":
-                self.conn.execute(
-                    f"INSERT OR REPLACE INTO {escaped_table_name} BY NAME SELECT * FROM read_parquet('{escaped_glob}', hive_partitioning=true, union_by_name=true)"
-                )
-            else:
-                self.conn.execute(
-                    f"INSERT INTO {escaped_table_name} BY NAME SELECT * FROM read_parquet('{escaped_glob}', hive_partitioning=true, union_by_name=true)"
-                )
-        except duckdb.Error:
+        table_types = {
+            row[0]: row[1]
+            for row in self.conn.execute(
+                "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ?",
+                [table_name],
+            ).fetchall()
+        }
+        self.conn.execute(f"DELETE FROM {escaped_table_name}")
+
+        # Files under `entity_id=<id>/` and any stray file at the table root are
+        # read separately: DuckDB refuses a hive read over a mixed layout, and
+        # that one error used to leave the WHOLE table empty (every alert of
+        # every entity vanished from the UI after a single upload lacking an
+        # entity_id). Likewise only the table's own columns are selected, with
+        # TRY_CAST, so a pass-through source column or an unparseable timestamp
+        # in one file can't fail the insert for all the others.
+        partitioned = [f for f in files if f.parent.name.startswith("entity_id=")]
+        unpartitioned = [f for f in files if not f.parent.name.startswith("entity_id=")]
+        verb = "INSERT OR REPLACE" if table_name in KEYED_BY_ENTITY else "INSERT"
+        for group, hive in ((partitioned, True), (unpartitioned, False)):
+            if not group:
+                continue
+            file_list = ", ".join(
+                "'" + str(f).replace("\\", "/").replace("'", "''") + "'" for f in group
+            )
+            source = (
+                f"read_parquet([{file_list}], hive_partitioning={str(hive).lower()}, union_by_name=true)"
+            )
             try:
+                source_cols = [r[0] for r in self.conn.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()]
+                cols = [c for c in source_cols if c in table_types]
+                if not cols:
+                    continue
+                select = ", ".join(f'TRY_CAST("{c}" AS {table_types[c]}) AS "{c}"' for c in cols)
                 self.conn.execute(
-                    f"INSERT INTO {escaped_table_name} SELECT * FROM read_parquet('{escaped_glob}', hive_partitioning=true)"
+                    f"{verb} INTO {escaped_table_name} BY NAME SELECT {select} FROM {source}"
                 )
             except duckdb.Error:
-                pass
+                continue
 
     def load_all_tables(self) -> None:
         """Reload all canonical tables from disk."""

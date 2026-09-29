@@ -31,7 +31,7 @@ MALICIOUS_IDS = ["' OR '1'='1", "*", "../../etc/passwd", "..\\..\\x", "CSE-01'; 
 LEGIT_IDS = [f"CSE-{i:02d}" for i in range(1, 11)]
 
 
-def _login(c: TestClient, username: str = "admin", password: str = "ChangeMe-Admin#2026") -> None:
+def _login(c: TestClient, username: str = "analyst", password: str = "ChangeMe-Analyst#2026") -> None:
     resp = c.post(
         "/login", data={"username": username, "password": password}, follow_redirects=False
     )

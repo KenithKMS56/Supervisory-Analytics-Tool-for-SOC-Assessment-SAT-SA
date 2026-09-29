@@ -6,7 +6,7 @@
 
 The platform provides a unified dual-application architecture:
 - **NCIIPC Administration Portal (`http://localhost:8000`)**: Authoritative governance, centralized identity provisioning, critical sector entity and organisation registries, an admin activity feed (operator session monitor of SAT-SA's own users), and administrative cryptographic audit chaining.
-- **SAT-SA Supervisory Tool (`http://localhost:8001`)**: Supervisory execution gap detection (**EG01–EG12**), negative space inference (**NS01–NS08**), peer benchmarking, blinded review studios, and statutory compliance dossier exports.
+- **SAT-SA Supervisory Tool (`http://localhost:8001`)**: Supervisory execution gap detection (**EG01–EG12**), negative space inference (**NS01–NS08**), peer benchmarking, blinded review studios, and statutory compliance dossier exports. It has exactly two operator roles, the **NCIIPC Analyst** and the **NCIIPC Examiner** (see [Two-Role Workflow](#two-role-workflow-analyst--examiner-8001)). Administrators work on `:8000` only.
 
 ---
 
@@ -132,6 +132,35 @@ The application provides a fully server-rendered, responsive web interface:
 
 ---
 
+## Two-Role Workflow: Analyst → Examiner (`:8001`)
+
+SAT-SA follows the operating model of real regulators: one person operates the pipeline and another makes the regulatory call. Both use the same app at `:8001`, and the interface adapts to the role.
+
+```
+[ CSE submits periodic batch ]
+              │
+              ▼
+  1. NCIIPC ANALYST (technical operator)
+     • Ingests CSV/ZIP bundles (/upload) or JSON batches (/api/v1/submissions)
+     • Runs the DuckDB assessment, calibrates rules (/tuning), signs rule packs
+     • Explores raw alerts (/alerts), data quality (/dq), runs & audit ledger (/runs)
+              │   findings, scores and review queue stored in the shared database
+              ▼
+  2. NCIIPC EXAMINER (decision maker)
+     • Portfolio heatmap, entity radar vs peer median, plain-language findings
+     • Review queue: Escalate to Statutory Notice / Mark as Justified / Request CSE Explanation
+     • Blinded review studio; one-click Executive Regulatory Dossier (PDF)
+```
+
+| | Analyst | Examiner |
+| :--- | :---: | :---: |
+| Portfolio, entity profiles, findings, PDF/HTML dossiers | ✔ | ✔ |
+| Upload & ingest, assessment runs, rule tuning & rule packs | ✔ | ✘ (403) |
+| Alert explorer, data quality, runs & audit ledger, raw CSV exports | ✔ | ✘ (403) |
+| Review-queue decisions and blind-review verdicts | ✘ (403) | ✔ |
+
+Separation of duties is deliberate: whoever tunes the rules can't also sign off the findings. Every other role, including NCIIPC administrators and CSE-scoped accounts, is refused at SAT-SA's login.
+
 ## NCIIPC Administration & Sovereign Identity Control (`:8000`)
 
 The **NCIIPC Administration Portal** (`http://localhost:8000`) is a dedicated supervisory governance and identity control plane operating alongside SAT-SA:
@@ -149,7 +178,7 @@ The **NCIIPC Administration Portal** (`http://localhost:8000`) is a dedicated su
 1. **Authoritative Centralized User Provisioning (`/users`, `/users/create`)**:
    - SAT-SA users cannot self-register or select their own role, organisation, or scoped CSE.
    - The NCIIPC Administrator authoritatively assigns:
-     - **Role**: `NCIIPC Super Administrator`, `NCIIPC Supervisor`, `NCIIPC Examiner`, `CSE Administrator`, `SOC Manager`, `SOC Analyst`, or `CSE Viewer`.
+     - **Role**: `NCIIPC Super Administrator` (Admin Portal only), `NCIIPC Analyst` or `NCIIPC Examiner` (the two SAT-SA operators), or a CSE-side role (`CSE Administrator`, `SOC Manager`, `SOC Analyst`, `CSE Viewer`).
      - **Organisation**: Parent critical infrastructure authority (e.g. `ORG-POWER`, `ORG-FIN`, `ORG-TELECOM`).
      - **Scoped CSE**: Critical Sector Entity assigned to the user (e.g. `CSE-01 Northern Power Grid`).
    - Dynamic validation ensures the chosen CSE strictly belongs to the assigned organisation.
@@ -247,10 +276,12 @@ The easiest way to run the entire unified platform (NCIIPC Admin Portal + SAT-SA
 3. **Default Seeded Credentials:**
    | Username | Assigned Role | Default Passphrase | Accessible Interfaces |
    | :--- | :--- | :--- | :--- |
-   | `nciipc_admin` | NCIIPC Super Administrator | `ChangeMe-NCIIPC#2026` | Admin Portal (`:8000`) & SAT-SA (`:8001`) |
-   | `admin` | Administrator | `ChangeMe-Admin#2026` | Admin Portal (`:8000`) & SAT-SA (`:8001`) |
-   | `supervisor` | NCIIPC Supervisor | `ChangeMe-Supervisor#2026` | SAT-SA Supervisory Workspace (`:8001`) |
-   | `examiner` | NCIIPC Examiner | `ChangeMe-Examiner#2026` | SAT-SA Supervisory Workspace (`:8001`) |
+   | `nciipc_admin` | NCIIPC Super Administrator | `ChangeMe-NCIIPC#2026` | Admin Portal (`:8000`) only |
+   | `admin` | Administrator | `ChangeMe-Admin#2026` | Admin Portal (`:8000`) only |
+   | `analyst` | NCIIPC Analyst | `ChangeMe-Analyst#2026` | SAT-SA (`:8001`): technical operator workspace |
+   | `examiner` | NCIIPC Examiner | `ChangeMe-Examiner#2026` | SAT-SA (`:8001`): executive review workspace |
+
+   > **Upgrading an existing database:** the former `supervisor` role is migrated to `analyst` automatically on startup. The untouched demo account `supervisor` / `ChangeMe-Supervisor#2026` becomes `analyst` / `ChangeMe-Analyst#2026`; an account whose passphrase was rotated keeps its username.
 
    > **Note on Security:** As documented in Section 2 of `docs/functional_design.md`, default credentials are intentionally seeded CHANGE-ME credentials for immediate offline evaluation. NCIIPC administrators should rotate these in production.
 

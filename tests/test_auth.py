@@ -14,6 +14,7 @@ def _login(c: TestClient, username: str, password: str) -> None:
         "/login", data={"username": username, "password": password}, follow_redirects=False
     )
     assert resp.status_code == 303, f"login failed for {username}: {resp.text}"
+    assert "error" not in resp.headers["location"], resp.headers["location"]
 
 
 def test_passphrase_hash_roundtrip():
@@ -28,25 +29,25 @@ def test_passphrase_hash_roundtrip():
 def test_default_identities_seeded():
     store = SQLiteStore("data/satsa.db")
     admin = store.get_identity("admin")
-    supervisor = store.get_identity("supervisor")
+    analyst = store.get_identity("analyst")
     examiner = store.get_identity("examiner")
     store.close()
     assert admin is not None and admin["role"] == "admin"
-    assert supervisor is not None and supervisor["role"] == "supervisor"
+    assert analyst is not None and analyst["role"] == "analyst"
     assert examiner is not None and examiner["role"] == "examiner"
 
 
 def test_unauthenticated_access_rejected_on_protected_routes():
     anon = TestClient(app)
-    # Tuning save (admin/supervisor only)
+    # Tuning save (analyst only)
     r1 = anon.post("/tuning/save", data={"EG01__fast_share_threshold": "0.2"}, follow_redirects=False)
     assert r1.status_code == 401
 
-    # Rule pack export (admin/supervisor only)
+    # Rule pack export (analyst only)
     r2 = anon.get("/tuning/export-pack", follow_redirects=False)
     assert r2.status_code == 401
 
-    # Feedback submission (examiner/supervisor/admin only)
+    # Feedback submission (examiner only)
     r3 = anon.post(
         "/api/v1/feedback",
         data={"queue_id": "does-not-matter", "status": "confirmed"},
@@ -54,7 +55,7 @@ def test_unauthenticated_access_rejected_on_protected_routes():
     )
     assert r3.status_code == 401
 
-    # Periodic batch submission API (admin/supervisor only)
+    # Periodic batch submission API (analyst only)
     r4 = anon.post(
         "/api/v1/submissions",
         json={"entity_id": "CSE-01", "alerts": []},
@@ -64,7 +65,7 @@ def test_unauthenticated_access_rejected_on_protected_routes():
 
 
 def test_wrong_role_rejected():
-    # Examiner is not permitted to trigger tuning changes (admin/supervisor only).
+    # Examiner is not permitted to trigger tuning changes (analyst only).
     exam_client = TestClient(app)
     _login(exam_client, "examiner", "ChangeMe-Examiner#2026")
     resp = exam_client.post(
@@ -79,9 +80,9 @@ def test_role_appropriate_access_succeeds():
     config_path = Path("config/rules.yaml")
     orig_content = config_path.read_text(encoding="utf-8")
     try:
-        sup_client = TestClient(app)
-        _login(sup_client, "supervisor", "ChangeMe-Supervisor#2026")
-        resp = sup_client.post(
+        analyst_client = TestClient(app)
+        _login(analyst_client, "analyst", "ChangeMe-Analyst#2026")
+        resp = analyst_client.post(
             "/tuning/save", data={"EG01__fast_share_threshold": "0.18"}, follow_redirects=True
         )
         assert resp.status_code == 200
@@ -174,10 +175,58 @@ def test_login_failure_is_audited_and_rejected():
 
 def test_logout_clears_session():
     c = TestClient(app)
-    _login(c, "admin", "ChangeMe-Admin#2026")
+    _login(c, "analyst", "ChangeMe-Analyst#2026")
     resp = c.post("/logout", follow_redirects=False)
     assert resp.status_code == 303
 
     # Now protected actions should be rejected again.
     r = c.post("/tuning/save", data={"EG01__fast_share_threshold": "0.2"}, follow_redirects=False)
     assert r.status_code == 401
+
+
+def test_examiner_is_walled_off_from_the_engine_room():
+    exam_client = TestClient(app)
+    _login(exam_client, "examiner", "ChangeMe-Examiner#2026")
+    for path in ("/upload", "/tuning", "/alerts", "/rules", "/dq", "/runs", "/reports/export/findings-csv"):
+        assert exam_client.get(path, follow_redirects=False).status_code == 403, path
+    # ...and the nav doesn't offer those pages at all.
+    html = exam_client.get("/portfolio").text
+    for href in ('href="/upload"', 'href="/tuning"', 'href="/alerts"', 'href="/reports/export/findings-csv"'):
+        assert href not in html, href
+    assert "Download Executive Regulatory Dossier (PDF)" in html
+    assert "Escalate to Statutory Notice" in exam_client.get("/queue").text
+
+
+def test_analyst_cannot_make_review_decisions():
+    analyst_client = TestClient(app)
+    _login(analyst_client, "analyst", "ChangeMe-Analyst#2026")
+    resp = analyst_client.post(
+        "/api/v1/feedback",
+        data={"queue_id": "does-not-matter", "status": "confirmed"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 403
+    queue = analyst_client.get("/queue").text
+    assert 'action="/api/v1/feedback"' not in queue
+    assert "Decision reserved for the NCIIPC Examiner" in queue
+    assert 'href="/upload"' in analyst_client.get("/portfolio").text
+
+
+def test_non_operator_accounts_are_refused_at_login():
+    """Only analyst and examiner may sign in to SAT-SA: administrators use the
+    Admin Portal (:8000), and CSE-scoped accounts have no SAT-SA workspace."""
+    import uuid
+
+    suffix = uuid.uuid4().hex[:8]
+    others = {f"soc-{suffix}": "SOC Analyst", f"superadmin-{suffix}": "NCIIPC Super Administrator"}
+    store = SQLiteStore("data/satsa.db")
+    for username, role in others.items():
+        store.upsert_identity(username, role, "Throwaway-Passphrase#2026")
+    store.close()
+    attempts = [("admin", "ChangeMe-Admin#2026")] + [(u, "Throwaway-Passphrase#2026") for u in others]
+    for username, password in attempts:
+        c = TestClient(app)
+        resp = c.post("/login", data={"username": username, "password": password}, follow_redirects=False)
+        assert resp.status_code == 303
+        assert "not+a+SAT-SA+operator" in resp.headers["location"], (username, resp.headers["location"])
+        assert "satsa_session" not in c.cookies

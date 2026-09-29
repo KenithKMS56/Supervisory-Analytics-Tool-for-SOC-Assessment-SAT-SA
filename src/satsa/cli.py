@@ -223,7 +223,7 @@ def report_cmd(
     """Generate self-contained HTML, PDF, and CSV supervisory assessment reports."""
     from pathlib import Path
 
-    from satsa.report.generator import ReportGenerator
+    from satsa.report.generator import ReportGenerator, ReportNotFoundError
     from satsa.store.duckdb import DuckDBStore
     from satsa.store.sqlite import SQLiteStore
 
@@ -251,19 +251,35 @@ def report_cmd(
         p_html = rep_gen.generate_portfolio_html(out_path / "portfolio_summary_report.html")
         generated.append(p_html)
 
+    # Portfolio PDF
+    if (entity == "all" or entity.lower() == "portfolio") and fmt in ("pdf", "all"):
+        run_id = rep_gen.resolve_run().run_id
+        generated.append(
+            rep_gen.generate_portfolio_pdf(out_path / f"SAT-SA_Portfolio_Report_{run_id}.pdf")
+        )
+
     # Entity-specific or all entities HTML & PDF
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT DISTINCT entity_id FROM entity_scores")
     available_entities = [r["entity_id"] for r in cur.fetchall()]
 
-    target_entities = available_entities if entity == "all" else [entity]
+    if entity == "all":
+        target_entities = available_entities
+    elif entity.lower() == "portfolio":
+        target_entities = []
+    else:
+        target_entities = [entity]
 
     for ent in target_entities:
         if fmt in ("html", "all"):
             h = rep_gen.generate_entity_html(ent, out_path / f"{ent}_supervisory_report.html")
             generated.append(h)
         if fmt in ("pdf", "all"):
-            p = rep_gen.generate_entity_pdf(ent, out_path / f"{ent}_supervisory_report.pdf")
+            try:
+                p = rep_gen.generate_entity_pdf(ent, out_path / f"{ent}_supervisory_report.pdf")
+            except ReportNotFoundError:
+                console.print(f"[yellow]  * Skipped PDF for {ent}: not scored in the latest run[/yellow]")
+                continue
             generated.append(p)
 
     duckdb_store.close()
@@ -567,7 +583,7 @@ def rules_import_cmd(
         sqlite_store.close()
 
 
-users_app = typer.Typer(help="Manage local RBAC identities (admin, supervisor, examiner)")
+users_app = typer.Typer(help="Manage local RBAC identities (admin for the :8000 portal; analyst, examiner for SAT-SA)")
 app.add_typer(users_app, name="users")
 
 
@@ -588,7 +604,7 @@ def users_list_cmd(
 def users_set_password_cmd(
     username: str = typer.Argument(..., help="Username to create or update"),
     role: str = typer.Option(
-        "examiner", "--role", "-r", help="Role: admin, supervisor, or examiner"
+        "examiner", "--role", "-r", help="Role: admin (Admin Portal only), analyst, or examiner"
     ),
     password: str = typer.Option(
         ..., "--password", "-p", prompt=True, hide_input=True, help="New passphrase"

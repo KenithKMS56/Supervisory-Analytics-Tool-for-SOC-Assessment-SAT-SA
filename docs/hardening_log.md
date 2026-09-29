@@ -199,3 +199,69 @@ Checked against the official PS text at https://sih2026.vuce.in/ps/SIH26157.
 - **Hardcoded demo KPI panel.** `/entity/{id}` shows hardcoded demo KPI values in its reconciliation panel (`api/routes.py`); noted and left as is.
 - **Lockout is per username only (no per-IP rate limiting).** A caller who knows a username can lock it out; accepted for an air-gapped, small-user deployment and documented.
 - **HTML report escaping.** The HTML report generator interpolates stored values without HTML escaping. Entity IDs are now validated, but free-text fields are not escaped; this is a follow-up.
+
+## Step 14 — PDF reporting layer (presentation only) — done, verified
+
+**Scope.** Three A4 PDF reports built with ReportLab: portfolio, CSE and finding. Each finding appears as a layered card:
+- **Tier 1:** an ESCALATE / MONITOR / NOTE badge plus a plain-language headline.
+- **Tier 2:** a shaded Technical Detail box.
+
+No analytical code changed. `git diff` over `rules/`, `scoring/`, `peers/`, `ingest/`, `metrics/`, `validate/`, `store/`, `models/`, `config/`, `pyproject.toml` and `uv.lock` is empty. Charts use `reportlab.graphics.charts` / `shapes` only; no dependency was added and no network access is used.
+
+**What was added:**
+- **New modules.** `report/plain_language.py` (20 headline templates and the badge mapping), `report/pdf_layout.py` (A4 page template, "Page X of Y", notice on every page, finding cards, atomic build) and `report/pdf_charts.py`.
+- **Generator.** New `generate_portfolio_pdf` and `generate_finding_pdf`. `generate_entity_pdf` was moved from `letter` to A4 and enhanced.
+- **Routes.**
+  - New `GET /reports/portfolio/pdf` and `GET /reports/finding/{finding_id}/pdf`, both `SUPERVISORY_READ_ROLES`.
+  - The entity PDF route keeps `require_authenticated` + `require_cse_access`.
+  - All three accept a validated `?run_id=`. New helpers `is_valid_run_id` and `is_valid_finding_id` in `security.py`.
+  - Error handling: 400 for invalid IDs, 404 for an unknown run, entity or finding, and a clean 500 JSON (no stack trace) on a generation failure. A failed build leaves no partial file behind.
+- **UI.** An "Export Report" dropdown (native `<details>`, no JavaScript) on the portfolio, entity and finding pages. Supervisory-only items are hidden from CSE-scoped roles.
+- **Tests.** The RBAC matrix has the two new routes (the completeness guard is unchanged). The offline sweep now also asserts that the three PDF routes return real PDFs with zero outbound connection attempts. New `tests/test_report_pdf.py` (65 tests). The two new RBAC-matrix routes add 8 more (2 routes × 4 roles), for +73 in total.
+
+**Before / after (same fresh-bootstrap → pytest → validate order both times):**
+
+| Measure | Before | After |
+|---|---|---|
+| `pytest tests -q` | 596 passed, 33 skipped | **669 passed, 33 skipped**, 0 failed |
+| Entity Rank Precision@7 / Recall@7 | 100.0% / 100.0% | identical |
+| Injected Defect Recall | 100.0% (13/13) | identical |
+| Overall Defect Precision / F1 | 100.0% / 1.0000 | identical |
+| Spearman ρ (±20%) | 1.0000 / 1.0000 | identical |
+| Review-effort lift (1% / 2% / 5%) | 5.97x / 4.13x / 1.65x | identical |
+| Stress: P@k, recall, precision, FP | 100.0%, 3/3, 60.0%, 2 | identical (console output byte-identical) |
+
+The only differences in the validation report are the run ID and the audit-entry count (88 → 91, from the new tests' logins). Neither is a metric. `ruff check` and `mypy` are clean, and `satsa audit verify` passes.
+
+**Found while taking the baseline (pre-existing, not fixed here):**
+- **A stray unpartitioned parquet file silently emptied the alert table.** The dev `data/` directory contained a stray `data/parquet/alert/data.parquet` next to the `entity_id=*` partitions, written by an earlier process at 23:24 the night before. `DuckDBStore.load_table_from_parquet` then fails with a hive-partition mismatch, and both of its `except duckdb.Error` branches swallow the error. The **alert table loads empty with no error**. Validation dropped to recall 4/13 (P@7 57.1%), and NS08 fired for every entity.
+- **Resolution for this step.** A clean re-bootstrap restored 13/13. The polluted directory was kept as a backup, not deleted.
+- **Why the loader was not changed.** Fixing it (fail loudly, or reject stray files) is an ingestion/storage change, so it is out of scope for a presentation step. It is recorded here as a follow-up. CI is unaffected because it always bootstraps from a clean checkout.
+
+**Limitations, stated plainly:**
+- **No IQR or z-score deviation is shown.** None is persisted on findings, so the Tier-2 box shows the finding's stored `peer_comparison_json` values ("Measured values") instead of a "+x IQR" line.
+- **Paired comparison bars appear only for NS03 and EG10.**
+  - NS03's baseline is labelled "Portfolio average" because it is a mean over *all* entities, including the flagged one, not a peer median.
+  - EG10 compares the declared MTTR with the measured MTTR.
+  - EG01 stores a closure *share* against a 5th-percentile *time*. The units differ, so it has no chart.
+- **Evidence IDs come only from `finding_evidences`.** Rules that persist no evidence rows (NS03, NS05, NS08, EG11) show no evidence line. `Finding.evidence_ids` is not saved, so the PDFs cannot show it.
+- **Badges follow the stored severity.** The mapping is critical → ESCALATE, high → MONITOR, anything else → NOTE. A low-scoring `high` finding (for example NS02 at score 34) is therefore still MONITOR.
+- **Systemic (cross-entity) findings are not included** in the portfolio PDF.
+- **`dq_issues` is not scoped to a run.** The data-quality section says so. The demo dataset records 0 issues.
+- **The HTML reports are unchanged** and still lack HTML escaping (see Deferred). The PDFs escape every stored string before layout.
+- **Report downloads accumulate in `reports/`** (gitignored), matching the existing HTML/CSV routes. There is no cleanup job.
+
+## Step 15 — Two-role SAT-SA (analyst / examiner) and ingestion visibility fixes — done, verified
+
+**Ingestion fixes (the follow-up recorded in Step 14):**
+- **`DuckDBStore.load_table_from_parquet` no longer empties a table on one bad file.** Partitioned (`entity_id=*`) and stray root-level files are read separately. Only the table's own columns are selected, with `TRY_CAST`, so a pass-through source column or an unparseable timestamp can't fail the insert for every other file.
+- **The upload pipeline rejects rows with no `entity_id`** when no target entity is chosen. It records a `missing_entity_id` DQ issue and a clear upload message, instead of writing an unpartitioned file and reporting success.
+- **`POST /api/v1/submissions` registers a CSE first seen in the batch**, just as `/upload` already did. Before this, the batch was stored and acknowledged, but the assessment and every UI view skipped the entity.
+
+**Role split:**
+- **Roles.** SAT-SA (`:8001`) admits only `analyst` (formerly `supervisor`) and `examiner`. Administrators and CSE-scoped accounts are refused at `/login` (`login_denied_role` audit entry). Any session such a role holds gets HTTP 403 in `enforce_auth_middleware`.
+- **Analyst-only.** Upload/ingest, runs, tuning, rule packs, alert explorer, rules catalog, DQ, runs & audit, `/api/v1/audit/verify`, CSV templates and raw CSV exports. The navigation hides these pages from the examiner.
+- **Examiner-only.** Review-queue decisions, relabelled *Escalate to Statutory Notice* / *Mark as Justified* / *Request CSE Explanation* (stored values unchanged), and blind-review verdicts. The analyst sees the queue read-only. This is deliberate separation of duties.
+- **Migration.** `SQLiteStore._migrate_supervisor_to_analyst` renames the role on startup. The untouched demo `supervisor` account becomes `analyst` / `ChangeMe-Analyst#2026`; a rotated one keeps its username. Audit rows are not rewritten, so the chain still verifies.
+- **Tests.** `tests/test_rbac_matrix.py` expects `admin` to get 403 on every gated SAT-SA route. New tests cover login refusal, the migration, the examiner's hidden navigation and analyst-only decisions.
+

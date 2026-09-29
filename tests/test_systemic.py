@@ -11,7 +11,7 @@ from satsa.rules.systemic import SystemicCorrelationDetector
 from satsa.store.sqlite import SQLiteStore
 
 client = TestClient(app)
-client.post("/login", data={"username": "admin", "password": "ChangeMe-Admin#2026"})
+client.post("/login", data={"username": "analyst", "password": "ChangeMe-Analyst#2026"})
 
 
 def _finding(entity_id: str, rule_id: str, severity: str = "high") -> Finding:
