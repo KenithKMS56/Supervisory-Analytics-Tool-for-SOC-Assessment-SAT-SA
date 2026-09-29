@@ -151,7 +151,11 @@ class EG02AckWithoutInvestigation(BaseRule):
         cnt = zero_inv_df.shape[0]
         share = cnt / total_n
 
-        if share > 0.15 and cnt >= 5:
+        # Tunable: max share and min count of human closures with no investigation event
+        # and a trivial comment. The score normalisation (0.15) stays fixed.
+        max_uninvestigated_share = float(self.params.get("max_uninvestigated_share", 0.15))
+        min_uninvestigated_count = int(self.params.get("min_uninvestigated_count", 5))
+        if share > max_uninvestigated_share and cnt >= min_uninvestigated_count:
             score, conf = self.compute_rule_score(share / 0.15, total_n)
             f_id = f"FND-EG02-{entity_id}-{run_id}"
             sample_ids = zero_inv_df["alert_id"].head(10).to_list()
@@ -456,6 +460,10 @@ class EG06MetricGaming(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
+        # Tunable: closures by one actor in one minute that count as a bulk batch, and
+        # the share of closures in the last 10% of the SLA window that counts as hugging.
+        min_bulk_closures_per_minute = int(self.params.get("min_bulk_closures_per_minute", 8))
+        max_deadline_hugging_share = float(self.params.get("max_deadline_hugging_share", 0.25))
         # Check bulk closures with exact same minute by same actor
         sql_bulk = """
         SELECT
@@ -466,9 +474,9 @@ class EG06MetricGaming(BaseRule):
         FROM alert
         WHERE entity_id = ? AND closed_by_type = 'human' AND closed_at IS NOT NULL
         GROUP BY closed_by, date_trunc('minute', closed_at)
-        HAVING count(*) >= 8
+        HAVING count(*) >= ?
         """
-        df_bulk = store.query(sql_bulk, [entity_id])
+        df_bulk = store.query(sql_bulk, [entity_id, min_bulk_closures_per_minute])
 
         # Check deadline hugging: closed between 90% and 100% of SLA limit
         sql_deadline = """
@@ -485,7 +493,7 @@ class EG06MetricGaming(BaseRule):
         hugging_share = dead_cnt / max(total_alerts, 1)
 
         has_bulk = not df_bulk.is_empty()
-        has_hugging = hugging_share > 0.25
+        has_hugging = hugging_share > max_deadline_hugging_share
 
         if has_bulk or has_hugging:
             score, conf = self.compute_rule_score(
@@ -541,6 +549,9 @@ class EG07AnalystImplausibility(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
+        # Tunable: human closures by one analyst within one clock hour that exceed
+        # plausible capacity. The score normalisation (30) stays fixed.
+        min_closures_per_analyst_hour = int(self.params.get("min_closures_per_analyst_hour", 30))
         sql = """
         SELECT
             closed_by,
@@ -549,9 +560,9 @@ class EG07AnalystImplausibility(BaseRule):
         FROM alert
         WHERE entity_id = ? AND closed_by_type = 'human' AND closed_at IS NOT NULL
         GROUP BY closed_by, date_trunc('hour', closed_at)
-        HAVING count(*) >= 30
+        HAVING count(*) >= ?
         """
-        df = store.query(sql, [entity_id])
+        df = store.query(sql, [entity_id, min_closures_per_analyst_hour])
         if df.is_empty():
             return [], []
 
@@ -620,7 +631,9 @@ class EG08EscalationWithoutFollowThrough(BaseRule):
             return [], []
 
         unack_count = df.shape[0]
-        if unack_count >= 3:
+        # Tunable: unacknowledged escalations needed before the entity is flagged.
+        min_unacknowledged_escalations = int(self.params.get("min_unacknowledged_escalations", 3))
+        if unack_count >= min_unacknowledged_escalations:
             score, conf = self.compute_rule_score(unack_count / 3.0, unack_count)
             f_id = f"FND-EG08-{entity_id}-{run_id}"
             sample_ids = df["esc_id"].head(5).to_list()
@@ -674,23 +687,26 @@ class EG09BacklogAndAging(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
+        # Tunable: age after which an open case is stale, and how many stale cases flag.
+        stale_case_days = int(self.params.get("stale_case_days", 14))
+        min_stale_cases = int(self.params.get("min_stale_cases", 3))
         sql = """
         SELECT case_id, severity, opened_at
         FROM "case"
         WHERE entity_id = ? AND status = 'open'
-          AND epoch(now()) - epoch(opened_at) > 14 * 86400
+          AND epoch(now()) - epoch(opened_at) > ? * 86400
         """
-        df = store.query(sql, [entity_id])
+        df = store.query(sql, [entity_id, stale_case_days])
         if df.is_empty():
             return [], []
 
         stale_count = df.shape[0]
-        if stale_count >= 3:
+        if stale_count >= min_stale_cases:
             score, conf = self.compute_rule_score(stale_count / 3.0, stale_count)
             f_id = f"FND-EG09-{entity_id}-{run_id}"
             sample_ids = df["case_id"].head(5).to_list()
 
-            rationale = f"Detected {stale_count} open cases aged beyond 14 days without resolution."
+            rationale = f"Detected {stale_count} open cases aged beyond {stale_case_days} days without resolution."
             finding = Finding(
                 finding_id=f_id,
                 run_id=run_id,
@@ -857,7 +873,11 @@ class EG11DispositionExtremes(BaseRule):
         tp_count = df["tp_count"][0]
         fp_rate = df["fp_count"][0] / max(total, 1)
 
-        if total >= 200 and (fp_rate > 0.98 or tp_count == 0):
+        # Tunable: min alert volume before dispositions are judged, and the max
+        # false-positive/benign rate (zero true positives always flags at that volume).
+        min_alert_volume = int(self.params.get("min_alert_volume", 200))
+        max_fp_rate = float(self.params.get("max_fp_rate", 0.98))
+        if total >= min_alert_volume and (fp_rate > max_fp_rate or tp_count == 0):
             score, conf = self.compute_rule_score(fp_rate / 0.98, total)
             f_id = f"FND-EG11-{entity_id}-{run_id}"
 
@@ -924,7 +944,9 @@ class EG12WorkflowNonConformance(BaseRule):
             return [], []
 
         skipped_cases = df["case_id"].to_list()
-        if len(skipped_cases) >= 2:
+        # Tunable: critical cases without a 'contain' stage needed before flagging.
+        min_skipped_cases = int(self.params.get("min_skipped_cases", 2))
+        if len(skipped_cases) >= min_skipped_cases:
             score, conf = self.compute_rule_score(len(skipped_cases) / 2.0, len(skipped_cases))
             f_id = f"FND-EG12-{entity_id}-{run_id}"
 
