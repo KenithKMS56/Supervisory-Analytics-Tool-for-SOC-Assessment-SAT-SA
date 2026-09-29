@@ -298,3 +298,12 @@ The only differences in the validation report are the run ID and the audit-entry
 - **Systemic detector.** `config/systemic.yaml` no longer excludes NS05/EG12/EG10 by default; the exclusion existed only to hide the generator artifacts.
 - **Result.** Primary and stress precision are both 100% with every finding counted. That is not a stronger claim than before: it shows the corrected generator and the rules agree on synthetic data. 8 of 20 rules have no injected defect anywhere. See `docs/validation.md` §0–0.1.
 - **Verified.** Full suite 702 passed / 0 failed / 33 skipped on Python 3.13 from freshly generated data (4 PDF/bundle tests run from a short path because of the Windows 260-character limit in the scratch copy); `satsa validate`, `satsa validate-stress`, ruff and mypy clean. Regression tests: `tests/test_validation_integrity.py`.
+
+## Step 19 — Injected defects for the 8 untested rules — done, verified
+
+- **Gap.** EG07, EG08, EG09, EG11, EG12, NS05, NS07 and NS08 had no injected defect, so validation only ever showed they stay quiet.
+- **Defects added** (`satsa/synth/defects.py`, all in entities that already carry defects so CSE-01/04/06 stay clean): CSE-08 one analyst closing 35 alerts in an hour (EG07, spread over distinct minutes to stay clear of EG06's bulk check); CSE-03 four unacknowledged escalations (EG08); CSE-05 four stale open high cases (EG09); CSE-07 no true positive in six months (EG11); CSE-09 three critical cases without containment (EG12) and 25 never-firing legacy rules (NS05); CSE-02 two unreported critical incidents (NS07); CSE-10 no June submission (NS08).
+- **Result.** Primary recall 21/21, precision 21 of 21 findings, no finding on any entity for a rule not injected there. Lift fell from 10.69x to 5.50x only because EG11's ~200 relabelled alerts raise the random baseline (1.20% → 2.67%); the queue is unchanged.
+- **Guard.** `test_every_rule_has_an_injected_defect` fails if any registered rule lacks a defect in the primary or stress ground truth.
+- **Still true.** The new defects clear their thresholds by a wide margin, like the rest of the primary set; only EG02/EG04 are tested near a threshold.
+- **Verified.** 704 passed / 0 failed / 33 skipped on Python 3.13 from freshly generated data (4 PDF/bundle tests run from the repo path because of the Windows 260-character limit in the scratch copy); `satsa validate`, `satsa validate-stress`, ruff and mypy clean.
