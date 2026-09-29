@@ -867,6 +867,88 @@ async def view_runs_audit(request: Request) -> Response:
     )
 
 
+SHADOW_REQUIRED_COLUMNS = {"entity_id", "record_id", "rule_id", "label"}
+SHADOW_MAX_BYTES = 5 * 1024 * 1024
+
+
+@app.get("/shadow-pilot", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
+async def view_shadow_pilot(request: Request, message: str = "") -> Response:
+    _, sqlite_store = get_stores()
+    row = sqlite_store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    history = sqlite_store.list_shadow_results(limit=20)
+    sqlite_store.close()
+    return templates.TemplateResponse(
+        request=request,
+        name="shadow_pilot.html",
+        context={
+            "active_tab": "shadow_pilot",
+            "message": message,
+            "latest_run_id": row["run_id"] if row else None,
+            "history": history,
+            "latest": history[0] if history else None,
+        },
+    )
+
+
+@app.post("/shadow-pilot")
+def handle_shadow_pilot(
+    workpaper: UploadFile = File(...),
+    identity: Identity = Depends(require_role(*ANALYST_ROLES)),
+) -> Response:
+    """Evaluate a historical examiner workpaper CSV against the latest assessment run."""
+    import urllib.parse
+
+    from satsa.validate.harness import ShadowPilotAdapter
+
+    def done(msg: str) -> RedirectResponse:
+        return RedirectResponse(url=f"/shadow-pilot?message={urllib.parse.quote_plus(msg)}", status_code=303)
+
+    raw = workpaper.file.read(SHADOW_MAX_BYTES + 1)
+    if len(raw) > SHADOW_MAX_BYTES:
+        return done("Error: workpaper larger than 5 MB.")
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return done("Error: workpaper must be a UTF-8 CSV file.")
+    header = next(csv.reader(io.StringIO(text)), [])
+    missing = SHADOW_REQUIRED_COLUMNS - {h.strip().lower() for h in header}
+    if missing:
+        return done(f"Error: workpaper is missing column(s): {', '.join(sorted(missing))}.")
+
+    source_name = Path((workpaper.filename or "workpaper.csv").replace("\\", "/")).name
+    _, sqlite_store = get_stores()
+    try:
+        row = sqlite_store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
+        if row is None:
+            return done("Error: no assessment run yet. Run an assessment before a shadow-pilot evaluation.")
+        run_id = row["run_id"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "workpaper.csv"
+            csv_path.write_text(text, encoding="utf-8")
+            adapter = ShadowPilotAdapter(sqlite_store)
+            result = adapter.evaluate_shadow_pilot(adapter.load_manual_reviews(csv_path), run_id)
+        if result.get("status") != "success":
+            return done("Error: the workpaper has no rows to evaluate.")
+        sqlite_store.save_shadow_result(run_id, identity.username, source_name, result)
+        sqlite_store.append_audit(
+            action="shadow_pilot_evaluated",
+            actor=identity.username,
+            details={
+                "run_id": run_id,
+                "source_name": source_name,
+                "total_manual_reviews": result["total_manual_reviews"],
+                "rule_finding_recall": result["rule_finding_recall"],
+                "queue_record_recall": result["queue_record_recall"],
+            },
+        )
+    finally:
+        sqlite_store.close()
+    return done(
+        f"Evaluated {source_name} against {run_id}: finding recall "
+        f"{result['rule_finding_recall'] * 100:.1f}%, queue record recall {result['queue_record_recall'] * 100:.1f}%."
+    )
+
+
 # --- REST API Endpoints ---
 
 

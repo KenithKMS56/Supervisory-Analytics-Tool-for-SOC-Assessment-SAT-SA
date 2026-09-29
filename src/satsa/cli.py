@@ -316,6 +316,8 @@ def validate_cmd(
     ),
 ) -> None:
     """Execute validation harness against ground truth: precision, recall, lift, stability, and audit verification."""
+    from pathlib import Path
+
     from satsa.store.duckdb import DuckDBStore
     from satsa.store.sqlite import SQLiteStore
     from satsa.validate.harness import ShadowPilotAdapter, ValidationHarness
@@ -329,14 +331,21 @@ def validate_cmd(
     harness = ValidationHarness(duckdb_store, sqlite_store, ground_truth)
 
     results = harness.run_full_validation()
-    md_file, html_file = harness.generate_report(output_md, output_html)
 
-    # Shadow pilot check if provided
+    # Shadow pilot check if provided. The evaluation is stored, so the report
+    # below (and the /shadow-pilot page) can show it; without --shadow-csv the
+    # report shows the latest evaluation already stored for this run, if any.
     shadow_res = None
     if shadow_csv:
         adapter = ShadowPilotAdapter(sqlite_store)
         reviews = adapter.load_manual_reviews(shadow_csv)
         shadow_res = adapter.evaluate_shadow_pilot(reviews, results["run_id"])
+        if shadow_res.get("status") == "success":
+            sqlite_store.save_shadow_result(results["run_id"], "cli", Path(shadow_csv).name, shadow_res)
+    stored = sqlite_store.list_shadow_results(results["run_id"], limit=1)
+    md_file, html_file = harness.generate_report(
+        output_md, output_html, run_id=results["run_id"], shadow_result=stored[0] if stored else None
+    )
 
     duckdb_store.close()
     sqlite_store.close()
@@ -370,7 +379,15 @@ def validate_cmd(
             f"  * Budget {b_k}: [yellow]{b_v['defects_found']} defects found[/yellow] | Hit Rate = {b_v['hit_rate_top_k'] * 100:.1f}% vs {b_v['random_baseline_hit_rate'] * 100:.2f}% random | [bold green]Lift = {b_v['lift_factor']:.2f}x[/bold green]"
         )
 
-    if shadow_res:
+    if shadow_res and shadow_res.get("status") == "success":
+        n = shadow_res["total_confirmed_issues"]
+        console.print(
+            "\n[bold]Shadow Pilot Evaluation:[/bold] "
+            f"{shadow_res['total_manual_reviews']} workpaper rows ({n} confirmed) | "
+            f"finding recall {shadow_res['rule_finding_recall'] * 100:.1f}% ({shadow_res['matched_findings']}/{n}) | "
+            f"queue record recall {shadow_res['queue_record_recall'] * 100:.1f}% ({shadow_res['matched_queue']}/{n})"
+        )
+    elif shadow_res:
         console.print(f"\n[bold]Shadow Pilot Evaluation:[/bold] {shadow_res}")
 
     console.print("\n[bold green][+] Validation reports generated:[/bold green]")

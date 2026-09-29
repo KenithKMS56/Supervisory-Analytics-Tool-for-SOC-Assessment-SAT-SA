@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block title %}Shadow Pilot | Validation Against Examiner Workpapers{% endblock %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>Shadow Pilot</h1>
+    <p>Check SAT-SA against past examiner findings: which confirmed issues did the latest assessment reproduce, and which reached the review queue?</p>
+  </div>
+  <div class="header-actions">
+    <span class="badge" style="padding: 0.5rem 1rem; font-size: 0.82rem; background: var(--bg-hover); color: var(--text-secondary);">
+      Latest run: <code>{{ latest_run_id or "none yet" }}</code>
+    </span>
+  </div>
+</div>
+
+{% if message %}
+<div class="notice-banner">
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4L12 14.01l-3-3"/>
+  </svg>
+  <div><strong>System Notification:</strong> {{ message }}</div>
+</div>
+{% endif %}
+
+<div class="card" style="margin-bottom: 2rem;">
+  <div class="card-title"><span>Evaluate a Workpaper</span></div>
+  <div style="padding: 0 0.25rem; font-size: 0.88rem; color: var(--text-secondary); line-height: 1.6;">
+    <p style="margin-top: 0;">
+      Upload a CSV with columns <code>entity_id, record_id, rule_id, label</code>, one row per past finding.
+      <code>label</code> is <code>confirmed</code> for a substantiated issue; other labels (e.g. <code>not_an_issue</code>) are kept but not scored.
+      The workpaper is compared against the latest assessment run and the result is saved here and in the validation report.
+    </p>
+    <p style="color: var(--text-muted);">
+      Results are only as independent as the labels supplied: real historical examiner findings are evidence;
+      synthetic or stand-in labels only rehearse the pipeline (see <code>docs/validation.md</code> Section 5A).
+    </p>
+    <form method="post" action="/shadow-pilot" enctype="multipart/form-data" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+      <input type="file" name="workpaper" accept=".csv,text/csv" required class="form-control" style="max-width: 360px;">
+      <button type="submit" class="btn" {% if not latest_run_id %}disabled title="Run an assessment first"{% endif %}>Evaluate Against Latest Run</button>
+    </form>
+  </div>
+</div>
+
+{% if latest %}
+{% set res = latest.result %}
+<div class="stats-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 2rem;">
+  <div class="stat-card">
+    <div class="stat-label">Workpaper Rows</div>
+    <div class="stat-value" style="color: var(--accent-blue);">{{ res.total_manual_reviews }}</div>
+    <div class="stat-desc">{{ res.total_confirmed_issues }} confirmed issues scored</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Historical Finding Recall</div>
+    <div class="stat-value" style="color: var(--risk-low);">{{ "%.1f"|format(res.rule_finding_recall * 100) }}%</div>
+    <div class="stat-desc">{{ res.matched_findings }}/{{ res.total_confirmed_issues }} reproduced as a finding (entity + rule)</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Queue Record Recall</div>
+    <div class="stat-value" style="color: var(--accent-indigo);">{{ "%.1f"|format(res.queue_record_recall * 100) }}%</div>
+    <div class="stat-desc">{{ res.matched_queue }}/{{ res.total_confirmed_issues }} records in the review queue</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Evaluated</div>
+    <div class="stat-value" style="font-size: 1rem; color: var(--text-primary);">{{ latest.source_name }}</div>
+    <div class="stat-desc">{{ latest.created_at[:19].replace("T", " ") }} UTC by {{ latest.actor }}</div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom: 2rem;">
+  <div class="card-title">
+    <span>Confirmed Issues in <code>{{ latest.source_name }}</code></span>
+    <span style="font-size: 0.85rem; color: var(--text-secondary);">Run {{ latest.run_id }}</span>
+  </div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr><th>Entity</th><th>Rule</th><th>Record</th><th>SAT-SA Finding</th><th>In Review Queue</th></tr>
+      </thead>
+      <tbody>
+        {% for r in res.rows %}
+        <tr>
+          <td>{{ r.entity_id }}</td>
+          <td><code>{{ r.rule_id }}</code></td>
+          <td style="font-family: var(--font-mono); font-size: 0.8rem;">{{ r.record_id or "—" }}</td>
+          <td>{% if r.in_findings %}<span class="badge badge-low">Reproduced</span>{% else %}<span class="badge badge-crit">Missed</span>{% endif %}</td>
+          <td>{% if r.in_queue %}<span class="badge badge-low">Queued</span>{% else %}<span class="badge" style="background: var(--bg-hover); color: var(--text-muted);">Not queued</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-title"><span>Evaluation History</span></div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr><th>Evaluated (UTC)</th><th>Workpaper</th><th>By</th><th>Run</th><th>Rows</th><th>Finding Recall</th><th>Queue Recall</th></tr>
+      </thead>
+      <tbody>
+        {% for h in history %}
+        <tr>
+          <td>{{ h.created_at[:19].replace("T", " ") }}</td>
+          <td>{{ h.source_name }}</td>
+          <td>{{ h.actor }}</td>
+          <td style="font-family: var(--font-mono); font-size: 0.78rem;">{{ h.run_id }}</td>
+          <td>{{ h.result.total_manual_reviews }}</td>
+          <td>{{ "%.1f"|format(h.result.rule_finding_recall * 100) }}%</td>
+          <td>{{ "%.1f"|format(h.result.queue_record_recall * 100) }}%</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No shadow-pilot evaluations yet. Upload a workpaper above.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

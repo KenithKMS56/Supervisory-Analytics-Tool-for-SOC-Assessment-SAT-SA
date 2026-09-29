@@ -81,7 +81,7 @@
       <!-- 5. Configuration & Audit Popover Menu -->
       <div class="floating-nav-item-wrapper floating-nav-config" id="navConfig">
         <button type="button"
-                class="floating-nav-item floating-nav-btn {% if active_tab in ('blind_review', 'rules', 'dq', 'tuning', 'runs', 'audit') %}active{% endif %}"
+                class="floating-nav-item floating-nav-btn {% if active_tab in ('blind_review', 'rules', 'dq', 'tuning', 'runs', 'audit', 'shadow_pilot') %}active{% endif %}"
                 id="navConfigBtn"
                 aria-haspopup="true"
                 aria-expanded="false"
@@ -118,6 +118,10 @@
           <li role="none"><a role="menuitem" href="/runs" class="{% if active_tab in ('runs', 'audit') %}active{% endif %}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 14 14"></polyline></svg>
             Runs &amp; Audit
+          </a></li>
+          <li role="none"><a role="menuitem" href="/shadow-pilot" class="{% if active_tab == 'shadow_pilot' %}active{% endif %}">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg>
+            Shadow Pilot
           </a></li>
           {% endif %}
 

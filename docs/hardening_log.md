@@ -272,3 +272,11 @@ The only differences in the validation report are the run ID and the audit-entry
 - **How it's documented.** Recorded in `docs/validation.md` §5A as a rehearsal, not evidence.
 - **No metric moved.** The regenerated `docs/validation_report.md` differs only in run ID and audit-entry count.
 - **Follow-up.** `ShadowPilotAdapter` ignores `not_an_issue` rows and has no precision metric. Add both before a real pilot.
+
+## Step 17 — Shadow pilot in the app and in the validation report — done, verified
+
+- **Web page.** New analyst-only `/shadow-pilot` page (Config & Audit menu): upload a workpaper CSV, evaluate it against the latest run, and see per-row "reproduced / missed" and "queued" outcomes plus an evaluation history. Uploads over 5 MB, non-UTF-8 files and CSVs missing required columns are refused. Each evaluation is audited (`shadow_pilot_evaluated`).
+- **Storage.** Results are stored in a new `shadow_pilot_results` table (`SQLiteStore.save_shadow_result` / `list_shadow_results`). `ShadowPilotAdapter.evaluate_shadow_pilot` also returns the run ID, match counts and per-row outcomes; the existing keys are unchanged.
+- **Report.** `satsa validate --shadow-csv …` stores its evaluation before writing the report. Section 5 of `docs/validation_report.md` and `.html` now shows the latest stored result for the report's run, with a caveat that the figures are only as independent as the labels. Without the flag, the report still shows the last stored result.
+- **Tests.** `tests/test_shadow_pilot.py`; the RBAC matrix lists both routes as analyst-only.
+

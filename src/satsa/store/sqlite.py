@@ -188,6 +188,20 @@ class SQLiteStore:
                 )
                 """
             )
+            # Shadow-pilot evaluations (see satsa.validate.harness.ShadowPilotAdapter),
+            # kept so the /shadow-pilot page and the validation report can show them.
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS shadow_pilot_results (
+                    result_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    created_at TIMESTAMP NOT NULL,
+                    actor TEXT NOT NULL,
+                    source_name TEXT NOT NULL,
+                    result_json TEXT NOT NULL
+                )
+                """
+            )
         if "identities" in tables:
             self._migrate_supervisor_to_analyst()
 
@@ -624,6 +638,35 @@ class SQLiteStore:
             f"Checkpoint verified: entry {count} matches the recorded head "
             f"({chain.entries - count} entries appended since)."
         )
+
+    # --- Shadow-pilot evaluations ---
+
+    def save_shadow_result(
+        self, run_id: str, actor: str, source_name: str, result: dict[str, Any]
+    ) -> int:
+        with self.conn:
+            cur = self.conn.execute(
+                "INSERT INTO shadow_pilot_results (run_id, created_at, actor, source_name, result_json) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (run_id, utc_now_iso(), actor, source_name, json.dumps(result)),
+            )
+        return int(cur.lastrowid or 0)
+
+    def list_shadow_results(self, run_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        """Newest first; each row's `result` is the decoded evaluation."""
+        sql = "SELECT * FROM shadow_pilot_results"
+        params: list[Any] = []
+        if run_id is not None:
+            sql += " WHERE run_id = ?"
+            params.append(run_id)
+        sql += " ORDER BY result_id DESC LIMIT ?"
+        params.append(limit)
+        rows = []
+        for r in self.conn.execute(sql, params):
+            row = dict(r)
+            row["result"] = json.loads(row.pop("result_json"))
+            rows.append(row)
+        return rows
 
     # --- Periodic batch submissions (one per entity and period) ---
 

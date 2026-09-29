@@ -60,6 +60,8 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("GET", "/blind-review"): (ALL, True),
     ("GET", "/rules"): (ANALYST, True),
     ("GET", "/tuning"): (ANALYST, True),
+    ("GET", "/shadow-pilot"): (ANALYST, True),
+    ("POST", "/shadow-pilot"): (ANALYST, False),
     ("GET", "/templates/{template_name}"): (ANALYST, False),
     ("GET", "/reports/entity/{entity_id}/pdf"): (ALL, False),
     ("GET", "/reports/entity/{entity_id}/html"): (ALL, False),
