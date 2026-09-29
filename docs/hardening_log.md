@@ -265,3 +265,10 @@ The only differences in the validation report are the run ID and the audit-entry
 - **Migration.** `SQLiteStore._migrate_supervisor_to_analyst` renames the role on startup. The untouched demo `supervisor` account becomes `analyst` / `ChangeMe-Analyst#2026`; a rotated one keeps its username. Audit rows are not rewritten, so the chain still verifies.
 - **Tests.** `tests/test_rbac_matrix.py` expects `admin` to get 403 on every gated SAT-SA route. New tests cover login refusal, the migration, the examiner's hidden navigation and analyst-only decisions.
 
+
+## Step 16 — Shadow-pilot rehearsal (synthetic stand-in) — done, documented
+
+- **What ran.** `scripts/build_shadow_standin.py` builds a stand-in workpaper CSV from the synthetic ground truth (25 `confirmed` rows across the 13 injected defects; 15 `not_an_issue` rows from the clean entities). The labels are deliberately not taken from SAT-SA's own findings, which would make rule recall 100% by construction. `satsa validate --shadow-csv data/generated/shadow_pilot_standin.csv` reported `rule_finding_recall` 1.0 and `queue_record_recall` 0.16. Across every affected ID, 19/223 are queued, with at least one queue item for 7 of 13 defects.
+- **How it's documented.** Recorded in `docs/validation.md` §5A as a rehearsal, not evidence.
+- **No metric moved.** The regenerated `docs/validation_report.md` differs only in run ID and audit-entry count.
+- **Follow-up.** `ShadowPilotAdapter` ignores `not_an_issue` rows and has no precision metric. Add both before a real pilot.
