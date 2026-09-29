@@ -2,6 +2,7 @@
 
 import csv
 import json
+from html import escape
 from pathlib import Path
 from typing import Any
 
@@ -96,27 +97,113 @@ class ShadowPilotAdapter:
 
         matched_findings = 0
         matched_queue = 0
+        # Per-row outcome, so the /shadow-pilot page and the validation report can
+        # show which workpaper findings SAT-SA did and didn't reproduce.
+        rows: list[dict[str, Any]] = []
 
         for r in confirmed_reviews:
             ent = r["entity_id"]
             rec = r["record_id"]
             rule = r["rule_id"]
 
-            if (ent, rule) in tool_findings:
-                matched_findings += 1
-            if (ent, rec) in tool_queue_records:
-                matched_queue += 1
+            in_findings = (ent, rule) in tool_findings
+            in_queue = (ent, rec) in tool_queue_records
+            matched_findings += in_findings
+            matched_queue += in_queue
+            rows.append(
+                {
+                    "entity_id": ent,
+                    "record_id": rec,
+                    "rule_id": rule,
+                    "in_findings": in_findings,
+                    "in_queue": in_queue,
+                }
+            )
 
         finding_recall = matched_findings / total_confirmed if total_confirmed > 0 else 1.0
         queue_overlap = matched_queue / total_confirmed if total_confirmed > 0 else 1.0
 
         return {
             "status": "success",
+            "run_id": run_id,
             "total_manual_reviews": len(manual_reviews),
             "total_confirmed_issues": total_confirmed,
             "rule_finding_recall": round(finding_recall, 4),
             "queue_record_recall": round(queue_overlap, 4),
+            "matched_findings": matched_findings,
+            "matched_queue": matched_queue,
+            "rows": rows,
         }
+
+
+SHADOW_CAVEAT = (
+    "These figures are only as independent as the workpaper labels supplied: labels "
+    "taken from real historical examiner findings are evidence; synthetic or stand-in "
+    "labels only rehearse the pipeline (see docs/validation.md Section 5A)."
+)
+
+
+def shadow_markdown(stored: dict[str, Any] | None) -> list[str]:
+    """Markdown lines reporting a stored shadow-pilot evaluation, or saying there is none."""
+    if not stored:
+        return ["*No shadow-pilot evaluation has been recorded for this run.*"]
+    res = stored["result"]
+    lines = [
+        "### Shadow-Pilot Results",
+        f"Workpaper `{stored['source_name']}`, evaluated {stored['created_at']} by {stored['actor']}. {SHADOW_CAVEAT}",
+        "",
+        "| Measure | Value |",
+        "|---|---|",
+        f"| Workpaper rows | {res['total_manual_reviews']} ({res['total_confirmed_issues']} confirmed) |",
+        (
+            f"| Historical finding recall | {res['rule_finding_recall'] * 100:.1f}% "
+            f"({res.get('matched_findings', '?')}/{res['total_confirmed_issues']}) |"
+        ),
+        (
+            f"| Queue record recall | {res['queue_record_recall'] * 100:.1f}% "
+            f"({res.get('matched_queue', '?')}/{res['total_confirmed_issues']}) |"
+        ),
+    ]
+    missed = [r for r in res.get("rows", []) if not r["in_findings"]]
+    if missed:
+        lines += ["", "Confirmed workpaper findings with no matching SAT-SA finding:"]
+        lines += [f"- {r['entity_id']} / {r['rule_id']} (record {r['record_id'] or 'n/a'})" for r in missed]
+    return lines
+
+
+def shadow_html(stored: dict[str, Any] | None) -> str:
+    """HTML card reporting a stored shadow-pilot evaluation, or saying there is none."""
+    if not stored:
+        return (
+            '<div class="card"><h2>Shadow-Pilot Results</h2>'
+            "<p>No shadow-pilot evaluation has been recorded for this run.</p></div>"
+        )
+    res = stored["result"]
+    missed = [r for r in res.get("rows", []) if not r["in_findings"]]
+    missed_html = (
+        "<p>Confirmed workpaper findings with no matching SAT-SA finding:</p><ul>"
+        + "".join(
+            f"<li>{escape(r['entity_id'])} / {escape(r['rule_id'])} (record {escape(r['record_id'] or 'n/a')})</li>"
+            for r in missed
+        )
+        + "</ul>"
+        if missed
+        else ""
+    )
+    return f"""<div class="card">
+    <h2>Shadow-Pilot Results</h2>
+    <p>Workpaper <code>{escape(stored["source_name"])}</code>, evaluated {escape(stored["created_at"])} by {escape(stored["actor"])}.</p>
+    <p>{escape(SHADOW_CAVEAT)}</p>
+    <table>
+      <thead><tr><th>Measure</th><th>Value</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Workpaper rows</strong></td><td>{res["total_manual_reviews"]} ({res["total_confirmed_issues"]} confirmed)</td></tr>
+        <tr><td><strong>Historical finding recall</strong></td><td>{res["rule_finding_recall"] * 100:.1f}% ({res.get("matched_findings", "?")}/{res["total_confirmed_issues"]})</td></tr>
+        <tr><td><strong>Queue record recall</strong></td><td>{res["queue_record_recall"] * 100:.1f}% ({res.get("matched_queue", "?")}/{res["total_confirmed_issues"]})</td></tr>
+      </tbody>
+    </table>
+    {missed_html}
+  </div>"""
 
 
 class ValidationHarness:
@@ -425,8 +512,14 @@ class ValidationHarness:
         output_md_path: Path | str = "docs/validation_report.md",
         output_html_path: Path | str = "docs/validation_report.html",
         run_id: str | None = None,
+        shadow_result: dict[str, Any] | None = None,
     ) -> tuple[Path, Path]:
-        """Generate markdown and HTML validation report artifacts."""
+        """Generate markdown and HTML validation report artifacts.
+
+        `shadow_result` is a stored shadow-pilot evaluation (a row from
+        SQLiteStore.list_shadow_results); when given, its figures are reported in
+        Section 5 instead of only the method description.
+        """
         md_path = Path(output_md_path)
         md_path.parent.mkdir(parents=True, exist_ok=True)
         html_path = Path(output_html_path)
@@ -518,6 +611,8 @@ class ValidationHarness:
                 "1. **Historical finding recall**: Percentage of prior manually confirmed supervisory findings detected by SAT-SA.",
                 "2. **Queue discovery efficiency**: Overlap between past examiner investigations and SAT-SA's top-k review queue.",
                 "",
+                *shadow_markdown(shadow_result),
+                "",
                 "## 6. Sensitivity & Robustness Analysis",
                 f"- Evaluated with **±{stability.get('perturbation_percent')}%** parameter perturbation on domain weights.",
                 f"- Spearman rank correlation with +20% weights: **{stability.get('spearman_rho_plus_20'):.4f}**",
@@ -575,6 +670,8 @@ class ValidationHarness:
       </tbody>
     </table>
   </div>
+
+  {shadow_html(shadow_result)}
 
   <div class="footer">
     <div>National Critical Information Infrastructure Protection Centre (NCIIPC)</div>

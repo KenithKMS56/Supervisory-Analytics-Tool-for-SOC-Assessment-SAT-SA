@@ -179,8 +179,13 @@ relying on SAT-SA operationally.
    ```bash
    satsa validate --shadow-csv path/to/historical_reviews.csv
    ```
+   Or, in the app, sign in as the analyst and open **Config & Audit → Shadow Pilot** (`/shadow-pilot`)
+   to upload the CSV. It is evaluated against the latest assessment run.
 3. The harness computes historical finding recall and queue discovery efficiency against those
-   real prior findings.
+   real prior findings, and marks each confirmed row as reproduced or missed.
+4. Every evaluation is stored (`shadow_pilot_results` table) with its workpaper name, time and
+   actor. The `/shadow-pilot` page lists them, and `satsa validate` writes the latest one for the
+   report's run into Section 5 of `docs/validation_report.md` and `.html`.
 
 No shadow-pilot run against real NCIIPC/CSE data has been executed as of this writing; Sections 2
 and 2A remain synthetic-only until one is. Section 5A below is a rehearsal of the pipeline, not
