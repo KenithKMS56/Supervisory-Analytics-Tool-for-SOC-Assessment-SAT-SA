@@ -1,5 +1,5 @@
 ![CI](https://github.com/KenithKMS56/Supervisory-Analytics-Tool-for-SOC-Assessment-SAT-SA/actions/workflows/test.yml/badge.svg?branch=hardening/sih26157)
-# SAT-SA: Supervisory Analytics Tool for SOC Assessment
+# SAT-SA: Supervisory Analytics Tool for SOC Assessment:
 **National Critical Information Infrastructure Protection Centre (NCIIPC)**
 
 **SAT-SA** is an air-gapped, fully deterministic analytical tool and sovereign identity management platform designed for regulatory oversight of Security Operations Centres (SOCs) across Critical Sector Entities (CSEs) in power, banking, telecom, transport, and oil & gas.
