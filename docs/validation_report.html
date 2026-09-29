@@ -19,7 +19,7 @@
 <body>
   <h1>SAT-SA Detector-Implementation Correctness Report</h1>
   <div class="notice">Indicators requiring supervisory review; not a compliance determination.</div>
-  <p>Run ID: <code>RUN-20260929160403009485-d5980d82</code> | Methodology: Deterministic SQL & Robust Statistics (No AI/ML)</p>
+  <p>Run ID: <code>RUN-20260929175400749877-b3723c48</code> | Methodology: Deterministic SQL & Robust Statistics (No AI/ML)</p>
 
   <div class="card">
     <h2>Detector-Implementation Correctness Summary</h2>
@@ -28,9 +28,9 @@
       <tbody>
         <tr><td><strong>Entity Rank Precision@k</strong></td><td>100.0%</td><td><span class="badge">PASS</span></td></tr>
         <tr><td><strong>Injected Defect Recall</strong></td><td>100.0%</td><td><span class="badge">PASS</span></td></tr>
-        <tr><td><strong>Defect Precision (all findings)</strong></td><td>100.0% (13/13)</td><td><span class="badge">PASS</span></td></tr>
+        <tr><td><strong>Defect Precision (all findings)</strong></td><td>100.0% (21/21)</td><td><span class="badge">PASS</span></td></tr>
         <tr><td><strong>Spearman Rank Stability (±20% domain weights)</strong></td><td>1.0000</td><td><span class="badge">PASS</span></td></tr>
-        <tr><td><strong>Audit Chain Verification</strong></td><td>Audit chain verified successfully (114 entries intact).</td><td><span class="badge">PASS</span></td></tr>
+        <tr><td><strong>Audit Chain Verification</strong></td><td>Audit chain verified successfully (99 entries intact).</td><td><span class="badge">PASS</span></td></tr>
       </tbody>
     </table>
     <p>False positives on clean entities: none</p>
@@ -42,22 +42,22 @@
     <table>
       <thead><tr><th>Budget</th><th>Queue Alerts Examined</th><th>Affected Alerts Found</th><th>Queue Hit Rate</th><th>Random Rate</th><th>Lift Factor</th></tr></thead>
       <tbody>
-        <tr><td><strong>1%</strong></td><td>109 (queue exhausted)</td><td>14</td><td>12.8%</td><td>1.20%</td><td><strong>10.69x</strong></td></tr><tr><td><strong>2%</strong></td><td>109 (queue exhausted)</td><td>14</td><td>12.8%</td><td>1.20%</td><td><strong>10.69x</strong></td></tr><tr><td><strong>5%</strong></td><td>109 (queue exhausted)</td><td>14</td><td>12.8%</td><td>1.20%</td><td><strong>10.69x</strong></td></tr>
+        <tr><td><strong>1%</strong></td><td>109 (queue exhausted)</td><td>16</td><td>14.7%</td><td>2.67%</td><td><strong>5.5x</strong></td></tr><tr><td><strong>2%</strong></td><td>109 (queue exhausted)</td><td>16</td><td>14.7%</td><td>2.67%</td><td><strong>5.5x</strong></td></tr><tr><td><strong>5%</strong></td><td>109 (queue exhausted)</td><td>16</td><td>14.7%</td><td>2.67%</td><td><strong>5.5x</strong></td></tr>
       </tbody>
     </table>
   </div>
 
   <div class="card">
     <h2>Shadow-Pilot Results</h2>
-    <p>Workpaper <code>shadow_pilot_standin.csv</code>, evaluated 2026-09-29T16:04:08.200189+00:00 by cli.</p>
+    <p>Workpaper <code>shadow_pilot_standin.csv</code>, evaluated 2026-09-29T17:54:05.563125+00:00 by cli.</p>
     <p>These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).</p>
     <table>
       <thead><tr><th>Measure</th><th>Value</th></tr></thead>
       <tbody>
-        <tr><td><strong>Workpaper rows</strong></td><td>97 (22 confirmed)</td></tr>
-        <tr><td><strong>Historical finding recall</strong></td><td>100.0% (22/22)</td></tr>
-        <tr><td><strong>Queue record recall</strong></td><td>54.5% (12/22)</td></tr>
-        <tr><td><strong>Workpaper precision</strong></td><td>100.0% (13/13 adjudicated findings)</td></tr>
+        <tr><td><strong>Workpaper rows</strong></td><td>122 (47 confirmed)</td></tr>
+        <tr><td><strong>Historical finding recall</strong></td><td>100.0% (47/47)</td></tr>
+        <tr><td><strong>Queue record recall</strong></td><td>53.2% (25/47)</td></tr>
+        <tr><td><strong>Workpaper precision</strong></td><td>100.0% (21/21 adjudicated findings)</td></tr>
         <tr><td><strong>Findings not adjudicated by the workpaper</strong></td><td>0</td></tr>
         <tr><td><strong>Cleared records still in the review queue</strong></td><td>0/15</td></tr>
       </tbody>

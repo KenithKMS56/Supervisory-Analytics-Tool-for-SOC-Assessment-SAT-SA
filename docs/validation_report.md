@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-**Run ID:** `RUN-20260929160403009485-d5980d82` | **Validation Engine:** Fully Deterministic (No AI/ML)
+**Run ID:** `RUN-20260929175400749877-b3723c48` | **Validation Engine:** Fully Deterministic (No AI/ML)
 
 ## 1. Executive Summary & Verification Criteria
 This report documents whether each detection rule's code correctly implements its own specified logic, measured against a synthetic ground-truth dataset across 10 Critical Sector Entities (CSEs) whose injected defects are deliberately built to clearly exceed each rule's threshold. High scores here demonstrate implementation correctness on an unambiguous dataset, not real-world detection accuracy -- see docs/validation.md Section 0 for the harder, more realistic 'stress scenario' (`satsa validate-stress`) and Section 5 for the Shadow-Pilot mode against real historical findings.
@@ -13,14 +13,14 @@ Precision counts every finding whose (entity, rule) pair is not an injected defe
 |---|---|---|---|
 | **Entity Rank Precision@k** | 100.0% | ≥ 90% | PASS |
 | **Entity Rank Recall@k** | 100.0% | ≥ 90% | PASS |
-| **Injected Defect Recall** | 100.0% (13/13) | ≥ 90% | PASS |
-| **Overall Defect Precision** | 100.0% (13/13) | ≥ 85% | PASS |
+| **Injected Defect Recall** | 100.0% (21/21) | ≥ 90% | PASS |
+| **Overall Defect Precision** | 100.0% (21/21) | ≥ 85% | PASS |
 | **Overall Defect F1 Score** | 1.0000 | ≥ 0.85 | PASS |
 | **Ranking Stability (±20% domain weights)** | Spearman ρ = 1.0000 / 1.0000 | ≥ 0.85 | PASS |
-| **Cryptographic Audit Log Integrity** | Audit chain verified successfully (114 entries intact). | intact | PASS |
+| **Cryptographic Audit Log Integrity** | Audit chain verified successfully (99 entries intact). | intact | PASS |
 
 ## 2. Entity-Level Ranking & Confounder Discrimination
-- **Top-k Ranked Entities (k = injected entity count):** CSE-02, CSE-03, CSE-07, CSE-08, CSE-09, CSE-05, CSE-10
+- **Top-k Ranked Entities (k = injected entity count):** CSE-02, CSE-03, CSE-07, CSE-09, CSE-08, CSE-05, CSE-10
 - **Remaining Entities:** CSE-01, CSE-04, CSE-06
 - **Clean Entities Ranked in Top-k:** none
 - **Confounder Checks (measured from this run's findings):**
@@ -28,8 +28,8 @@ Precision counts every finding whose (entity, rule) pair is not an injected defe
   * **Small Entity Band (CSE-08, CSE-10):** 0 finding(s) for rules not injected there.
 
 ## 3. Rule Detection Accuracy (Execution Gaps & Negative Space)
-- **Findings Raised:** 13 (entity, rule) pairs
-- **Injected Defects Detected:** 13 of 13
+- **Findings Raised:** 21 (entity, rule) pairs
+- **Injected Defects Detected:** 21 of 21
 - **Missed Defects (False Negatives):** 0
 - **False Positives on Clean Entities:** 0
 - **False Positives on Defect Entities (rule not injected there):** 0
@@ -42,21 +42,29 @@ Precision counts every finding whose (entity, rule) pair is not an injected defe
 | `EG04` | 1 | 0 | 0 |
 | `EG05` | 1 | 0 | 0 |
 | `EG06` | 1 | 0 | 0 |
+| `EG07` | 1 | 0 | 0 |
+| `EG08` | 1 | 0 | 0 |
+| `EG09` | 1 | 0 | 0 |
 | `EG10` | 1 | 0 | 0 |
+| `EG11` | 1 | 0 | 0 |
+| `EG12` | 1 | 0 | 0 |
 | `NS01` | 3 | 0 | 0 |
 | `NS02` | 1 | 0 | 0 |
 | `NS03` | 1 | 0 | 0 |
 | `NS04` | 1 | 0 | 0 |
+| `NS05` | 1 | 0 | 0 |
 | `NS06` | 1 | 0 | 0 |
+| `NS07` | 1 | 0 | 0 |
+| `NS08` | 1 | 0 | 0 |
 
 ## 4. Review-Effort Lift Analysis
-Review-effort lift compares the share of defect-affected alerts among the review queue's top alert items with the share among all alerts (what random sampling would find), at budgets of 1%, 2% and 5% of total alerts. Both sides count alert records only. The queue holds 109 alert items (120 items in total); where a budget exceeds that, only the items that exist are counted as examined.
+Review-effort lift compares the share of defect-affected alerts among the review queue's top alert items with the share among all alerts (what random sampling would find), at budgets of 1%, 2% and 5% of total alerts. Both sides count alert records only. The queue holds 109 alert items (134 items in total); where a budget exceeds that, only the items that exist are counted as examined.
 
 | Audit Budget (% of Alerts) | Budget (alerts) | Queue Alerts Examined | Affected Alerts Found | Queue Hit Rate | Random Sampling Rate | Lift Factor |
 |---|---|---|---|---|---|---|
-| **1%** | 162 | 109 (queue exhausted) | 14 | 12.8% | 1.20% | **10.69x** |
-| **2%** | 324 | 109 (queue exhausted) | 14 | 12.8% | 1.20% | **10.69x** |
-| **5%** | 811 | 109 (queue exhausted) | 14 | 12.8% | 1.20% | **10.69x** |
+| **1%** | 162 | 109 (queue exhausted) | 16 | 14.7% | 2.67% | **5.50x** |
+| **2%** | 325 | 109 (queue exhausted) | 16 | 14.7% | 2.67% | **5.50x** |
+| **5%** | 812 | 109 (queue exhausted) | 16 | 14.7% | 2.67% | **5.50x** |
 
 ## 5. Shadow-Pilot Integration Method
 The `ShadowPilotAdapter` class allows regulatory examiners to validate SAT-SA against historical manual examination findings.
@@ -66,14 +74,14 @@ Examiners provide historical CSV logs with schema `(entity_id, record_id, rule_i
 3. **Workpaper precision**: Of the SAT-SA findings the workpaper adjudicates, the share examiners confirmed. Findings the workpaper does not mention are listed as unadjudicated, not counted as false positives.
 
 ### Shadow-Pilot Results
-Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-29T16:04:08.200189+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
+Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-29T17:54:05.563125+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
 
 | Measure | Value |
 |---|---|
-| Workpaper rows | 97 (22 confirmed) |
-| Historical finding recall | 100.0% (22/22) |
-| Queue record recall | 54.5% (12/22) |
-| Workpaper precision | 100.0% (13/13 adjudicated findings) |
+| Workpaper rows | 122 (47 confirmed) |
+| Historical finding recall | 100.0% (47/47) |
+| Queue record recall | 53.2% (25/47) |
+| Workpaper precision | 100.0% (21/21 adjudicated findings) |
 | Findings not adjudicated by the workpaper | 0 |
 | Cleared records still in the review queue | 0/15 |
 

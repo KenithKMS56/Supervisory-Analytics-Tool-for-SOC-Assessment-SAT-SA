@@ -10,7 +10,9 @@ from satsa.models.canonical import (
     Case,
     Closure,
     DeclaredKPI,
+    DetectionRule,
     Escalation,
+    ExternalReport,
     WorkflowEvent,
 )
 
@@ -302,3 +304,154 @@ def inject_cse10_volume_collapse_and_night_flatline(
         "dropped_after_date": dropped_after_date,
     }
     return kept, defect_info
+
+
+# --- Defects for rules the original ground truth never exercised -----------------
+# EG07, EG08, EG09, EG11, EG12, NS05, NS07 and NS08 had no injected defect, so the
+# validation only showed they stay quiet on synthetic data, never that they detect
+# anything. Each routine below plants one defect in an entity that already carries
+# other defects (CSE-01/04/06 stay clean), sized to cross only its own rule.
+
+
+def inject_cse08_analyst_burst(
+    alerts: list[Alert],
+    closures: list[Closure],
+    workflows: list[WorkflowEvent],
+    rng: random.Random,
+) -> dict[str, Any]:
+    """EG07: one CSE-08 analyst closes 35 alerts inside a single clock hour.
+
+    Closures are spread over distinct minutes (at most one per minute), so EG06's
+    8-per-minute bulk check is not tripped; alerts are low severity with multi-hour
+    lifetimes, so EG01/EG10 and EG06's deadline-hugging check are unaffected.
+    """
+    actor = "ANALYST_CSE08_BURST"
+    burst_hour = datetime(2026, 2, 17, 14, 0, 0)
+    minutes = sorted(rng.sample(range(60), 35))
+    affected = []
+    for i, minute in enumerate(minutes):
+        alert_id = f"CSE08-ALT-BURST-{i:03d}"
+        closed_at = burst_hour + timedelta(minutes=minute, seconds=rng.randint(0, 59))
+        created_at = closed_at - timedelta(hours=rng.randint(2, 6), minutes=rng.randint(0, 59))
+        alerts.append(
+            Alert(
+                entity_id="CSE-08",
+                alert_id=alert_id,
+                rule_id="RULE-POLICY_VIOLATION-11",
+                category="Policy Violation",
+                severity_orig="low",
+                severity_final="low",
+                asset_id=f"CSE08-AST-{(i % 15) + 1:04d}",
+                created_at=created_at,
+                acknowledged_at=created_at + timedelta(minutes=10),
+                first_touch_at=created_at + timedelta(minutes=12),
+                closed_at=closed_at,
+                closed_by=actor,
+                closed_by_type="human",
+                disposition="false_positive",
+                status="closed",
+            )
+        )
+        text = f"Reviewed policy alert {alert_id}; user activity matched approved change {i}."
+        closures.append(
+            Closure(
+                entity_id="CSE-08",
+                ref_id=alert_id,
+                reason_code="RC_VERIFIED",
+                disposition="false_positive",
+                comment_norm_hash=hashlib.sha256(text.lower().encode()).hexdigest()[:16],
+                comment_len=len(text),
+            )
+        )
+        workflows.append(
+            WorkflowEvent(
+                entity_id="CSE-08",
+                ref_type="alert",
+                ref_id=alert_id,
+                ts=created_at + timedelta(minutes=12),
+                actor=actor,
+                action="investigate",
+                from_status="investigating",
+                to_status="investigating",
+                note_len=len(text),
+            )
+        )
+        affected.append(alert_id)
+    return {"affected_ids": affected, "actor": actor}
+
+
+def inject_cse03_unacknowledged_escalations(escalations: list[Escalation]) -> dict[str, Any]:
+    """EG08: four CSE-03 escalations never acknowledged by Tier-2."""
+    targets = sorted((e for e in escalations if e.entity_id == "CSE-03"), key=lambda e: e.esc_id)[:4]
+    for e in targets:
+        e.acknowledged_at = None
+        e.outcome = None
+    return {"affected_ids": [e.esc_id for e in targets]}
+
+
+def inject_cse05_stale_open_cases(cases: list[Case]) -> dict[str, Any]:
+    """EG09: four CSE-05 high-severity cases left open since spring (> 14 days stale)."""
+    targets = sorted((c for c in cases if c.entity_id == "CSE-05" and c.severity == "high"), key=lambda c: c.case_id)[:4]
+    for c in targets:
+        c.status = "open"
+        c.closed_at = None
+    return {"affected_ids": [c.case_id for c in targets]}
+
+
+def inject_cse07_no_true_positives(alerts: list[Alert], closures: list[Closure]) -> dict[str, Any]:
+    """EG11: CSE-07 records no true positive in six months (every alert closed FP/benign)."""
+    relabelled = []
+    for a in alerts:
+        if a.entity_id == "CSE-07" and a.disposition == "true_positive":
+            a.disposition = "false_positive"
+            relabelled.append(a.alert_id)
+    ids = set(relabelled)
+    for c in closures:
+        if c.entity_id == "CSE-07" and c.ref_id in ids:
+            c.disposition = "false_positive"
+    return {"affected_ids": relabelled}
+
+
+def inject_cse09_skipped_containment(cases: list[Case], workflows: list[WorkflowEvent]) -> dict[str, Any]:
+    """EG12: three CSE-09 critical cases closed without the mandatory 'contain' stage."""
+    targets = {
+        c.case_id
+        for c in sorted((c for c in cases if c.entity_id == "CSE-09" and c.severity == "critical"), key=lambda c: c.case_id)[:3]
+    }
+    workflows[:] = [
+        w for w in workflows if not (w.ref_type == "case" and w.ref_id in targets and w.action == "contain")
+    ]
+    return {"affected_ids": sorted(targets)}
+
+
+def inject_cse09_dormant_rules(detection_rules: list[DetectionRule]) -> dict[str, Any]:
+    """NS05: CSE-09 keeps 25 enabled legacy rules that never fire (25/55 = 45% dormant)."""
+    added = []
+    for i in range(1, 26):
+        rule_id = f"RULE-LEGACY-{i:02d}"
+        detection_rules.append(
+            DetectionRule(entity_id="CSE-09", rule_id=rule_id, category="Policy Violation", enabled=True)
+        )
+        added.append(rule_id)
+    return {"affected_ids": added}
+
+
+def inject_cse02_unreported_incidents(cases: list[Case], external_reports: list[ExternalReport]) -> dict[str, Any]:
+    """NS07: two CSE-02 critical incidents with no external (NCIIPC) report."""
+    targets = {
+        c.case_id
+        for c in sorted((c for c in cases if c.entity_id == "CSE-02" and c.severity == "critical"), key=lambda c: c.case_id)[:2]
+    }
+    external_reports[:] = [r for r in external_reports if not (r.entity_id == "CSE-02" and r.incident_id in targets)]
+    return {"affected_ids": sorted(targets)}
+
+
+def inject_cse10_missing_month(alerts: list[Alert]) -> tuple[list[Alert], dict[str, Any]]:
+    """NS08: CSE-10 submits no alerts for June 2026 (5 of the 6 review months)."""
+    kept, dropped = [], []
+    for a in alerts:
+        if a.entity_id == "CSE-10" and a.created_at and (a.created_at.year, a.created_at.month) == (2026, 6):
+            dropped.append(a.alert_id)
+        else:
+            kept.append(a)
+    return kept, {"affected_ids": ["MISSING-MONTH-CSE10-2026-06"], "dropped_alerts": len(dropped)}

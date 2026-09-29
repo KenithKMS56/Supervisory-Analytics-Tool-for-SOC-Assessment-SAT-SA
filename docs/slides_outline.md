@@ -36,10 +36,10 @@
 - **Review Queue Prioritisation:** 70% top-risk alerts + 30% stratified random controls to measure lift and catch blindspots.
 - **Synthetic Ground-Truth Correctness Check** (not a real-world accuracy benchmark; see docs/validation.md §0):
   - **Entity Rank Precision@7:** **100.0%** (all 7 injected entities ranked in top 7; clean entities at bottom).
-  - **Injected Defect Recall / Precision:** **100.0%** (13/13 defects found; 13 of 13 findings correct, every finding counted).
-  - **Review-Effort Lift:** **10.7x** the defect-affected alert rate of random sampling across the whole 109-alert review queue, on the synthetic dataset.
+  - **Injected Defect Recall / Precision:** **100.0%** (21/21 defects found; 21 of 21 findings correct, every finding counted).
+  - **Review-Effort Lift:** **5.5x** the defect-affected alert rate of random sampling across the whole 109-alert review queue, on the synthetic dataset.
   - **Ranking Stability:** Spearman $\rho = \mathbf{1.0000}$ under $\pm 20\%$ domain-weight perturbations.
-  - **Limits:** 8 of 20 rules have no injected defect; real accuracy needs a shadow pilot on historical examiner workpapers.
+  - **Limits:** every rule has an injected defect, but thresholds are not varied; real accuracy needs a shadow pilot on historical examiner workpapers.
 
 ---
 
