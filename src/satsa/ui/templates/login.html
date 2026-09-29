@@ -81,7 +81,7 @@
             id="username"
             name="username"
             class="form-control"
-            placeholder="admin / supervisor / examiner"
+            placeholder="analyst / examiner"
             autocomplete="username"
             required
             autofocus
@@ -149,21 +149,18 @@
         <span class="pulse-dot"></span> Offline Local RBAC (PBKDF2-HMAC-SHA256)
       </div>
       <div class="demo-credentials-grid">
-        <div class="cred-item" onclick="fillCreds('admin', 'ChangeMe-Admin#2026')" title="Click to fill credentials">
-          <span class="cred-role">Admin</span>
-          <code>admin</code>
+        <div class="cred-item" onclick="fillCreds('analyst', 'ChangeMe-Analyst#2026')" title="Technical operator: ingestion, calibration, assessment runs">
+          <span class="cred-role">Analyst</span>
+          <code>analyst</code>
         </div>
-        <div class="cred-item" onclick="fillCreds('supervisor', 'ChangeMe-Supervisor#2026')" title="Click to fill credentials">
-          <span class="cred-role">Supervisor</span>
-          <code>supervisor</code>
-        </div>
-        <div class="cred-item" onclick="fillCreds('examiner', 'ChangeMe-Examiner#2026')" title="Click to fill credentials">
+        <div class="cred-item" onclick="fillCreds('examiner', 'ChangeMe-Examiner#2026')" title="Decision maker: review queue, blind review, regulatory dossiers">
           <span class="cred-role">Examiner</span>
           <code>examiner</code>
         </div>
       </div>
       <div class="demo-hint-text">
         Click any role above to pre-fill credentials for demonstration review.
+        NCIIPC administrators use the Admin Portal (:8000).
       </div>
     </div>
 
@@ -458,7 +455,7 @@
 
 .demo-credentials-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 0.4rem;
   margin-bottom: 0.5rem;
 }

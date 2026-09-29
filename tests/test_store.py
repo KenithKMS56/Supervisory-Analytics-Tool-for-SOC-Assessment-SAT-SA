@@ -52,3 +52,62 @@ def test_sqlite_audit_hashchain():
         assert ok is False
         assert "Tampered record" in msg
         store.close()
+
+
+def test_stray_unpartitioned_file_does_not_empty_table(tmp_path):
+    """An unpartitioned file beside the entity_id= partitions, or a file with
+    pass-through source columns, must not wipe every other row on load."""
+    store = DuckDBStore(tmp_path)
+    store.write_partitioned_parquet(
+        "alert",
+        pl.DataFrame(
+            {
+                "entity_id": ["CSE-01"],
+                "alert_id": ["A1"],
+                "created_at": ["2026-04-01T10:00:00"],
+                "system": ["Host1"],  # not an alert column
+            }
+        ),
+    )
+    pl.DataFrame({"alert_id": ["A2"], "created_at": ["not-a-date"]}).write_parquet(
+        tmp_path / "parquet" / "alert" / "data.parquet"
+    )
+    store.load_all_tables()
+    rows = store.query("SELECT entity_id, alert_id, created_at FROM alert ORDER BY alert_id").rows()
+    assert rows[0][:2] == ("CSE-01", "A1") and rows[0][2] is not None
+    assert rows[1] == (None, "A2", None)
+    store.close()
+
+
+def _legacy_db(tmp_path, supervisor_passphrase):
+    """A database as it looked before `supervisor` was renamed to `analyst`."""
+    db = tmp_path / "legacy.db"
+    store = SQLiteStore(db)
+    store.conn.execute("DELETE FROM identities WHERE username = 'analyst'")
+    store.upsert_identity("supervisor", "supervisor", supervisor_passphrase)
+    store.upsert_identity("portal_sup", "NCIIPC Supervisor", "Passphrase#12345")
+    store.append_audit("login", "supervisor", {"role": "supervisor"})
+    store.close()
+    return db
+
+
+def test_migration_renames_default_supervisor_account(tmp_path):
+    from satsa.auth.identities import verify_passphrase
+
+    store = SQLiteStore(_legacy_db(tmp_path, "ChangeMe-Supervisor#2026"))
+    assert store.get_identity("supervisor") is None
+    analyst = store.get_identity("analyst")
+    assert analyst is not None and analyst["role"] == "analyst"
+    assert verify_passphrase("ChangeMe-Analyst#2026", analyst["pass_salt"], analyst["pass_hash"])
+    assert store.get_identity("portal_sup")["role"] == "NCIIPC Analyst"
+    # History is left alone, so the hash chain still verifies.
+    assert store.verify_audit_chain()[0] is True
+    store.close()
+
+
+def test_migration_keeps_username_of_rotated_supervisor_account(tmp_path):
+    store = SQLiteStore(_legacy_db(tmp_path, "Rotated-Passphrase#2026"))
+    rotated = store.get_identity("supervisor")
+    assert rotated is not None and rotated["role"] == "analyst"
+    assert store.get_identity("analyst") is None
+    store.close()

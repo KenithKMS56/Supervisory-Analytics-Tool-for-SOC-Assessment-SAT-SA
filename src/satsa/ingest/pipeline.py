@@ -17,6 +17,19 @@ from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
 
 
+def default_entity_record(entity_id: str) -> dict[str, Any]:
+    """Registry record for a CSE first seen in submitted data rather than onboarded via /upload/add-entity."""
+    return {
+        "entity_id": entity_id,
+        "name": f"{entity_id} Operations",
+        "sector": "General Infrastructure",
+        "size_band": "Medium",
+        "soc_model": "inhouse",
+        "timezone": "UTC",
+        "declared_shift_hours": "09:00-18:00",
+    }
+
+
 class IngestionPipeline:
     """Orchestrates ingestion, data hygiene, DQ validation, Parquet persistence, and audit logging."""
 
@@ -357,6 +370,8 @@ class IngestionPipeline:
         processed_files: list[Path] = []
         # table -> sample of rejected (invalid) entity_id values
         rejected_ids: dict[str, list[str]] = {}
+        # table -> number of rows with no entity_id (and no default entity given)
+        unattributed: dict[str, int] = {}
 
         for f in raw_files:
             try:
@@ -379,7 +394,13 @@ class IngestionPipeline:
                     if default_entity_id and not clean_r.get("entity_id"):
                         clean_r["entity_id"] = default_entity_id
                     eid = clean_r.get("entity_id")
-                    if eid is not None and str(eid).strip() and not is_valid_entity_id(str(eid)):
+                    if eid is None or not str(eid).strip():
+                        # Every canonical table is partitioned by entity: a row
+                        # attributable to no CSE can't be assessed, and storing it
+                        # would land outside the entity partitions.
+                        unattributed[canonical_table] = unattributed.get(canonical_table, 0) + 1
+                        continue
+                    if not is_valid_entity_id(str(eid)):
                         rejected_ids.setdefault(canonical_table, []).append(str(eid))
                         continue
                     normalized_rows.append(clean_r)
@@ -391,6 +412,15 @@ class IngestionPipeline:
             except Exception:  # noqa: BLE001, S112
                 continue
 
+        if unattributed and not any(tables_data.values()):
+            counts = ", ".join(f"{n} {t}" for t, n in sorted(unattributed.items()))
+            return {
+                "status": "error",
+                "message": (
+                    f"No rows stored: {counts} row(s) have no entity_id. Add an entity_id "
+                    "column or choose a target entity for the upload."
+                ),
+            }
         if not tables_data:
             return {"status": "error", "message": "Failed to parse records from uploaded files."}
 
@@ -456,16 +486,7 @@ class IngestionPipeline:
         new_entities_to_add: list[dict[str, Any]] = []
         for eid in entities_present:
             if eid not in existing_eids:
-                new_ent_record = {
-                    "entity_id": eid,
-                    "name": f"{eid} Operations",
-                    "sector": "General Infrastructure",
-                    "size_band": "Medium",
-                    "soc_model": "inhouse",
-                    "timezone": "UTC",
-                    "declared_shift_hours": "09:00-18:00",
-                }
-                new_entities_to_add.append(new_ent_record)
+                new_entities_to_add.append(default_entity_record(eid))
                 existing_eids.add(eid)
 
         if new_entities_to_add:
@@ -486,6 +507,21 @@ class IngestionPipeline:
                     details=(
                         f"{len(bad_ids)} '{tbl}' rows rejected: entity_id does not match "
                         "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ (rows were not stored or evaluated)."
+                    ),
+                )
+            )
+        for tbl, n in sorted(unattributed.items()):
+            all_dq_issues.append(
+                DQIssue(
+                    issue_id=f"DQ-MISSING-ENTITY-ID-{primary_entity}-{tbl}",
+                    entity_id=primary_entity,
+                    check_name="missing_entity_id",
+                    severity="error",
+                    count=n,
+                    sample_records=[],
+                    details=(
+                        f"{n} '{tbl}' rows rejected: no entity_id and no target entity "
+                        "selected (rows were not stored or evaluated)."
                     ),
                 )
             )
@@ -565,4 +601,5 @@ class IngestionPipeline:
             "entities": list(entities_present),
             "row_counts": row_counts,
             "dq_issues": len(all_dq_issues),
+            "unattributed_rows": unattributed,
         }

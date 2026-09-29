@@ -16,20 +16,30 @@ SAT-SA provides evidentiary oversight rather than subjective compliance scoring.
 
 ## 2. User Personas & Permissions (RBAC)
 
-SAT-SA implements a real, local, offline role-based access control (RBAC) layer (`src/satsa/auth/`):
-three roles (`admin`, `supervisor`, `examiner`) backed by a SQLite `identities` table (usernames +
-PBKDF2-HMAC-SHA256-hashed passphrases, `hashlib.pbkdf2_hmac`, 200,000 iterations, no plaintext, no
-network-dependent identity provider) and a `sessions` table (random tokens, SHA-256-hashed at
-rest, cookie-based, 8-hour expiry). Login is at `/login`; logout at `/logout`. Default demo
-identities (`admin`, `supervisor`, `examiner`, documented in `src/satsa/auth/identities.py`) are
-seeded into a fresh database and MUST be rotated before real deployment via
-`satsa users set-password <username> --role <role>`.
+SAT-SA implements a real, local, offline role-based access control (RBAC) layer (`src/satsa/auth/`)
+backed by a SQLite `identities` table (usernames + PBKDF2-HMAC-SHA256-hashed passphrases,
+`hashlib.pbkdf2_hmac`, 200,000 iterations, no plaintext, no network-dependent identity provider)
+and a `sessions` table (random tokens, SHA-256-hashed at rest, cookie-based, 8-hour expiry). Login
+is at `/login`; logout at `/logout`. Default demo identities (`admin`, `analyst`, `examiner`,
+documented in `src/satsa/auth/identities.py`) are seeded into a fresh database and MUST be rotated
+before real deployment via `satsa users set-password <username> --role <role>`.
+
+SAT-SA (`:8001`) has exactly **two operator roles**, following the real regulator workflow: the
+analyst operates the pipeline and the examiner makes the regulatory decision. Both use the same app,
+and the navigation adapts to the role. Administrators work on the Admin Portal (`:8000`) only.
+Every other role (administrators, CSE-scoped accounts) is refused at SAT-SA's `/login`, and any
+session such a role holds gets HTTP 403 on every gated path (`enforce_auth_middleware`).
 
 | Role | Primary Responsibilities | Enforced Permissions (server-side, `require_role` / `require_admin_operator`) |
 |---|---|---|
-| **Admin** | System administration & batch maintenance | Everything a Supervisor can do, plus **sole** access to the NCIIPC Administration Portal (user provisioning, blocking, credential resets, organisation/CSE registries, admin audit trail, admin activity feed). Portal access is derived from the administrator role only; the legacy `is_admin_user` flag no longer grants it. |
-| **Supervisor** | Sector-wide risk assessment & queue allocation | Ingest periodic batches (`/upload`, `/upload/add-entity`, `/upload/trigger-demo`, `POST /api/v1/submissions`), trigger assessment runs, calibrate rule thresholds (`/tuning/save`), export/import signed rule packs (`/tuning/export-pack`, `/tuning/import-pack`). **No** Admin Portal access (HTTP 403). |
-| **Examiner** | Operational investigation & evidentiary review | Log review dispositions (`POST /api/v1/feedback`) and submit blinded-review verdicts (`POST /blind-review/submit`). Supervisor and Admin can also perform these. |
+| **Admin** (`NCIIPC Super Administrator`) | Identity & registry governance | **Sole** access to the NCIIPC Administration Portal (`:8000`): user provisioning, blocking, credential resets, organisation/CSE registries, admin audit trail, admin activity feed. Portal access is derived from the administrator role only; the legacy `is_admin_user` flag no longer grants it. **No** SAT-SA access. |
+| **Analyst** (`NCIIPC Analyst`, formerly *Supervisor*) | Technical operator ("engine room") | Ingest periodic batches (`/upload`, `/upload/add-entity`, `/upload/trigger-demo`, `POST /api/v1/submissions`), trigger assessment runs, calibrate rule thresholds (`/tuning`, `/tuning/save`), export/import signed rule packs, and use the technical views: alert explorer (`/alerts`), rules catalog, data quality (`/dq`), runs & audit ledger (`/runs`, `/audit`, `/api/v1/audit/verify`), CSV templates and raw CSV exports. Sees the review queue read-only. **No** Admin Portal access. |
+| **Examiner** (`NCIIPC Examiner`) | Decision maker / auditor | Executive views (portfolio heatmap, entity radar vs peer median, findings, PDF/HTML dossiers) plus the **only** role that records review decisions (`POST /api/v1/feedback`: *Escalate to Statutory Notice*, *Mark as Justified*, *Request CSE Explanation*) and blinded-review verdicts (`POST /blind-review/submit`). HTTP 403 on every analyst-only page. |
+
+Keeping the analyst and examiner apart is deliberate separation of duties: whoever tunes the rules
+can't also sign off the findings. The former `supervisor` role is migrated to `analyst` on startup
+(`SQLiteStore._migrate_supervisor_to_analyst`); historical audit entries keep their original actor,
+so the hash chain still verifies.
 
 **Current scope, stated plainly:** every route is classified in the explicit permission table in
 `tests/test_rbac_matrix.py`, and a completeness check fails if a new route is added without being
@@ -38,12 +48,11 @@ Everything else requires a session: anonymous browser page loads are redirected 
 anonymous API calls, downloads and all mutating requests get HTTP 401; a signed-in role outside the
 route's allowed set gets HTTP 403 and no state change occurs.
 
-- Read-only dashboard views (portfolio, entity profile, alert explorer, rules catalog, DQ view,
-  runs & audit) require any signed-in identity; entity-level pages additionally enforce the CSE
-  boundary (`require_cse_access`) for CSE-scoped roles.
-- Portfolio-wide data -- the bulk `/api/v1/*` JSON endpoints and the portfolio/CSV exports under
-  `/reports/` -- is limited to the NCIIPC supervisory roles (`examiner`, `supervisor`, `admin`), so a
-  CSE-scoped identity cannot pull other entities' findings.
+- Executive views (portfolio, entity profile, finding detail, review queue, blind review) and the
+  PDF/HTML dossiers and read APIs are open to both operators; entity-level pages still enforce the
+  CSE boundary (`require_cse_access`) as defence in depth.
+- Technical views and raw exports (alert explorer, rules catalog, DQ view, runs & audit, CSV
+  templates, findings/queue CSV exports) are analyst-only.
 
 Remaining gaps, stated plainly:
 
@@ -146,7 +155,12 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
 
 ## 5. Supervisory Report Deliverables
 
-- **Per-Entity Report (HTML & PDF):** Self-contained, printable supervisory report featuring risk summary, radar chart, top finding cards with evidence tables, and review queue samples.
-- **Portfolio Summary Report (HTML):** High-level cross-entity comparative briefing for executive supervisory leadership.
+- **Per-Entity Report (HTML & PDF):** Self-contained, printable supervisory report. The HTML version has a risk summary, domain table, finding table and review queue sample. The A4 PDF (`GET /reports/entity/{id}/pdf`) has a risk gauge, a domain bar chart and layered finding cards.
+- **Portfolio Summary Report (HTML & PDF):** Cross-entity briefing for supervisory leadership. The A4 PDF (`GET /reports/portfolio/pdf`) opens with an "N of M CSEs require supervisory attention" cover page (risk index ≥ 25, the dashboard's threshold). It then has an entity ranking chart, a domain-weakness chart, escalation findings, data-quality limitations and an appendix table.
+- **Finding Report (PDF):** A single-finding evidence report (`GET /reports/finding/{id}/pdf`, supervisory roles only). It gives one verdict (action badge + plain-language headline), a paired comparison chart where the rule stores two same-unit values (NS03, EG10), and the technical record.
+- **Layered finding cards (all PDFs):**
+  - Tier 1 is for non-technical readers: an ESCALATE / MONITOR / NOTE badge (from severity critical / high / other) and a one-sentence headline. The headline is filled only from the finding's stored values (`src/satsa/report/plain_language.py`).
+  - Tier 2 is a shaded Technical Detail box: the rule and version, the unchanged rationale, the measured values and the evidence record IDs from `finding_evidences`.
+- **Offline rendering:** All PDFs are rendered with ReportLab (`reportlab.graphics.charts`) on A4, with no network access. Charts carry band text labels and patterns, so they still read correctly in grayscale.
 - **Statutory Footer Notice:** Mandatory on every generated report and UI footer:
   > *"Indicators requiring supervisory review; not a compliance determination."*

@@ -80,7 +80,7 @@ def test_rule_pack_routes_return_503_without_secret(monkeypatch):
 
     monkeypatch.delenv("SATSA_RULEPACK_SECRET", raising=False)
     c = TestClient(app)
-    r = c.post("/login", data={"username": "supervisor", "password": "ChangeMe-Supervisor#2026"},
+    r = c.post("/login", data={"username": "analyst", "password": "ChangeMe-Analyst#2026"},
                follow_redirects=False)
     assert r.status_code == 303
     assert c.get("/tuning/export-pack").status_code == 503

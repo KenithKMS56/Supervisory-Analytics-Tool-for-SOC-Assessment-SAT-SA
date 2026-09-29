@@ -3,13 +3,6 @@
 {% block title %}Rule Calibration & Governance{% endblock %}
 
 {% block content %}
-{% set identity = get_identity(request) %}
-{% if not (identity and identity.role in ('admin', 'supervisor')) %}
-<div class="card" style="background: var(--bg-hover, #f8fafc); margin-bottom: 1rem; font-size: 0.85rem;">
-  Read-only: threshold calibration and rule-pack export/import require an <strong>admin</strong> or
-  <strong>supervisor</strong> session. <a href="/login?next=/tuning">Log in</a> to enable these actions.
-</div>
-{% endif %}
 <div class="header-section">
   <div class="header-title">
     <h1>Supervisory Rule Calibration & Rule-Pack Studio</h1>

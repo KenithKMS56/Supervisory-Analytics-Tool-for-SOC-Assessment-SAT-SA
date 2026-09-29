@@ -8,7 +8,21 @@
     <h1>{{ card.title }}</h1>
     <p>Entity: <a href="/entity/{{ card.entity_id }}" style="color: var(--accent-blue);"><strong>{{ card.entity_id }}</strong></a> | Rule: <strong>{{ card.rule_id }} (v{{ card.rule_version }})</strong> | Domain: <strong>{{ card.domain }}</strong></p>
   </div>
-  <div>
+  <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
+    <details class="export-menu">
+      <summary class="btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+        </svg>
+        Export Report &#9662;
+      </summary>
+      <div class="export-menu-items">
+        {% set export_ident = get_identity(request) %}{% if export_ident %}
+        <a href="/reports/finding/{{ card.finding_id }}/pdf">Finding Report PDF</a>
+        {% endif %}
+        <a href="/reports/entity/{{ card.entity_id }}/pdf">CSE Report PDF</a>
+      </div>
+    </details>
     <a href="/entity/{{ card.entity_id }}" class="btn btn-secondary">&larr; Back to Profile</a>
   </div>
 </div>

@@ -107,5 +107,5 @@ graph LR
 ```
 
 - **Zero CDN Guarantee:** 100% of frontend assets (Apache ECharts v5, pure CSS) are locally vendored inside `satsa/ui/static`.
-- **Role-Based Access Control (RBAC):** Simple local tokens enforce `admin`, `supervisor`, and `examiner` boundaries.
+- **Role-Based Access Control (RBAC):** Local sessions enforce two SAT-SA operator roles: `analyst` (ingest, runs, tuning, raw telemetry, audit ledger) and `examiner` (review decisions, blind review, dossiers). `admin` is confined to the Admin Portal (`:8000`).
 - **Rule Pack Updates:** Distributed as signed `.tar.gz` archives with detached SHA-256 HMAC manifests, imported via `satsa rules import`.

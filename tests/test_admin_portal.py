@@ -317,13 +317,13 @@ def test_server_side_cse_boundary_enforcement():
     assert "cannot access data for CSE-02" in exc_info.value.detail
 
     # 2. Supervisory identity (unscoped) -> Permitted to access any CSE
-    supervisor = Identity(
-        username="supervisor1",
-        role="NCIIPC Supervisor",
+    analyst = Identity(
+        username="analyst1",
+        role="NCIIPC Analyst",
         org_id=None,
         cse_id=None,
         status="ACTIVE",
     )
-    require_cse_access("CSE-01", supervisor)
-    require_cse_access("CSE-02", supervisor)
-    require_cse_access("CSE-10", supervisor)
+    require_cse_access("CSE-01", analyst)
+    require_cse_access("CSE-02", analyst)
+    require_cse_access("CSE-10", analyst)

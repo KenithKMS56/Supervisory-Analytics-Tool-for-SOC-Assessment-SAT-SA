@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-**Run ID:** `RUN-20260925111515531894-d9a74b92` | **Validation Engine:** Fully Deterministic (No AI/ML)
+**Run ID:** `RUN-20260929084505625012-5a40f928` | **Validation Engine:** Fully Deterministic (No AI/ML)
 
 ## 1. Executive Summary & Verification Criteria
 This report documents whether each detection rule's code correctly implements its own specified logic, measured against a synthetic ground-truth dataset across 10 Critical Sector Entities (CSEs) whose injected defects are deliberately built to clearly exceed each rule's threshold. High scores here demonstrate implementation correctness on an unambiguous dataset, not real-world detection accuracy -- see docs/validation.md Section 0 for the harder, more realistic 'stress scenario' (`satsa validate-stress`) and Section 5 for the Shadow-Pilot mode against real historical findings.
@@ -15,7 +15,7 @@ This report documents whether each detection rule's code correctly implements it
 | **Overall Defect Precision** | 100.0% | PASS |
 | **Overall Defect F1 Score** | 1.0000 | PASS |
 | **Ranking Stability (±20% Perturbation)** | Spearman ρ = 1.0000 / 1.0000 | PASS |
-| **Cryptographic Audit Log Integrity** | Audit chain verified successfully (5 entries intact). | PASS |
+| **Cryptographic Audit Log Integrity** | Audit chain verified successfully (2 entries intact). | PASS |
 
 ## 2. Entity-Level Ranking & Confounder Discrimination
 - **Injected Entities Flagged at Top-k:** CSE-08, CSE-03, CSE-07, CSE-02, CSE-09, CSE-05, CSE-10

@@ -7,19 +7,20 @@ from satsa.api.routes import app
 client = TestClient(app)
 
 
-def _login(c: TestClient, username: str = "admin", password: str = "ChangeMe-Admin#2026") -> None:
+def _login(c: TestClient, username: str = "analyst", password: str = "ChangeMe-Analyst#2026") -> None:
     resp = c.post(
         "/login", data={"username": username, "password": password}, follow_redirects=False
     )
     assert resp.status_code == 303, f"login failed: {resp.text}"
 
 
-# Most tests in this module exercise formerly-open routes that now require an
-# authenticated admin/supervisor/examiner session (see tests/test_auth.py for
-# the dedicated unauthenticated/wrong-role/audit-actor RBAC tests). Logging in
-# once as admin here keeps this module's existing coverage green since admin
-# is permitted on every gated route these tests touch.
+# Most tests in this module exercise gated routes (see tests/test_auth.py and
+# tests/test_rbac_matrix.py for the dedicated RBAC tests). The analyst may open
+# every page these tests touch; review decisions (queue feedback, blind-review
+# verdicts) are the examiner's only, so those go through examiner_client.
 _login(client)
+examiner_client = TestClient(app)
+_login(examiner_client, "examiner", "ChangeMe-Examiner#2026")
 
 
 def test_ui_portfolio_view():
@@ -97,7 +98,7 @@ def test_feedback_submission():
     q_items = r_q.json()
     if q_items:
         first_id = q_items[0]["queue_id"]
-        resp = client.post(
+        resp = examiner_client.post(
             "/api/v1/feedback",
             data={
                 "queue_id": first_id,
@@ -135,7 +136,7 @@ def test_ui_blind_review():
     assert "Cognitive bias mitigation" in resp.text
 
     # Submit a blind review
-    sub_resp = client.post(
+    sub_resp = examiner_client.post(
         "/blind-review/submit",
         data={
             "entity_id": "CSE-03",

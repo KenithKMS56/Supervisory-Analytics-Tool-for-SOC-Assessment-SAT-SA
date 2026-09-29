@@ -10,7 +10,10 @@ import hashlib
 import os
 import secrets
 
-ROLES: tuple[str, ...] = ("admin", "supervisor", "examiner")
+# `admin` works the NCIIPC Admin Portal (:8000) only; SAT-SA (:8001) accepts
+# just the two operator roles, `analyst` and `examiner` (see
+# satsa.admin.rbac.SATSA_OPERATOR_ROLES).
+ROLES: tuple[str, ...] = ("admin", "analyst", "examiner")
 
 PBKDF2_ITERATIONS = 200_000
 PBKDF2_ALGO = "sha256"
@@ -28,7 +31,7 @@ LOGIN_LOCKOUT_MINUTES = 15
 #   satsa users set-password <username>
 DEFAULT_IDENTITIES: tuple[tuple[str, str, str], ...] = (
     ("admin", "admin", "ChangeMe-Admin#2026"),
-    ("supervisor", "supervisor", "ChangeMe-Supervisor#2026"),
+    ("analyst", "analyst", "ChangeMe-Analyst#2026"),
     ("examiner", "examiner", "ChangeMe-Examiner#2026"),
 )
 

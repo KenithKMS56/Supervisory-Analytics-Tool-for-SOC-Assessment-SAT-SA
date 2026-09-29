@@ -9,6 +9,13 @@
     <p>Oversight posture across Critical Sector Entities for assessment period: <strong>{{ period }}</strong></p>
   </div>
   <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: nowrap;">
+    {% set export_ident = get_identity(request) %}
+    <a href="/reports/portfolio/pdf" class="btn" style="padding: 0.45rem 0.95rem; font-size: 0.82rem;" title="Audit-ready dossier compiled from the latest assessment run">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
+      </svg>
+      Download Executive Regulatory Dossier (PDF)
+    </a>
     <a href="/reports/portfolio/html" target="_blank" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem;">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -16,6 +23,7 @@
       </svg>
       Dossier (HTML)
     </a>
+    {% if export_ident and is_analyst(export_ident.role) %}
     <a href="/reports/export/findings-csv" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem;">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
@@ -29,6 +37,7 @@
       </svg>
       REST API Docs
     </a>
+    {% endif %}
     <a href="/queue" class="btn btn-secondary" style="padding: 0.45rem 0.85rem; font-size: 0.82rem; border-color: var(--accent-primary); color: var(--accent-primary);">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path>

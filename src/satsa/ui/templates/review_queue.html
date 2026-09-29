@@ -8,13 +8,17 @@
     <h1>Prioritised Supervisory Review Queue</h1>
     <p>Scientifically stratified queue: <strong>70% Top-Risk indicators</strong> combined with <strong>30% Stratified Random controls</strong> for lift benchmarking.</p>
   </div>
+  {% set identity = get_identity(request) %}
+  {% set can_decide = identity and is_examiner(identity.role) %}
   <div class="header-actions">
+    {% if identity and is_analyst(identity.role) %}
     <a href="/reports/export/queue-csv" class="btn btn-secondary">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>
       </svg>
       Export Queue (CSV)
     </a>
+    {% endif %}
   </div>
 </div>
 
@@ -44,9 +48,9 @@
     <div class="stat-desc">Zero-bias baseline verification</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">Examiner Confirmed</div>
+    <div class="stat-label">Escalated to Statutory Notice</div>
     <div class="stat-value" style="color: var(--risk-low);">{{ confirmed_count }}</div>
-    <div class="stat-desc">Substantiated operational defects</div>
+    <div class="stat-desc">Examiner-substantiated operational defects</div>
   </div>
 </div>
 
@@ -67,7 +71,7 @@
           <th>Priority Score</th>
           <th>Selection Reason & Tracing</th>
           <th>Examiner Disposition</th>
-          <th style="min-width: 220px;">Action</th>
+          <th style="min-width: 220px;">{% if can_decide %}Examiner Action{% else %}Action{% endif %}</th>
         </tr>
       </thead>
       <tbody>
@@ -98,29 +102,29 @@
           <td style="font-size: 0.82rem; color: var(--text-secondary); max-width: 320px; line-height: 1.4;">{{ item.selection_reason }}</td>
           <td>
             {% if item.examiner_status == 'confirmed' %}
-              <span class="badge badge-crit">Confirmed Defect</span>
+              <span class="badge badge-crit">Escalated to Statutory Notice</span>
             {% elif item.examiner_status == 'not_an_issue' %}
-              <span class="badge badge-low">Benign Context</span>
+              <span class="badge badge-low">Marked as Justified</span>
             {% elif item.examiner_status == 'needs_more_data' %}
-              <span class="badge badge-mod">Needs Data</span>
+              <span class="badge badge-mod">CSE Explanation Requested</span>
             {% else %}
               <span class="badge" style="background-color: var(--bg-hover); color: var(--text-muted);">Pending Review</span>
             {% endif %}
           </td>
-          <td style="min-width: 230px; white-space: nowrap;">
-            {% set identity = get_identity(request) %}
-            {% if identity and identity.role in ('examiner', 'supervisor', 'admin') %}
+          <td style="min-width: 290px; white-space: nowrap;">
+            {# Only the examiner decides; the analyst who ran and tuned the engine sees the outcome read-only. #}
+            {% if can_decide %}
             <form action="/api/v1/feedback" method="POST" style="display: flex; gap: 0.5rem; align-items: center; margin: 0;">
               <input type="hidden" name="queue_id" value="{{ item.queue_id }}">
-              <select name="status" class="form-control" style="padding: 0.35rem 0.5rem; font-size: 0.78rem; width: 145px; min-width: 145px; flex-shrink: 0;">
-                <option value="confirmed" {% if item.examiner_status == 'confirmed' %}selected{% endif %}>Confirm Defect</option>
-                <option value="not_an_issue" {% if item.examiner_status == 'not_an_issue' %}selected{% endif %}>Benign Issue</option>
-                <option value="needs_more_data" {% if item.examiner_status == 'needs_more_data' %}selected{% endif %}>Request Data</option>
+              <select name="status" class="form-control" style="padding: 0.35rem 0.5rem; font-size: 0.78rem; width: 215px; min-width: 215px; flex-shrink: 0;">
+                <option value="confirmed" {% if item.examiner_status == 'confirmed' %}selected{% endif %}>Escalate to Statutory Notice</option>
+                <option value="not_an_issue" {% if item.examiner_status == 'not_an_issue' %}selected{% endif %}>Mark as Justified</option>
+                <option value="needs_more_data" {% if item.examiner_status == 'needs_more_data' %}selected{% endif %}>Request CSE Explanation</option>
               </select>
               <button type="submit" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.78rem; font-weight: 600; min-width: 55px; flex-shrink: 0; justify-content: center;">Save</button>
             </form>
             {% else %}
-            <a href="/login?next=/queue" style="font-size: 0.78rem;">Log in to log a disposition</a>
+            <span style="font-size: 0.78rem; color: var(--text-muted);">Decision reserved for the NCIIPC Examiner</span>
             {% endif %}
           </td>
         </tr>

@@ -158,7 +158,7 @@ def test_successful_login_and_full_navigation_flow():
     # 3. Submit valid credentials
     auth_resp = client.post(
         "/login",
-        data={"username": "admin", "password": "ChangeMe-Admin#2026", "next": "/portfolio"},
+        data={"username": "analyst", "password": "ChangeMe-Analyst#2026", "next": "/portfolio"},
         follow_redirects=False,
     )
     assert auth_resp.status_code == 303

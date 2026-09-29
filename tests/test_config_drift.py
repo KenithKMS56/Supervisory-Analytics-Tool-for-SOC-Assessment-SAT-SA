@@ -153,12 +153,12 @@ def test_eg04_threshold_is_live_on_demo_dataset(tmp_path):
 
 
 @pytest.fixture
-def supervisor_client():
+def analyst_client():
     original = CONFIG.read_bytes()
     c = TestClient(app)
     r = c.post(
         "/login",
-        data={"username": "supervisor", "password": "ChangeMe-Supervisor#2026"},
+        data={"username": "analyst", "password": "ChangeMe-Analyst#2026"},
         follow_redirects=False,
     )
     assert r.status_code == 303
@@ -166,16 +166,16 @@ def supervisor_client():
     CONFIG.write_bytes(original)
 
 
-def test_tuning_page_renders_real_labels(supervisor_client):
-    html = supervisor_client.get("/tuning").text
+def test_tuning_page_renders_real_labels(analyst_client):
+    html = analyst_client.get("/tuning").text
     assert "EG01 - min share of closures faster than peer p5" in html
     assert 'name="EG04__max_comment_hash_share"' in html
     assert 'value="0.25"' in html
     assert "NS07 Statutory Reporting Window" not in html
 
 
-def test_tuning_save_round_trips_into_running_config(supervisor_client):
-    resp = supervisor_client.post(
+def test_tuning_save_round_trips_into_running_config(analyst_client):
+    resp = analyst_client.post(
         "/tuning/save",
         data={"EG04__max_comment_hash_share": "0.3", "NS01__min_silent_days": "4"},
         follow_redirects=False,
@@ -196,8 +196,8 @@ def test_tuning_save_round_trips_into_running_config(supervisor_client):
 
 
 @pytest.mark.parametrize("bad", ["abc", "-1", "2.5"])
-def test_tuning_save_rejects_invalid_values(supervisor_client, bad):
+def test_tuning_save_rejects_invalid_values(analyst_client, bad):
     before = CONFIG.read_bytes()
-    resp = supervisor_client.post("/tuning/save", data={"EG04__max_comment_hash_share": bad})
+    resp = analyst_client.post("/tuning/save", data={"EG04__max_comment_hash_share": bad})
     assert resp.status_code == 422
     assert CONFIG.read_bytes() == before

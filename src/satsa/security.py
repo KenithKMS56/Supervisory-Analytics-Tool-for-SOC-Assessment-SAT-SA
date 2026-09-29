@@ -21,6 +21,12 @@ ENTITY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 # Usernames: same rule the admin portal already enforces on user creation.
 USERNAME_RE = re.compile(r"^[a-zA-Z0-9_\-\.]{3,32}$")
 
+# Assessment run IDs, e.g. RUN-20260929081306814098-612ed014 (scoring/runner.py).
+RUN_ID_RE = re.compile(r"^RUN-[A-Za-z0-9_-]{1,64}$")
+
+# Finding IDs, e.g. FND-EG01-<entity_id>-<run_id> (rules/*.py).
+FINDING_ID_RE = re.compile(r"^FND-[A-Za-z0-9][A-Za-z0-9_.-]{0,190}$")
+
 
 def is_valid_entity_id(value: object) -> bool:
     """Return True if `value` is a string matching ENTITY_ID_RE (and contains no '..')."""
@@ -32,6 +38,16 @@ def require_entity_id(value: object) -> str:
     if not is_valid_entity_id(value):
         raise ValueError(f"Invalid entity_id: {value!r}")
     return str(value)
+
+
+def is_valid_run_id(value: object) -> bool:
+    """Return True if `value` is a string matching RUN_ID_RE."""
+    return isinstance(value, str) and bool(RUN_ID_RE.match(value))
+
+
+def is_valid_finding_id(value: object) -> bool:
+    """Return True if `value` is a string matching FINDING_ID_RE (and contains no '..')."""
+    return isinstance(value, str) and bool(FINDING_ID_RE.match(value)) and ".." not in value
 
 
 def is_valid_username(value: object) -> bool:

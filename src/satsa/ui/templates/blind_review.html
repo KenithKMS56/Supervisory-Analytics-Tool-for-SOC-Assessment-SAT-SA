@@ -86,10 +86,9 @@
     </p>
 
     {% set identity = get_identity(request) %}
-    {% if not (identity and identity.role in ('examiner', 'supervisor', 'admin')) %}
-    <p style="font-size: 0.85rem;">
-      <a href="/login?next=/blind-review%3Fentity_id%3D{{ selected_entity }}">Log in as examiner, supervisor, or admin</a>
-      to submit an independent assessment.
+    {% if not (identity and is_examiner(identity.role)) %}
+    <p style="font-size: 0.85rem; color: var(--text-secondary);">
+      Independent verdicts are submitted by the NCIIPC Examiner.
     </p>
     {% else %}
     <form method="post" action="/blind-review/submit">

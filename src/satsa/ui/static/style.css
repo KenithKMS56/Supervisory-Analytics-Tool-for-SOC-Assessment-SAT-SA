@@ -1775,3 +1775,47 @@ textarea::placeholder,
     padding: 32px var(--space-3) 85px;
   }
 }
+
+/* Export Report dropdown (native <details>, no JS) used on portfolio / entity / finding pages */
+.export-menu {
+  position: relative;
+  display: inline-block;
+}
+
+.export-menu > summary {
+  list-style: none;
+}
+
+.export-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.export-menu-items {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 50;
+  min-width: 220px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1);
+  background: var(--surface-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+}
+
+.export-menu-items a {
+  padding: 0.5rem 0.75rem;
+  border-radius: 8px;
+  color: var(--text-primary);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.export-menu-items a:hover {
+  background: var(--surface-hover);
+  text-decoration: none;
+}

@@ -5,23 +5,53 @@ from enum import Enum
 
 class Role:
     NCIIPC_SUPER_ADMIN = "NCIIPC Super Administrator"
-    NCIIPC_SUPERVISOR = "NCIIPC Supervisor"
+    NCIIPC_ANALYST = "NCIIPC Analyst"
     NCIIPC_EXAMINER = "NCIIPC Examiner"
     CSE_ADMIN = "CSE Administrator"
     SOC_MANAGER = "SOC Manager"
     SOC_ANALYST = "SOC Analyst"
     CSE_VIEWER = "CSE Viewer"
-    
-    # Legacy aliases
+
+    # Legacy aliases. "supervisor" is the pre-rename name of the analyst role;
+    # SQLiteStore._ensure_migrations rewrites stored rows to "analyst".
     LEGACY_ADMIN = "admin"
+    LEGACY_ANALYST = "analyst"
     LEGACY_SUPERVISOR = "supervisor"
     LEGACY_EXAMINER = "examiner"
+
+
+# Every spelling of the two SAT-SA operator roles. Deliberately disjoint from
+# the CSE-side "SOC Analyst" role.
+ANALYST_ROLE_NAMES: frozenset[str] = frozenset(
+    {
+        Role.NCIIPC_ANALYST,
+        Role.LEGACY_ANALYST,
+        "NCIIPC_ANALYST",
+        Role.LEGACY_SUPERVISOR,
+        "NCIIPC Supervisor",
+        "NCIIPC_SUPERVISOR",
+    }
+)
+EXAMINER_ROLE_NAMES: frozenset[str] = frozenset(
+    {Role.NCIIPC_EXAMINER, Role.LEGACY_EXAMINER, "NCIIPC_EXAMINER"}
+)
+# SAT-SA (:8001) admits only these: the analyst operates the pipeline, the
+# examiner decides. Administrators work the Admin Portal (:8000) only.
+SATSA_OPERATOR_ROLES: frozenset[str] = ANALYST_ROLE_NAMES | EXAMINER_ROLE_NAMES
+
+
+def is_analyst(role: str | None) -> bool:
+    return role in ANALYST_ROLE_NAMES
+
+
+def is_examiner(role: str | None) -> bool:
+    return role in EXAMINER_ROLE_NAMES
 
 
 # List of official authoritative roles for administrative assignment
 ALL_ASSIGNABLE_ROLES: tuple[str, ...] = (
     Role.NCIIPC_SUPER_ADMIN,
-    Role.NCIIPC_SUPERVISOR,
+    Role.NCIIPC_ANALYST,
     Role.NCIIPC_EXAMINER,
     Role.CSE_ADMIN,
     Role.SOC_MANAGER,
@@ -31,11 +61,8 @@ ALL_ASSIGNABLE_ROLES: tuple[str, ...] = (
 
 SUPERVISORY_ROLES: set[str] = {
     Role.NCIIPC_SUPER_ADMIN,
-    Role.NCIIPC_SUPERVISOR,
-    Role.NCIIPC_EXAMINER,
     Role.LEGACY_ADMIN,
-    Role.LEGACY_SUPERVISOR,
-    Role.LEGACY_EXAMINER,
+    *SATSA_OPERATOR_ROLES,
 }
 
 # Only administrator roles may use the Admin Portal: every portal route can
@@ -83,17 +110,14 @@ ROLE_PERMISSIONS: dict[str, set[Permission]] = {
         Permission.SUPERVISORY_OVERSIGHT,
         Permission.VIEW_ALL_CSES,
     },
-    Role.NCIIPC_SUPERVISOR: {
-        Permission.ACCESS_ADMIN_PORTAL,
-        Permission.VIEW_ADMIN_AUDIT,
-        Permission.SUPERVISORY_OVERSIGHT,
-        Permission.VIEW_ALL_CSES,
-    },
-    Role.LEGACY_SUPERVISOR: {
-        Permission.ACCESS_ADMIN_PORTAL,
-        Permission.VIEW_ADMIN_AUDIT,
-        Permission.SUPERVISORY_OVERSIGHT,
-        Permission.VIEW_ALL_CSES,
+    **{
+        name: {
+            Permission.ACCESS_ADMIN_PORTAL,
+            Permission.VIEW_ADMIN_AUDIT,
+            Permission.SUPERVISORY_OVERSIGHT,
+            Permission.VIEW_ALL_CSES,
+        }
+        for name in ANALYST_ROLE_NAMES
     },
     Role.NCIIPC_EXAMINER: {
         Permission.VIEW_ALL_CSES,

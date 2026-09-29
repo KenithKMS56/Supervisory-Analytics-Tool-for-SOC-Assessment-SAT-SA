@@ -107,7 +107,7 @@
           <select id="role" name="role" class="form-select" required>
             <optgroup label="NCIIPC Supervisory Authorities">
               <option value="NCIIPC Super Administrator" {% if user.role == 'NCIIPC Super Administrator' or user.role == 'admin' %}selected{% endif %}>NCIIPC Super Administrator</option>
-              <option value="NCIIPC Supervisor" {% if user.role == 'NCIIPC Supervisor' or user.role == 'supervisor' %}selected{% endif %}>NCIIPC Supervisor</option>
+              <option value="NCIIPC Analyst" {% if user.role in ('NCIIPC Analyst', 'analyst', 'NCIIPC Supervisor', 'supervisor') %}selected{% endif %}>NCIIPC Analyst</option>
               <option value="NCIIPC Examiner" {% if user.role == 'NCIIPC Examiner' or user.role == 'examiner' %}selected{% endif %}>NCIIPC Examiner</option>
             </optgroup>
             <optgroup label="Critical Sector Entity Scopes">

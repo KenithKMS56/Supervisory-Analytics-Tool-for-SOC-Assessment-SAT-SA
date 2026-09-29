@@ -59,7 +59,7 @@ satsa run --period 2026-Q1
 # Generate all reports (HTML, PDF, and CSV exports)
 satsa report --entity all --format all --output-dir reports/2026-Q1
 ```
-- Produces individual entity reports (`CSE-01_supervisory_report.pdf`, etc.), portfolio summary HTML, and CSV extracts (`findings_export.csv`, `review_queue_export.csv`, `metrics_export.csv`).
+- Produces individual entity reports (`CSE-01_supervisory_report.pdf`, etc.), the portfolio summary HTML and A4 portfolio PDF (`SAT-SA_Portfolio_Report_<run_id>.pdf`), and CSV extracts (`findings_export.csv`, `review_queue_export.csv`, `metrics_export.csv`). The web UI's **Export Report** menu downloads the same PDFs as `SAT-SA_Portfolio_Report_<run_id>.pdf`, `SAT-SA_CSE_<entity_id>_Report_<run_id>.pdf` and `SAT-SA_Finding_<finding_id>.pdf`. The report routes accept an optional `?run_id=` to pin an earlier assessment run.
 
 ### SOP-04: Launching Offline Examiner Portal
 ```bash
@@ -137,7 +137,7 @@ tar -czf backup/parquet_$(date +%Y%m%d).tar.gz data/parquet/
 | Activity | Frequency | Estimated Effort | Personnel |
 |---|---|---|---|
 | Ingesting Entity Batch | Monthly / Quarterly | ~15 minutes per entity | Data Analyst / Admin |
-| Assessment Execution | Quarterly | < 5 minutes (automated) | Supervisor |
+| Assessment Execution | Quarterly | < 5 minutes (automated) | NCIIPC Analyst |
 | Examiner Finding Review | Each assessment cycle (e.g. quarterly) | ~2 hours per entity | Supervisory Examiner |
 | Rule Calibration & Update | Bi-annually | ~4 hours | Lead Regulatory Specialist |
 | Audit Chain Verification | Weekly | < 1 minute (automated CLI) | Security Auditor |
