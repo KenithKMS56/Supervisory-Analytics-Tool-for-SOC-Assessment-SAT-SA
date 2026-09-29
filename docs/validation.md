@@ -182,5 +182,48 @@ relying on SAT-SA operationally.
 3. The harness computes historical finding recall and queue discovery efficiency against those
    real prior findings.
 
-No shadow-pilot run has been executed against real NCIIPC/CSE data as of this writing; Sections 2
-and 2A remain synthetic-only until one is.
+No shadow-pilot run against real NCIIPC/CSE data has been executed as of this writing; Sections 2
+and 2A remain synthetic-only until one is. Section 5A below is a rehearsal of the pipeline, not
+such a run.
+
+### 5A. Shadow-Pilot Rehearsal (synthetic stand-in -- NOT independent evidence)
+
+This is a pipeline rehearsal, not a third validation tier. It checks that a workpaper CSV flows
+through `satsa validate --shadow-csv` end to end and shows what the adapter reports. It says
+**nothing** about real-world accuracy.
+
+**Where the "examiner labels" come from.** The stand-in CSV
+(`data/generated/shadow_pilot_standin.csv`, built by `scripts/build_shadow_standin.py`) is made
+from the synthetic generator's own injected defects, the same `ground_truth.json` that Section 2
+uses, relabelled as workpaper rows:
+- **25 `confirmed` rows**: each of the 13 injected defects, carrying up to 5 of its affected
+  record IDs (the first by sort order).
+- **15 `not_an_issue` rows**: 5 alerts each from the three clean entities (CSE-01, CSE-04, CSE-06).
+
+These are not historical examiner findings. They are also deliberately **not** taken from
+SAT-SA's own findings: labels copied from the tool's output would make rule recall 100% by
+construction.
+
+**Result** (primary dataset, run `RUN-20260929125340195791-c7df1e40`):
+
+| Measure | Value | What it means |
+|---|---|---|
+| `rule_finding_recall` | **1.0** (25/25 confirmed rows) | Every labelled defect's `(entity, rule)` pair has a finding. This restates Section 2's 13/13 injected-defect recall in workpaper form, because both use the same ground truth. It is not new evidence. |
+| `queue_record_recall` | **0.16** (4/25) | Only 4 labelled records appear in the review queue: two assets (NS01, NS06), a category (NS02) and an asset (EG05). |
+| Queue coverage of *all* affected IDs | 19/223; at least one queue item for 7 of 13 defects | Computed by the build script over every affected ID, not just the capped sample. |
+
+**Reading the queue figure.** The review queue is a 30-item-per-entity sample (70% top-risk,
+30% stratified random; 275 items in this run). It is built to put *examples* of each triggered rule
+in front of an examiner, not to list every affected record. Low record-level recall is therefore
+expected: for example, only 11 of the 195 EG01 fast-closure alerts are queued. The 4/25 figure also
+depends on which IDs the capped sample happens to pick. None of CSE-03's first five EG01 alerts
+by ID are among the 11 queued, which is why the coverage row is the steadier figure. Defects with
+no queued record here include the EG03 missing escalations (0/4) and entity-level defects such as
+EG10, EG04, EG06, NS03 and NS04, whose marker IDs are not queue records.
+
+**Adapter limits this rehearsal exposes.** `ShadowPilotAdapter` ignores `not_an_issue` rows and has
+no precision metric, so it measures nothing about false positives. A real pilot needs both before
+its numbers mean much.
+
+**What still requires real data.** Actual historical NCIIPC/CSE examiner workpapers. Until
+SAT-SA is run against those, this section and Sections 2 and 2A are synthetic only.
