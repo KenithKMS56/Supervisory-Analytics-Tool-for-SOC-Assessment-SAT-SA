@@ -12,8 +12,8 @@ ratios.
 This module builds a small, independent, harder dataset with three entities:
 
 - STRESS-01: an EG04 (template-driven closures) defect injected at a
-  magnitude just barely over the rule's actual code threshold
-  (repeat_share > 0.25, with the majority comment-hash group >= 10 alerts).
+  magnitude just barely over the rule's configured threshold
+  (max_comment_hash_share 0.25, min_hash_group_size 10 in config/rules.yaml).
   A one-alert swing either way changes the classification.
 - STRESS-02: an ambiguous case where the SAME closure pattern (short,
   zero-investigation comments repeated across a majority of alerts)
@@ -21,9 +21,16 @@ This module builds a small, independent, harder dataset with three entities:
   closures) simultaneously on overlapping evidence, so it is genuinely
   unclear which single rule "owns" the defect.
 - STRESS-03: a clean entity with realistic jitter/noise (variable closure
-  durations, unique comments, mixed day/night activity, varied rule IDs)
-  that must NOT cross any rule threshold -- a true-negative-under-noise
-  check, rather than a hand-picked, noise-free "clean" baseline.
+  durations, unique comments, mixed day/night activity, varied rule IDs and
+  assets, a few true positives, and near-miss repeat-alert noise) that must
+  NOT cross any rule threshold -- a true-negative-under-noise check, rather
+  than a hand-picked, noise-free "clean" baseline.
+
+Every entity spans the full 6-month review period over several assets. An
+earlier version packed each entity into ~1 month on a single asset with every
+alert closed benign. That made NS08 (6-month completeness) fire on all three
+entities and put EG05's exact defect pattern into the "clean" STRESS-03, so the
+two false positives it reported were generator artifacts, not rule noise.
 
 This is intentionally kept separate from the primary demo dataset in
 data/generated/ so it never perturbs the primary correctness-check numbers
@@ -47,13 +54,20 @@ from satsa.models.canonical import (
     DetectionRule,
     Entity,
     LogSourceDaily,
+    Remediation,
     WorkflowEvent,
 )
 from satsa.synth.ground_truth import GroundTruth, InjectedDefect
 
 STRESS_SEED_DEFAULT = 9901
-_BASE_TIME = datetime(2026, 1, 5, 9, 0, 0)
+_BASE_TIME = datetime(2026, 1, 1, 9, 0, 0)
+_PERIOD_DAYS = 181  # Jan-Jun: NS08 expects alerts in each of the 6 review months
+_ASSETS_PER_ENTITY = 4
 _RULE_IDS = [f"DET-{i:03d}" for i in range(1, 13)]
+
+
+def _asset_ids(entity_id: str) -> list[str]:
+    return [f"{entity_id}-AST-{n:02d}" for n in range(1, _ASSETS_PER_ENTITY + 1)]
 
 
 def _required_ts(ts: datetime | None) -> datetime:
@@ -73,11 +87,13 @@ def _mk_alert(
     duration_min: int,
     asset_id: str,
     rng: random.Random,
+    rule_id: str | None = None,
+    disposition: str | None = None,
 ) -> Alert:
     return Alert(
         entity_id=entity_id,
         alert_id=f"{entity_id}-ALT-{idx:04d}",
-        rule_id=rng.choice(_RULE_IDS),
+        rule_id=rule_id or rng.choice(_RULE_IDS),
         category="Suspicious Activity",
         severity_orig="medium",
         severity_final="medium",
@@ -88,7 +104,7 @@ def _mk_alert(
         closed_at=created_at + timedelta(minutes=duration_min),
         closed_by=f"STRESS_ANALYST_{idx % 3}",
         closed_by_type="human",
-        disposition="false_positive" if idx % 4 else "benign",
+        disposition=disposition or ("false_positive" if idx % 4 else "benign"),
         status="closed",
     )
 
@@ -104,14 +120,14 @@ def _entity_spec(entity_id: str, name: str) -> Entity:
 
 
 def _build_stress01(rng: random.Random) -> tuple[list[Alert], list[Closure], InjectedDefect]:
-    """EG04 defect injected just barely over the code's real 25% threshold.
+    """EG04 defect injected just barely over the rule's configured 25% threshold.
 
     40 human-closed alerts; 11 share an identical, non-trivial comment hash
     (repeat_share = 11/40 = 27.5%, only 2.5 points over the 25% code
     threshold, with 11 >= the required 10-alert hash-group floor).
     """
     entity_id = "STRESS-01"
-    asset_id = f"{entity_id}-AST-01"
+    assets = _asset_ids(entity_id)
     total = 40
     borderline_count = 11
     borderline_ids = set(rng.sample(range(total), borderline_count))
@@ -121,9 +137,10 @@ def _build_stress01(rng: random.Random) -> tuple[list[Alert], list[Closure], Inj
     alerts: list[Alert] = []
     closures: list[Closure] = []
     for i in range(total):
-        created_at = _BASE_TIME + timedelta(hours=i * 3, minutes=rng.randint(0, 40))
+        # Every 4.5 days across the 6-month period.
+        created_at = _BASE_TIME + timedelta(days=i * 4.5, minutes=rng.randint(0, 40))
         duration_min = rng.randint(25, 90)
-        alert = _mk_alert(entity_id, i, created_at, duration_min, asset_id, rng)
+        alert = _mk_alert(entity_id, i, created_at, duration_min, rng.choice(assets), rng)
         alerts.append(alert)
         if i in borderline_ids:
             closures.append(
@@ -160,9 +177,8 @@ def _build_stress01(rng: random.Random) -> tuple[list[Alert], list[Closure], Inj
         share=share,
         description=(
             f"Borderline EG04 case: {borderline_count}/{total} ({share:.1%}) human-closed alerts "
-            "share an identical comment hash, only ~2.5 points over the rule's real 25% code "
-            "threshold (not the aspirational 45% figure in config/rules.yaml, which the current "
-            "EG04 implementation does not read)."
+            "share an identical comment hash, only ~2.5 points over EG04's configured 25% "
+            "max_comment_hash_share threshold."
         ),
     )
     return alerts, closures, defect
@@ -173,7 +189,7 @@ def _build_stress02(
 ) -> tuple[list[Alert], list[Closure], list[WorkflowEvent], list[InjectedDefect]]:
     """A single closure pattern that satisfies BOTH EG02 and EG04 on overlapping evidence."""
     entity_id = "STRESS-02"
-    asset_id = f"{entity_id}-AST-01"
+    assets = _asset_ids(entity_id)
     total = 40
     ambiguous_count = 12
     ambiguous_ids = set(rng.sample(range(total), ambiguous_count))
@@ -184,9 +200,10 @@ def _build_stress02(
     closures: list[Closure] = []
     workflows: list[WorkflowEvent] = []
     for i in range(total):
-        created_at = _BASE_TIME + timedelta(hours=i * 3, minutes=rng.randint(0, 40))
+        # Every 4.5 days across the 6-month period.
+        created_at = _BASE_TIME + timedelta(days=i * 4.5, minutes=rng.randint(0, 40))
         duration_min = rng.randint(25, 90)
-        alert = _mk_alert(entity_id, i, created_at, duration_min, asset_id, rng)
+        alert = _mk_alert(entity_id, i, created_at, duration_min, rng.choice(assets), rng)
         alerts.append(alert)
         if i in ambiguous_ids:
             closures.append(
@@ -272,21 +289,41 @@ def _build_stress02(
     return alerts, closures, workflows, defects
 
 
-def _build_stress03(rng: random.Random) -> tuple[list[Alert], list[Closure], list[WorkflowEvent]]:
-    """A clean entity with realistic jitter -- a true-negative-under-noise check."""
+def _build_stress03(
+    rng: random.Random,
+) -> tuple[list[Alert], list[Closure], list[WorkflowEvent], list[Remediation]]:
+    """A clean entity with realistic jitter -- a true-negative-under-noise check.
+
+    Includes two near-miss repeat-alert patterns that EG05 must NOT flag: one noisy
+    (asset, rule) pair that has a tuning ticket, and one without a ticket, which on its
+    own is below EG05's min_unaddressed_pairs of 2.
+    """
     entity_id = "STRESS-03"
-    asset_id = f"{entity_id}-AST-01"
+    assets = _asset_ids(entity_id)
     total = 120
+    tuned_pair = (assets[0], "DET-001")  # 10 repeats, all benign, remediated
+    untuned_pair = (assets[1], "DET-002")  # 9 repeats, all benign, no ticket
+    other_rules = _RULE_IDS[2:]
 
     alerts: list[Alert] = []
     closures: list[Closure] = []
     workflows: list[WorkflowEvent] = []
     for i in range(total):
-        # Spread across day AND night hours so no artificial flatline appears.
+        # Spread across day AND night hours, every ~1.5 days over the 6-month period.
         hour_offset = rng.randint(0, 23)
-        created_at = _BASE_TIME + timedelta(days=i // 4, hours=hour_offset, minutes=rng.randint(0, 59))
+        created_at = _BASE_TIME + timedelta(days=i * 1.5, hours=hour_offset, minutes=rng.randint(0, 59))
         duration_min = rng.randint(15, 180)  # realistic, noisy triage durations
-        alert = _mk_alert(entity_id, i, created_at, duration_min, asset_id, rng)
+        if i < 10:
+            asset_id, rule_id, disposition = *tuned_pair, "false_positive"
+        elif i < 19:
+            asset_id, rule_id, disposition = *untuned_pair, "benign"
+        else:
+            asset_id, rule_id = rng.choice(assets), rng.choice(other_rules)
+            roll = rng.random()
+            disposition = "true_positive" if roll < 0.06 else ("false_positive" if roll < 0.75 else "benign")
+        alert = _mk_alert(
+            entity_id, i, created_at, duration_min, asset_id, rng, rule_id=rule_id, disposition=disposition
+        )
         alerts.append(alert)
 
         unique_text = (
@@ -318,7 +355,17 @@ def _build_stress03(rng: random.Random) -> tuple[list[Alert], list[Closure], lis
             )
         )
 
-    return alerts, closures, workflows
+    remediations = [
+        Remediation(
+            entity_id=entity_id,
+            ticket_id=f"{entity_id}-TUNE-001",
+            linked_asset_id=tuned_pair[0],
+            linked_rule_id=tuned_pair[1],
+            type="tuning",
+            created_at=_BASE_TIME + timedelta(days=20),
+        )
+    ]
+    return alerts, closures, workflows, remediations
 
 
 def generate_stress_dataset(seed: int = STRESS_SEED_DEFAULT) -> tuple[dict[str, list[Any]], GroundTruth]:
@@ -338,13 +385,14 @@ def generate_stress_dataset(seed: int = STRESS_SEED_DEFAULT) -> tuple[dict[str, 
     assets = [
         Asset(
             entity_id=e.entity_id,
-            asset_id=f"{e.entity_id}-AST-01",
+            asset_id=asset_id,
             asset_type="core_banking_server",
             criticality=3,
             monitored_flag=True,
             owner_unit="stress-test",
         )
         for e in entities
+        for asset_id in _asset_ids(e.entity_id)
     ]
     detection_rules = [
         DetectionRule(entity_id=e.entity_id, rule_id=rid, category="Suspicious Activity", enabled=True)
@@ -354,18 +402,19 @@ def generate_stress_dataset(seed: int = STRESS_SEED_DEFAULT) -> tuple[dict[str, 
     log_sources = [
         LogSourceDaily(
             entity_id=e.entity_id,
-            asset_id=f"{e.entity_id}-AST-01",
+            asset_id=asset_id,
             source_type="edr",
             date=(_BASE_TIME + timedelta(days=d)).date(),
             event_count=rng.randint(5, 50),
         )
         for e in entities
-        for d in range(30)
+        for asset_id in _asset_ids(e.entity_id)
+        for d in range(_PERIOD_DAYS)
     ]
 
     alerts1, closures1, defect1 = _build_stress01(rng)
     alerts2, closures2, workflows2, defects2 = _build_stress02(rng)
-    alerts3, closures3, workflows3 = _build_stress03(rng)
+    alerts3, closures3, workflows3, remediations3 = _build_stress03(rng)
 
     dataset: dict[str, list[Any]] = {
         "entity": entities,
@@ -375,6 +424,7 @@ def generate_stress_dataset(seed: int = STRESS_SEED_DEFAULT) -> tuple[dict[str, 
         "alert": [*alerts1, *alerts2, *alerts3],
         "closure": [*closures1, *closures2, *closures3],
         "workflow_event": [*workflows2, *workflows3],
+        "remediation": remediations3,
     }
 
     ground_truth = GroundTruth(
@@ -387,7 +437,7 @@ def generate_stress_dataset(seed: int = STRESS_SEED_DEFAULT) -> tuple[dict[str, 
         confounders=[
             {
                 "type": "borderline_threshold",
-                "description": "STRESS-01's defect sits ~2.5 points over EG04's real code threshold.",
+                "description": "STRESS-01's defect sits ~2.5 points over EG04's 25% threshold.",
             },
             {
                 "type": "dual_rule_ambiguity",

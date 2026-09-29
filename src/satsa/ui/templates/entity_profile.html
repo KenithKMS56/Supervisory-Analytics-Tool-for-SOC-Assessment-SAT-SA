@@ -53,6 +53,7 @@
   <div class="card">
     <div class="card-title">
       <span>8-Domain Radar vs Peer Median</span>
+      <span style="font-size: 0.8rem; color: var(--text-secondary);">Peers: {{ peer_label }}</span>
     </div>
     <div id="domainRadar" style="width: 100%; height: 320px;"></div>
   </div>
@@ -63,7 +64,8 @@
       <span class="badge badge-mod">Audit Verification</span>
     </div>
     <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
-      Comparison between declared management figures and empirical recomputation from raw timestamps.
+      Declared MTTR compared with MTTR recomputed from the submitted alert timestamps, for each severity
+      the entity declared. A gap above {{ (kpi_gap_threshold * 100)|round(0)|int }}% (EG10's threshold) is flagged.
     </p>
     <table>
       <thead>
@@ -81,13 +83,15 @@
           <td>{{ k.declared }} mins</td>
           <td>{{ k.empirical }} mins</td>
           <td>
-            {% if k.gap_ratio > 0.50 %}
-              <span class="badge badge-crit">+{{ (k.gap_ratio * 100)|round(0) }}% Gap</span>
+            {% if k.gap_ratio > kpi_gap_threshold %}
+              <span class="badge badge-crit">+{{ (k.gap_ratio * 100)|round(0)|int }}% Gap</span>
             {% else %}
-              <span class="badge badge-low">Reconciled</span>
+              <span class="badge badge-low">Within threshold ({{ "%+d"|format((k.gap_ratio * 100)|round(0)|int) }}%)</span>
             {% endif %}
           </td>
         </tr>
+        {% else %}
+        <tr><td colspan="4" style="color: var(--text-muted);">No declared High/Critical MTTR to reconcile.</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -151,7 +155,7 @@
 
   const option = {
     tooltip: {},
-    legend: { data: ['This Entity', 'Peer Median'], bottom: 0 },
+    legend: { data: peerVals ? ['This Entity', 'Peer Median'] : ['This Entity'], bottom: 0 },
     radar: {
       indicator: domainNames.map(d => ({ name: d, max: 100 })),
       splitArea: { show: false }
@@ -166,12 +170,12 @@
           areaStyle: { color: 'rgba(180, 35, 24, 0.12)' },
           lineStyle: { color: '#B42318', width: 2 }
         },
-        {
+        ...(peerVals ? [{
           value: peerVals,
           name: 'Peer Median',
           areaStyle: { color: 'rgba(59, 79, 224, 0.10)' },
           lineStyle: { color: '#3B4FE0', width: 2, type: 'dashed' }
-        }
+        }] : [])
       ]
     }]
   };

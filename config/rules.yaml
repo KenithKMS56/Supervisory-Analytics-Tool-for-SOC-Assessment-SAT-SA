@@ -102,8 +102,9 @@ rules:
     level: entity
     min_sample: 10
     severity_weight: 95
-    description: Empirical High/Critical MTTR recomputed from alert timestamps exceeds the declared MTTR
-      by more than mttr_gap_ratio_threshold (relative gap).
+    description: Empirical MTTR recomputed from alert timestamps exceeds the declared MTTR by more than
+      mttr_gap_ratio_threshold (relative gap), compared over the High/Critical severities the entity
+      declared, each weighted by its alert count.
     params:
       mttr_gap_ratio_threshold: 0.6
   EG11:
@@ -166,8 +167,8 @@ rules:
     level: entity
     min_sample: 10
     severity_weight: 90
-    description: Gaps in ID sequences, True Positive alerts lacking incident cases, alerts closed without
-      closure records, or orphaned references.
+    description: At least 3 High/Critical True Positive alerts with no linked incident case. (ID sequence
+      gaps are flagged by the ingest data-quality checks, not by this rule.)
   NS05:
     name: Rule Coverage Gaps
     version: 1.0.0

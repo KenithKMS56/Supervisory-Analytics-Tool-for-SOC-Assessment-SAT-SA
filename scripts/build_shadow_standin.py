@@ -15,6 +15,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+from satsa.rules.registry import RuleRegistry
+
 GROUND_TRUTH = Path("data/generated/ground_truth.json")
 ALERTS_CSV = Path("data/generated/csv/alert.csv")
 OUTPUT = Path("data/generated/shadow_pilot_standin.csv")
@@ -22,6 +24,7 @@ DB = Path("data/satsa.db")
 
 MAX_ALERTS_PER_DEFECT = 5
 CLEAN_ALERTS_PER_ENTITY = 5
+RULE_IDS = sorted(cls.id for cls in RuleRegistry.RULE_CLASSES)
 
 
 def is_alert_id(record_id: str) -> bool:
@@ -45,10 +48,17 @@ def build_rows(ground_truth: dict) -> list[dict[str, str]]:
                 }
             )
 
-    # Records from entities with no injected defect, labelled as cleared by an
-    # examiner. ShadowPilotAdapter ignores non-confirmed rows; they are here only
-    # so the file has the shape of a real workpaper.
+    # Clean entities cleared rule by rule: in the ground truth nothing was injected
+    # there, so an examiner would find no issue for any rule. ShadowPilotAdapter
+    # scores these rule-level rows for precision; a SAT-SA finding on one is a
+    # false positive.
     clean = set(ground_truth["clean_entities"])
+    for entity_id in sorted(clean):
+        for rule_id in RULE_IDS:
+            rows.append({"entity_id": entity_id, "record_id": "", "rule_id": rule_id, "label": "not_an_issue"})
+
+    # Records from the clean entities cleared individually. These have no rule_id,
+    # so they only feed the "cleared records still in the review queue" count.
     per_entity: dict[str, list[str]] = {e: [] for e in clean}
     with ALERTS_CSV.open(encoding="utf-8", newline="") as f:
         for r in csv.DictReader(f):

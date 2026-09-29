@@ -9,160 +9,188 @@ kind of evidence each result actually is.
 
 ## 0. What This Validation Is -- and Is Not
 
-Section 2 below is a **detector-implementation correctness check**: it confirms that each rule's
-code correctly implements its own specified logic (e.g. "flag entities where >25% of human-closed
-alerts share an identical comment hash") against a synthetic dataset whose injected defects are
-deliberately built to clearly exceed each rule's threshold. Because the defects are constructed to
-be unambiguous by design, precision and recall near 100% are close to **guaranteed by
-construction** -- they demonstrate the code does what it says, not that the underlying detection
-logic would perform well on real-world SOC submissions with realistic signal-to-noise ratios,
-borderline cases, or ambiguous evidence.
+**Everything in Sections 2–4 is synthetic.** No run against real NCIIPC/CSE data has been done.
+The only mode that can measure real-world accuracy is the Shadow-Pilot mode in Section 5, run on
+real historical examiner workpapers.
 
-Section 2A adds a **stress scenario**: a second, independent, deliberately harder synthetic dataset
-with a borderline-threshold case, a case ambiguous between two rules, and a noisy true-negative
-case. Its precision/recall numbers are genuinely imperfect (see Section 2A) and are the closer
-proxy for what to expect on messier real submissions -- though neither scenario is a substitute
-for the Shadow-Pilot Mode in Section 5, which is the only mode that validates against real
-historical examiner findings.
+Section 2 is a **detector-implementation correctness check**: it confirms that each rule's code
+implements its own specified logic against a synthetic dataset whose injected defects are
+deliberately built to clearly exceed each rule's threshold. Precision and recall near 100% there
+are close to **guaranteed by construction**. They show the code does what it says, not that the
+detection logic would perform well on real SOC submissions with realistic noise, borderline cases
+or ambiguous evidence.
 
-Previous drafts of this document described Section 2's results as an "empirical benchmark" and
-used "Exceeded" language. That framing has been corrected here: the numbers are real (they are
-the actual measured output of `satsa validate` against the stated dataset), but what they are
-evidence *of* is implementation correctness on an intentionally easy dataset, not real-world
-detection accuracy.
+Section 2A adds a **stress scenario**: a second synthetic dataset with a borderline-threshold case,
+a case ambiguous between two rules, and a noisy clean entity. It is still built against the rules'
+own thresholds, so it tests threshold behaviour near the edge, not real-world accuracy.
+
+What neither synthetic scenario covers:
+- **8 of the 20 rules have no injected defect in either dataset:** EG07, EG08, EG09, EG11, EG12,
+  NS05, NS07, NS08. Nothing here shows those rules can detect anything; the validation only shows
+  they do not fire on this synthetic data.
+- **Threshold sensitivity.** No rule threshold is perturbed (Section 4 perturbs scoring weights
+  only), so nothing here says how precision and recall move as thresholds move.
+- **Scale.** 13 injected (entity, rule) defects and 3 clean entities; one finding more or less moves
+  precision by several points.
+
+### 0.1 Correction: how precision was previously counted (September 2026)
+
+Earlier versions of this document reported **100% precision** on the primary dataset and **60%**
+on the stress scenario. Both figures were wrong, in opposite directions:
+
+- **The primary 100% came from the scoring, not the detectors.** The harness counted a false
+  positive only when a finding landed on one of the three clean entities, and even there exempted
+  NS05, EG12 and EG10. The run behind that figure actually produced **34 findings for 13 injected
+  defects**: 15 extra findings on defect entities were never examined, and 6 on clean entities were
+  exempted. Counting every finding, precision was **38% (13/34)**.
+- **The stress 60% came from generator artifacts, not rule noise.** Stress entities covered about
+  one month of data, so NS08 (6-month submission completeness) fired on all three of them; only the
+  clean entity's hit was counted. The "clean" STRESS-03 was a single asset with every alert closed
+  benign and no remediation tickets, which is EG05's own defect definition, so EG05 firing there was
+  a correct detection mislabelled as a false positive.
+
+Tracing the 21 uncounted primary findings found generator bugs and one rule defect, all fixed:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| NS05 (dormant rules) fired on all 10 entities | Alerts used rule IDs (`RULE-<CAT>-01..05`) outside each entity's declared rule catalog, so most catalog rules never fired | Alerts draw rule IDs from the entity's own catalog |
+| EG12 (workflow non-conformance) fired on all 10 entities | The generator wrote no case workflow events, so every critical case "skipped containment" | Cases get a triage → investigate → contain → close lifecycle |
+| EG02 and EG03 fired on CSE-08 (the small-entity confounder) | CSE-08's alert IDs were renumbered after their closures, workflow events and escalations were created, orphaning them | Child records follow the renumbering |
+| EG10 fired on CSE-06 and CSE-08 once no longer exempt | **Rule defect:** EG10 compared empirical High+Critical MTTR with whatever severities were declared; the generator declared Critical only, so every entity sat near the threshold | EG10 compares declared severities only, weighted by alert count; the generator declares realistic High and Critical MTTR |
+
+The harness now counts **every** finding whose (entity, rule) pair is not an injected defect as a
+false positive, on any entity and for any rule, with no exemptions, and lists each one. The report
+verdicts (PASS/FAIL) are computed against the targets instead of being hardcoded. Regression tests
+for each fix are in `tests/test_validation_integrity.py`.
+
+With those fixes the measured precision is 100% on both datasets (Sections 2 and 2A). **That is
+not a stronger claim than before.** It shows the corrected generator and the rules agree; it is
+still synthetic, still built against the rules' own thresholds, and still says nothing about real
+submissions.
 
 ---
 
 ## 1. Experimental Methodology & Ground Truth Design
 
-To objectively evaluate the rule implementations without relying on circular self-scoring, SAT-SA
-pairs with a deterministic synthetic generator (`satsa generate-data`) that models 10 Critical
-Sector Entities (CSE-01 through CSE-10) over a 6-month period across 5 critical infrastructure
-sectors.
+To evaluate the rule implementations without circular self-scoring, SAT-SA pairs with a
+deterministic synthetic generator (`satsa generate-data`) that models 10 Critical Sector Entities
+(CSE-01 through CSE-10) over a 6-month period across 5 critical infrastructure sectors.
 
 ### 1.1 Injected Operational Defects (Positive Cases)
-Ground truth injects 11 distinct operational execution gaps and negative space defects into 7 entities:
-- **CSE-02 (Banking Large):** Declared MTTR gaming ($>200$ min actual vs 35 min declared) $\to$ **EG10**.
-- **CSE-03 (Telecom Large):** Premature rubber-stamp closures ($<120$s) $\to$ **EG01**; Critical True Positives closed without escalation $\to$ **EG03**.
-- **CSE-05 (Transport Medium):** Silent Criticality 4 monitored assets ($>3$ days zero logs) $\to$ **NS01**; Ghost inventory assets absent from telemetry $\to$ **NS06**.
-- **CSE-07 (Banking Large):** Identical repetitive closure comments ($60\%$ share, vs. the rule's real 25% code threshold -- see Section 0) $\to$ **EG04**; SLA deadline hugging and month-end bulk closures $\to$ **EG06**.
-- **CSE-08 (Telecom Small):** Complete absence of peer threat categories (Malware, DoS, Phishing) $\to$ **NS02**; Record ID sequence gaps $\to$ **NS04**.
+Ground truth injects 13 (entity, rule) defects into 7 entities:
+- **CSE-02 (Banking Large):** Declared High/Critical MTTR of 35 min against an empirical MTTR of
+  roughly 45 min (critical) / 90 min (high) recomputed from its own alert timestamps $\to$ **EG10**.
+- **CSE-03 (Telecom Large):** Premature rubber-stamp closures ($<240$s) $\to$ **EG01**; Critical True Positives closed without escalation $\to$ **EG03**.
+- **CSE-02, CSE-05, CSE-09 (shared MSSP):** Criticality-4 assets silent for the same 15-day window $\to$ **NS01** (and the systemic cross-entity finding).
+- **CSE-05 (Transport Medium):** Ghost inventory assets absent from telemetry $\to$ **NS06**.
+- **CSE-07 (Banking Large):** Identical repetitive closure comments ($60\%$ share vs EG04's 25% threshold) $\to$ **EG04**; SLA deadline hugging and month-end bulk closures $\to$ **EG06**.
+- **CSE-08 (Telecom Small):** Complete absence of peer threat categories (Malware, DoS, Phishing) $\to$ **NS02**; High/Critical TP alerts with no case record $\to$ **NS04**. (CSE-08 also has an injected alert-ID sequence gap; that is reported by the ingest data-quality checks, not by NS04.)
 - **CSE-09 (Oil & Gas Large):** High repeat alert pairs without root-cause remediation tickets $\to$ **EG05**.
 - **CSE-10 (Transport Small):** Total nighttime logging collapse (zero 24x7 coverage) and mid-period volume drop $\to$ **NS03**.
 
 ### 1.2 Clean Baselines & Controlled Confounders (Negative Cases)
 - **Clean Baselines (CSE-01, CSE-04, CSE-06):** Entities operating with disciplined triage, timely escalations, balanced dispositions, and consistent 24x7 logging.
-- **Confounder 1 (SOAR Automation):** High-velocity closures executed by automated playbooks (`closed_by_type='soar'`). Validates that fast triage algorithms are not misflagged as human rubber-stamping.
-- **Confounder 2 (Small Entity Scale):** CSE-08 has lower absolute alert volumes. Validates that robust statistics correctly group by size band rather than falsely flagging small entities as volume collapses.
-
-> **Note on config vs. code:** `config/rules.yaml` documents an EG04 `max_comment_hash_share` of
-> 0.45, but the current `EG04TemplateDrivenInvestigations.evaluate()` implementation does not read
-> `self.params` at all and hardcodes a 25% repeat-share threshold with a >=10-alert hash-group
-> floor directly in its SQL. The primary dataset's CSE-07 defect (60% share) clears either number;
-> the stress scenario in Section 2A is calibrated against the actual code threshold (25%), which is
-> the one that matters for detection. This drift between the documented config and the executed
-> code is a known gap, not a claim we are making about a real capability.
+- **Confounder 1 (SOAR Automation):** 12% of closures across all entities are fast automated playbook closures (`closed_by_type='automation'`). The report counts any EG01/EG02 finding on an entity with no injected fast-closure defect.
+- **Confounder 2 (Small Entity Scale):** CSE-08 and CSE-10 are small-band entities with lower alert volumes. The report counts any finding on them for a rule not injected there.
 
 ---
 
 ## 2. Detector-Implementation Correctness Results (Primary Dataset)
 
-The validation harness (`satsa validate`) was executed against the ground-truth dataset described
-in Section 1. All figures below are actual measured outputs, evaluated against defects
-constructed to be unambiguous (see Section 0 for what that does and does not prove):
+`satsa validate` against the ground truth in Section 1, with every finding counted (see
+Section 0.1). Figures from run `RUN-20260929160403009485-d5980d82`; regenerate with
+`satsa validate`, and see `docs/validation_report.md` for the per-rule table.
 
 | Evaluation Metric | Measured Result | Benchmark Target | Verdict |
 |---|---|---|---|
 | **Entity Rank Precision@7** | **100.0%** (7/7) | $\ge 90.0\%$ | **PASS** |
 | **Entity Rank Recall@7** | **100.0%** (7/7) | $\ge 90.0\%$ | **PASS** |
 | **Injected Defect Recall** | **100.0%** (13/13) | $\ge 90.0\%$ | **PASS** |
-| **Overall Defect Precision** | **100.0%** (13/13) | $\ge 85.0\%$ | **PASS** |
+| **Overall Defect Precision** | **100.0%** (13 of 13 findings; 0 false positives on any entity) | $\ge 85.0\%$ | **PASS** |
 | **Overall Defect F1 Score** | **1.0000** | $\ge 0.8500$ | **PASS** |
-| **Ranking Stability (+20% Weights)** | **Spearman $\rho = 1.0000$** | $\ge 0.8500$ | **PASS** |
-| **Ranking Stability (-20% Weights)** | **Spearman $\rho = 1.0000$** | $\ge 0.8500$ | **PASS** |
-| **Cryptographic Audit Chain** | **100% Intact** | Zero Tampering | **PASS** |
+| **Ranking Stability (±20% domain weights)** | **Spearman $\rho = 1.0000$ / $1.0000$** | $\ge 0.8500$ | **PASS** |
+| **Cryptographic Audit Chain** | **Intact** | Zero Tampering | **PASS** |
 
-These are correctness-check results, not a real-world accuracy benchmark; see Section 0 and
-Section 2A.
+Confounder checks (measured): 0 EG01/EG02 findings on entities without an injected fast-closure
+defect; 0 findings on the small-band entities (CSE-08, CSE-10) for rules not injected there.
+
+These are correctness-check results, not a real-world accuracy benchmark; see Section 0.
 
 ### 2.1 Entity Ranking Confirmation
-- **Top 7 Ranked Entities (All Injected):** CSE-07, CSE-08, CSE-10, CSE-03, CSE-02, CSE-05, CSE-09
-- **Bottom 3 Entities (All Clean Baselines):** CSE-01, CSE-06, CSE-04
+- **Top 7 Ranked Entities (All Injected):** CSE-02, CSE-03, CSE-07, CSE-08, CSE-09, CSE-05, CSE-10
+- **Bottom 3 Entities (All Clean Baselines):** CSE-01, CSE-04, CSE-06
 
 *(Exact risk indices vary slightly between regenerations of the synthetic dataset; run `satsa validate` for the current run's numbers.)*
 
 ---
 
-## 2A. Stress Scenario (Harder, Realistic-Imperfection Results)
+## 2A. Stress Scenario (Borderline, Ambiguous and Noisy Cases)
 
 Run via `satsa validate-stress`. This uses a second, independent dataset (`satsa/synth/stress.py`)
-with three entities, evaluated in a fully isolated store so it never perturbs the numbers in
-Section 2:
+with three entities, each spanning the full 6-month period over four assets, evaluated in a fully
+isolated store so it never perturbs the numbers in Section 2:
 
 - **STRESS-01:** EG04 defect injected at 27.5% comment-hash repeat share -- only ~2.5 points over
-  the rule's real 25% code threshold, versus CSE-07's deliberately blown-out 60% in the primary
-  dataset.
+  EG04's 25% threshold, versus CSE-07's deliberately blown-out 60% in the primary dataset.
 - **STRESS-02:** the SAME 12/40 closures simultaneously satisfy EG02 (ack without investigation)
   and EG04 (template closures) -- genuinely ambiguous which rule should be credited.
 - **STRESS-03:** a "clean" entity with realistic jitter (variable closure durations, unique
-  comments, mixed day/night hours, rotating rule IDs across 120 alerts) rather than a hand-picked,
-  noise-free baseline.
+  comments, mixed day/night hours, varied rules and assets, a few true positives) plus two
+  near-miss repeat-alert patterns: one noisy (asset, rule) pair with a tuning ticket, and one
+  without, which alone is below EG05's two-pair minimum.
 
-Representative results from one run (regenerate with `satsa validate-stress`; exact numbers vary
-by seed and are not curated):
+Results (seed 9901; regenerate with `satsa validate-stress`; numbers are not curated):
 
 | Metric | Result |
 |---|---|
 | Entity Rank Precision@k | 100.0% |
 | Injected Defect Recall | 100.0% (3/3) |
-| Overall Defect Precision | **60.0%** |
-| False Positives | **2** (on the noisy "clean" STRESS-03 entity: EG05 and NS08 both fired) |
+| Overall Defect Precision | 100.0% (3 of 3 findings) |
+| False Positives | 0 |
 
-Both injected defects were correctly detected (the borderline EG04 case and the ambiguous
-EG02/EG04 case both crossed their thresholds as designed), but the noisy clean entity produced two
-genuine false positives that the primary, noise-free dataset in Section 2 would never surface.
-**This is the more honest signal of how the rule thresholds behave away from hand-tuned,
-unambiguous inputs**, and it is a large part of why Section 5's Shadow-Pilot mode against real
-historical examiner findings exists: neither synthetic scenario is a substitute for it.
+The borderline and ambiguous defects both crossed their thresholds, and the noisy clean entity
+produced no finding. The previously reported 60% precision and its two false positives were
+generator artifacts (Section 0.1). Because STRESS-01's borderline share and STRESS-03's near misses
+were built with the thresholds in hand, this scenario confirms that the thresholds are implemented
+as specified at the edge; it does not estimate how often real submissions land near them.
 
 ---
 
 ## 3. Operational Review-Effort Lift
 
-Review-effort lift quantifies how many more operational defects supervisory examiners discover
-when reviewing SAT-SA's prioritized review queue versus standard unassisted random sampling of the
-same size at fixed audit budgets (1%, 2%, and 5% of total alerts), measured on the **primary**
-(unambiguous) dataset from Section 1:
+Review-effort lift compares the share of defect-affected alerts among the review queue's alert
+items with the share among all alerts (what random sampling of alerts would find), at budgets of
+1%, 2% and 5% of total alerts. Both sides count alert records only; asset, category and KPI queue
+items and non-alert ground-truth IDs are excluded from both.
 
-| Audit Budget (% of Alerts) | Records Examined | Defects Found (SAT-SA) | Queue Hit Rate | Random Sampling Rate | Empirical Lift Factor |
-|---|---|---|---|---|---|
-| **1% Review Budget** | 162 records | 13 defects | **8.0%** | 1.34% | **5.97x Lift** |
-| **2% Review Budget** | 324 records | 18 defects | **5.6%** | 1.34% | **4.13x Lift** |
-| **5% Review Budget** | 810 records | 18 defects | **2.2%** | 1.34% | **1.65x Lift** |
+| Audit Budget (% of Alerts) | Budget | Queue Alerts Examined | Affected Alerts Found | Queue Hit Rate | Random Sampling Rate | Lift Factor |
+|---|---|---|---|---|---|---|
+| **1%** | 162 | 109 (queue exhausted) | 14 | **12.8%** | 1.20% | **10.69x** |
+| **2%** | 324 | 109 (queue exhausted) | 14 | **12.8%** | 1.20% | **10.69x** |
+| **5%** | 811 | 109 (queue exhausted) | 14 | **12.8%** | 1.20% | **10.69x** |
 
-*Takeaway: on this synthetic, unambiguous dataset (default generator, seed 42, ~16,200 alerts), an
-examiner auditing 1% of alerts using SAT-SA's prioritized queue finds 5.97 times as many of the
-injected defects as unassisted random sampling of the same size. The lift falls as the budget grows
-because the 30-item-per-entity queue is exhausted early. As with Section 2, treat this as a
-correctness/design check of the prioritisation logic, not a real-world lift guarantee.*
+*Reading this table:* the queue holds only 109 alert items (120 items in total), fewer than even
+the 1% budget, so every budget examines the whole queue and reports the same figure. The lift is
+therefore "the whole queue vs. random", not a curve over budgets. As with Section 2, treat it as a
+design check of the prioritisation logic on synthetic data, not a real-world lift guarantee.
 
-*Correction (hardening pass): this table previously reported 16.60x / 12.66x / 5.07x. Those figures
-came from an older, smaller synthetic dataset (~5,600 alerts, so a 1% budget was 56 records) and
-were not updated when the default generator grew to ~16,200 alerts. The numbers above were
-recomputed from scratch with `satsa validate` on a clean checkout and match
-`docs/validation_report.md`.*
+*Correction history:* this table previously reported 16.60x (stale, older dataset) and then
+5.97x / 4.13x / 1.65x. The 5.97x-era calculation counted non-alert ground-truth IDs (asset IDs,
+comment hashes, marker IDs) in the random baseline, matched mixed record types in the queue, and
+divided by the full budget even when the queue was shorter than the budget ("810 records examined"
+from a 275-item queue). The queue is also smaller now because the spurious findings in Section 0.1
+no longer feed it.
 
 ---
 
 ## 4. Sensitivity & Ranking Stability
 
-To verify that entity rankings are not hyper-sensitive to threshold choices, the harness perturbed
-all 8 capability domain weights by **$\pm 20\%$** on the primary dataset:
+The harness perturbed all 8 capability domain **weights** by **$\pm 20\%$** on the primary dataset:
 - **+20% Perturbation:** Spearman rank correlation $\rho = \mathbf{1.0000}$.
 - **-20% Perturbation:** Spearman rank correlation $\rho = \mathbf{1.0000}$.
-- **Conclusion:** on this dataset, ranking order is invariant to minor supervisory parameter
-  tuning. This is a useful robustness property of the scoring formula itself, independent of the
-  detector-correctness caveat above.
+- **Conclusion:** on this dataset, the entity ranking is stable under domain-weight changes. Rule
+  detection thresholds were **not** perturbed, so this says nothing about how findings (and
+  therefore precision and recall) change as thresholds move.
 
 ---
 
@@ -175,14 +203,25 @@ relying on SAT-SA operationally.
 
 ### Usage:
 1. Prepare past audit CSV with columns: `entity_id,record_id,rule_id,label`.
+   - `confirmed` rows are issues the examiner found.
+   - `not_an_issue` rows **with a `rule_id`** mean the examiner checked that rule for that entity and
+     found no issue; a SAT-SA finding for the pair is a false positive. These rows drive precision.
+   - `not_an_issue` rows **without a `rule_id`** clear a single record; they count toward "cleared
+     records still in the review queue".
 2. Run validation:
    ```bash
    satsa validate --shadow-csv path/to/historical_reviews.csv
    ```
    Or, in the app, sign in as the analyst and open **Config & Audit → Shadow Pilot** (`/shadow-pilot`)
    to upload the CSV. It is evaluated against the latest assessment run.
-3. The harness computes historical finding recall and queue discovery efficiency against those
-   real prior findings, and marks each confirmed row as reproduced or missed.
+3. The harness computes:
+   - **historical finding recall**: confirmed (entity, rule) issues reproduced as findings;
+   - **queue record recall**: confirmed records present in the review queue;
+   - **workpaper precision**: of the SAT-SA findings the workpaper adjudicates (confirmed or
+     cleared by rule), the share examiners confirmed;
+   - **unadjudicated findings**: SAT-SA findings the workpaper never mentions. These are listed,
+     not counted as false positives: a workpaper is not a complete audit, so silence is not
+     evidence either way. An examiner must adjudicate them before precision is meaningful.
 4. Every evaluation is stored (`shadow_pilot_results` table) with its workpaper name, time and
    actor. The `/shadow-pilot` page lists them, and `satsa validate` writes the latest one for the
    report's run into Section 5 of `docs/validation_report.md` and `.html`.
@@ -190,6 +229,13 @@ relying on SAT-SA operationally.
 No shadow-pilot run against real NCIIPC/CSE data has been executed as of this writing; Sections 2
 and 2A remain synthetic-only until one is. Section 5A below is a rehearsal of the pipeline, not
 such a run.
+
+**What a convincing real pilot looks like.** Freeze the rule thresholds (and record the
+`config/rules.yaml` hash) before looking at the workpapers; use entities that were not used for
+tuning; have examiners adjudicate every unadjudicated finding blind to SAT-SA's score; report
+per-rule recall and precision with confidence intervals (with a handful of entities they will be
+wide); and report each rule's firing rate across the portfolio, since a rule that fires on nearly
+every entity carries little information.
 
 ### 5A. Shadow-Pilot Rehearsal (synthetic stand-in -- NOT independent evidence)
 
@@ -201,34 +247,32 @@ through `satsa validate --shadow-csv` end to end and shows what the adapter repo
 (`data/generated/shadow_pilot_standin.csv`, built by `scripts/build_shadow_standin.py`) is made
 from the synthetic generator's own injected defects, the same `ground_truth.json` that Section 2
 uses, relabelled as workpaper rows:
-- **25 `confirmed` rows**: each of the 13 injected defects, carrying up to 5 of its affected
+- **22 `confirmed` rows**: each of the 13 injected defects, carrying up to 5 of its affected
   record IDs (the first by sort order).
-- **15 `not_an_issue` rows**: 5 alerts each from the three clean entities (CSE-01, CSE-04, CSE-06).
+- **60 rule-level `not_an_issue` rows**: every one of the 20 rules cleared for each of the three
+  clean entities (nothing was injected there).
+- **15 record-level `not_an_issue` rows**: 5 alerts each from the three clean entities.
 
 These are not historical examiner findings. They are also deliberately **not** taken from
-SAT-SA's own findings: labels copied from the tool's output would make rule recall 100% by
-construction.
+SAT-SA's own findings: labels copied from the tool's output would make recall and precision 100%
+by construction.
 
-**Result** (primary dataset, run `RUN-20260929125340195791-c7df1e40`):
+**Result** (primary dataset, run `RUN-20260929160403009485-d5980d82`):
 
 | Measure | Value | What it means |
 |---|---|---|
-| `rule_finding_recall` | **1.0** (25/25 confirmed rows) | Every labelled defect's `(entity, rule)` pair has a finding. This restates Section 2's 13/13 injected-defect recall in workpaper form, because both use the same ground truth. It is not new evidence. |
-| `queue_record_recall` | **0.16** (4/25) | Only 4 labelled records appear in the review queue: two assets (NS01, NS06), a category (NS02) and an asset (EG05). |
-| Queue coverage of *all* affected IDs | 19/223; at least one queue item for 7 of 13 defects | Computed by the build script over every affected ID, not just the capped sample. |
+| `rule_finding_recall` | **1.0** (22/22 confirmed rows) | Restates Section 2's 13/13 recall in workpaper form (same ground truth). Not new evidence. |
+| `queue_record_recall` | **0.545** (12/22) | 12 labelled records are in the review queue: 8 CSE-03 alerts (EG01, EG03), two assets (NS01, NS06), a category (NS02) and an asset (EG05). |
+| `workpaper_precision` | **1.0** (13/13 adjudicated findings) | Restates Section 2's precision: the cleared rows come from the same ground truth. Not new evidence. |
+| Unadjudicated findings | **0** | The stand-in adjudicates every entity it names; a real workpaper will not. |
+| Cleared records in the queue | **0/15** | None of the individually cleared clean-entity alerts were queued. |
+| Queue coverage of *all* affected IDs | 29/220; at least one queue item for 8 of 13 defects | Computed by the build script over every affected ID, not just the capped sample. |
 
-**Reading the queue figure.** The review queue is a 30-item-per-entity sample (70% top-risk,
-30% stratified random; 275 items in this run). It is built to put *examples* of each triggered rule
-in front of an examiner, not to list every affected record. Low record-level recall is therefore
-expected: for example, only 11 of the 195 EG01 fast-closure alerts are queued. The 4/25 figure also
-depends on which IDs the capped sample happens to pick. None of CSE-03's first five EG01 alerts
-by ID are among the 11 queued, which is why the coverage row is the steadier figure. Defects with
-no queued record here include the EG03 missing escalations (0/4) and entity-level defects such as
-EG10, EG04, EG06, NS03 and NS04, whose marker IDs are not queue records.
-
-**Adapter limits this rehearsal exposes.** `ShadowPilotAdapter` ignores `not_an_issue` rows and has
-no precision metric, so it measures nothing about false positives. A real pilot needs both before
-its numbers mean much.
+**Reading the queue figure.** The review queue samples up to 30 items per entity (70% top-risk,
+30% stratified random; 120 items in this run). It is built to put *examples* of each triggered rule
+in front of an examiner, not to list every affected record, so record-level recall is expected to be
+low for large defects: 14 of the 195 EG01 fast-closure alerts are queued. Entity-level defects such
+as EG10, EG04, EG06, NS03 and NS04 have marker IDs that are not queue records.
 
 **What still requires real data.** Actual historical NCIIPC/CSE examiner workpapers. Until
 SAT-SA is run against those, this section and Sections 2 and 2A are synthetic only.

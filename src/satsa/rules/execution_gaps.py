@@ -736,19 +736,31 @@ class EG10KPIRadicalGap(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
+        # Compare like with like: only severities the entity declared an MTTR for, each
+        # weighted by its alert count. Averaging empirical high+critical MTTR against a
+        # critical-only declaration compares different alert mixes and flags healthy
+        # entities (high alerts legitimately take longer than critical ones).
         sql = """
         WITH empirical AS (
-            SELECT avg(epoch(closed_at) - epoch(created_at)) / 60.0 as emp_mttr
+            SELECT
+                severity_final as severity,
+                count(*) as n,
+                avg(epoch(closed_at) - epoch(created_at)) / 60.0 as emp
             FROM alert
             WHERE entity_id = ? AND severity_final IN ('high', 'critical') AND closed_at IS NOT NULL
+            GROUP BY severity_final
         ),
         declared AS (
-            SELECT avg(value) as dec_mttr
+            SELECT severity, avg(value) as dec
             FROM declared_kpi
             WHERE entity_id = ? AND metric = 'MTTR' AND severity IN ('high', 'critical')
+            GROUP BY severity
         )
-        SELECT e.emp_mttr, d.dec_mttr
-        FROM empirical e, declared d
+        SELECT
+            sum(e.n * e.emp) / sum(e.n) as emp_mttr,
+            sum(e.n * d.dec) / sum(e.n) as dec_mttr
+        FROM empirical e
+        JOIN declared d ON e.severity = d.severity
         """
         df = store.query(sql, [entity_id, entity_id])
         if df.is_empty():

@@ -34,11 +34,12 @@
 ## Slide 4: Explainability, Scoring & Validation Results
 - **Calibrated Scoring:** Classical robust statistics (Median, MAD, IQR, CUSUM/EWMA) benchmark entities against sector peers. Probabilistic Noisy-OR aggregates scores into 8 capability domains.
 - **Review Queue Prioritisation:** 70% top-risk alerts + 30% stratified random controls to measure lift and catch blindspots.
-- **Empirical Ground-Truth Validation:**
+- **Synthetic Ground-Truth Correctness Check** (not a real-world accuracy benchmark; see docs/validation.md §0):
   - **Entity Rank Precision@7:** **100.0%** (all 7 injected entities ranked in top 7; clean entities at bottom).
-  - **Injected Defect Recall:** **100.0%** (13/13 injected defects discovered).
-  - **Review-Effort Lift:** **5.97x** more defects discovered at a 1% audit budget vs random sampling (4.13x at 2%, 1.65x at 5%) on the synthetic dataset.
-  - **Ranking Stability:** Spearman $\rho = \mathbf{1.0000}$ under $\pm 20\%$ parameter perturbations.
+  - **Injected Defect Recall / Precision:** **100.0%** (13/13 defects found; 13 of 13 findings correct, every finding counted).
+  - **Review-Effort Lift:** **10.7x** the defect-affected alert rate of random sampling across the whole 109-alert review queue, on the synthetic dataset.
+  - **Ranking Stability:** Spearman $\rho = \mathbf{1.0000}$ under $\pm 20\%$ domain-weight perturbations.
+  - **Limits:** 8 of 20 rules have no injected defect; real accuracy needs a shadow pilot on historical examiner workpapers.
 
 ---
 

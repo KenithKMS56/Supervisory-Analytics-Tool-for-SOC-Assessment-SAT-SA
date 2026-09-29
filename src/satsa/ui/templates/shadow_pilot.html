@@ -45,7 +45,7 @@
 
 {% if latest %}
 {% set res = latest.result %}
-<div class="stats-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 2rem;">
+<div class="stats-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 2rem;">
   <div class="stat-card">
     <div class="stat-label">Workpaper Rows</div>
     <div class="stat-value" style="color: var(--accent-blue);">{{ res.total_manual_reviews }}</div>
@@ -60,6 +60,16 @@
     <div class="stat-label">Queue Record Recall</div>
     <div class="stat-value" style="color: var(--accent-indigo);">{{ "%.1f"|format(res.queue_record_recall * 100) }}%</div>
     <div class="stat-desc">{{ res.matched_queue }}/{{ res.total_confirmed_issues }} records in the review queue</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Workpaper Precision</div>
+    {% if res.workpaper_precision is defined and res.workpaper_precision is not none %}
+    <div class="stat-value" style="color: var(--accent-blue);">{{ "%.1f"|format(res.workpaper_precision * 100) }}%</div>
+    <div class="stat-desc">{{ res.findings_confirmed|length }}/{{ res.findings_confirmed|length + res.findings_rejected|length }} adjudicated findings confirmed; {{ res.findings_unadjudicated|length }} not adjudicated</div>
+    {% else %}
+    <div class="stat-value" style="color: var(--text-muted);">n/a</div>
+    <div class="stat-desc">Needs not_an_issue rows that name a rule_id</div>
+    {% endif %}
   </div>
   <div class="stat-card">
     <div class="stat-label">Evaluated</div>
@@ -99,7 +109,7 @@
   <div class="table-responsive">
     <table>
       <thead>
-        <tr><th>Evaluated (UTC)</th><th>Workpaper</th><th>By</th><th>Run</th><th>Rows</th><th>Finding Recall</th><th>Queue Recall</th></tr>
+        <tr><th>Evaluated (UTC)</th><th>Workpaper</th><th>By</th><th>Run</th><th>Rows</th><th>Finding Recall</th><th>Queue Recall</th><th>Precision</th></tr>
       </thead>
       <tbody>
         {% for h in history %}
@@ -111,9 +121,10 @@
           <td>{{ h.result.total_manual_reviews }}</td>
           <td>{{ "%.1f"|format(h.result.rule_finding_recall * 100) }}%</td>
           <td>{{ "%.1f"|format(h.result.queue_record_recall * 100) }}%</td>
+          <td>{% if h.result.workpaper_precision is defined and h.result.workpaper_precision is not none %}{{ "%.1f"|format(h.result.workpaper_precision * 100) }}%{% else %}n/a{% endif %}</td>
         </tr>
         {% else %}
-        <tr><td colspan="7" style="text-align: center; color: var(--text-muted); padding: 2rem;">No shadow-pilot evaluations yet. Upload a workpaper above.</td></tr>
+        <tr><td colspan="8" style="text-align: center; color: var(--text-muted); padding: 2rem;">No shadow-pilot evaluations yet. Upload a workpaper above.</td></tr>
         {% endfor %}
       </tbody>
     </table>

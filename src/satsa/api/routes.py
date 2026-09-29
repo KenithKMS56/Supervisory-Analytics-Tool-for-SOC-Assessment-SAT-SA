@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import statistics
 import tempfile
 import zipfile
 from collections.abc import Callable
@@ -33,7 +34,9 @@ from satsa.auth.session import (
 from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
 from satsa.explain.finding_card import FindingCard
 from satsa.ingest.pipeline import IngestionPipeline, default_entity_record
+from satsa.models.canonical import Entity
 from satsa.models.outputs import ExaminerFeedback
+from satsa.peers.grouping import PeerResolver
 from satsa.report.generator import ReportGenerator, ReportNotFoundError
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
@@ -668,30 +671,13 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
         "Cyber Resilience",
     ]
     radar_entity_vals = [dom_scores.get(d, 0.0) for d in radar_domains]
-    radar_peer_vals = [
-        20.0,
-        15.0,
-        18.0,
-        12.0,
-        15.0,
-        10.0,
-        12.0,
-        8.0,
-    ]  # Baseline peer median reference
-
-    # KPI Reconciliation data
-    duckdb_store.query(
-        "SELECT metric, severity, value FROM declared_kpi WHERE entity_id = ?", [entity_id]
+    radar_peer_vals, peer_label = _peer_median_domain_scores(
+        duckdb_store, cur, entity_id, run_id, radar_domains
     )
-    kpi_comparison = [
-        {
-            "metric": "MTTR",
-            "severity": "critical",
-            "declared": 35.0 if entity_id == "CSE-02" else 55.0,
-            "empirical": 240.0 if entity_id == "CSE-02" else 52.0,
-            "gap_ratio": 0.85 if entity_id == "CSE-02" else 0.05,
-        }
-    ]
+    kpi_comparison = _kpi_reconciliation(duckdb_store, entity_id)
+    kpi_gap_threshold = float(
+        _load_rules_config()["rules"].get("EG10", {}).get("params", {}).get("mttr_gap_ratio_threshold", 0.60)
+    )
 
     duckdb_store.close()
     sqlite_store.close()
@@ -707,9 +693,76 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
             "radar_domains": radar_domains,
             "radar_entity_vals": radar_entity_vals,
             "radar_peer_vals": radar_peer_vals,
+            "peer_label": peer_label,
             "kpi_comparison": kpi_comparison,
+            "kpi_gap_threshold": kpi_gap_threshold,
         },
     )
+
+
+MIN_PEERS_FOR_MEDIAN = 3
+
+
+def _peer_median_domain_scores(
+    duckdb_store: DuckDBStore, cur: Any, entity_id: str, run_id: str, domains: list[str]
+) -> tuple[list[float] | None, str]:
+    """Median domain score of the entity's peer cohort in this run (same resolver as scoring).
+
+    Returns (None, reason) when the cohort is too small for a median that does not
+    simply reveal one or two peers' scores.
+    """
+    all_entities = [Entity(**row) for row in duckdb_store.query("SELECT * FROM entity").iter_rows(named=True)]
+    target = next((e for e in all_entities if e.entity_id == entity_id), None)
+    if target is None or not run_id:
+        return None, "no peer group"
+    peers, cohort_label, _is_weak = PeerResolver().resolve_peers(target, all_entities)
+    if len(peers) < MIN_PEERS_FOR_MEDIAN:
+        return None, f"fewer than {MIN_PEERS_FOR_MEDIAN} peers"
+    placeholders = ",".join("?" for _ in peers)
+    cur.execute(
+        f"SELECT entity_id, domain, score FROM domain_scores WHERE run_id = ? AND entity_id IN ({placeholders})",
+        (run_id, *peers),
+    )
+    by_domain: dict[str, dict[str, float]] = {}
+    for r in cur.fetchall():
+        by_domain.setdefault(r["domain"], {})[r["entity_id"]] = float(r["score"])
+    # A peer with no finding in a domain has no domain_scores row: that is a score of 0.
+    medians = [float(statistics.median(by_domain.get(d, {}).get(p, 0.0) for p in peers)) for d in domains]
+    return medians, f"{cohort_label} ({len(peers)} peers)"
+
+
+def _kpi_reconciliation(duckdb_store: DuckDBStore, entity_id: str) -> list[dict[str, Any]]:
+    """Declared vs recomputed MTTR per declared High/Critical severity (EG10's comparison)."""
+    df = duckdb_store.query(
+        """
+        WITH declared AS (
+            SELECT severity, avg(value) AS declared
+            FROM declared_kpi
+            WHERE entity_id = ? AND metric = 'MTTR' AND severity IN ('high', 'critical')
+            GROUP BY severity
+        ),
+        empirical AS (
+            SELECT severity_final AS severity, avg(epoch(closed_at) - epoch(created_at)) / 60.0 AS empirical
+            FROM alert
+            WHERE entity_id = ? AND severity_final IN ('high', 'critical') AND closed_at IS NOT NULL
+            GROUP BY severity_final
+        )
+        SELECT d.severity, d.declared, e.empirical
+        FROM declared d JOIN empirical e ON d.severity = e.severity
+        ORDER BY d.severity DESC
+        """,
+        [entity_id, entity_id],
+    )
+    return [
+        {
+            "metric": "MTTR",
+            "severity": r["severity"],
+            "declared": round(r["declared"], 1),
+            "empirical": round(r["empirical"], 1),
+            "gap_ratio": (r["empirical"] - r["declared"]) / max(r["declared"], 1.0),
+        }
+        for r in df.iter_rows(named=True)
+    ]
 
 
 @app.get("/finding/{finding_id}", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
@@ -939,14 +992,20 @@ def handle_shadow_pilot(
                 "total_manual_reviews": result["total_manual_reviews"],
                 "rule_finding_recall": result["rule_finding_recall"],
                 "queue_record_recall": result["queue_record_recall"],
+                "workpaper_precision": result["workpaper_precision"],
             },
         )
     finally:
         sqlite_store.close()
     return done(
         f"Evaluated {source_name} against {run_id}: finding recall "
-        f"{result['rule_finding_recall'] * 100:.1f}%, queue record recall {result['queue_record_recall'] * 100:.1f}%."
+        f"{result['rule_finding_recall'] * 100:.1f}%, queue record recall {result['queue_record_recall'] * 100:.1f}%, "
+        f"precision {_pct_or_na(result['workpaper_precision'])}."
     )
+
+
+def _pct_or_na(value: float | None) -> str:
+    return "n/a" if value is None else f"{value * 100:.1f}%"
 
 
 # --- REST API Endpoints ---

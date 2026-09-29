@@ -1,8 +1,7 @@
 """Tests for the harder 'stress scenario' validation (docs/validation.md Section 2A).
 
-Unlike the primary synthetic dataset's near-guaranteed-by-construction results, this
-scenario is designed to produce genuinely imperfect numbers and must never be curated
-to look perfect.
+The scenario exercises borderline, ambiguous and noisy-clean cases. Its numbers are
+reported as measured and must never be curated in either direction.
 """
 
 import tempfile
@@ -34,15 +33,15 @@ def test_stress_dataset_has_the_three_designed_entities():
     assert "EG02" in rule_ids
 
 
-def test_stress01_borderline_share_is_just_over_the_real_code_threshold():
-    """STRESS-01's injected share must be close to, not far from, EG04's actual
-    25% code threshold -- this is what makes it a genuine borderline case rather
-    than another easy, blown-out defect like the primary dataset's CSE-07.
+def test_stress01_borderline_share_is_just_over_the_configured_threshold():
+    """STRESS-01's injected share must be close to, not far from, EG04's configured
+    25% threshold -- this is what makes it a genuine borderline case rather than
+    another easy, blown-out defect like the primary dataset's CSE-07.
     """
     _data, gt = generate_stress_dataset()
     stress01_defect = next(d for d in gt.defects if d.entity_id == "STRESS-01")
     assert 0.25 < stress01_defect.share < 0.35, (
-        "STRESS-01 must sit just over EG04's real 25% code threshold, not far above it"
+        "STRESS-01 must sit just over EG04's 25% threshold, not far above it"
     )
 
 
@@ -61,11 +60,11 @@ def test_stress02_defects_share_identical_evidence():
     assert len(ids_a) > 0
 
 
-def test_stress_scenario_runs_end_to_end_and_is_not_perfect():
-    """The full stress pipeline must run, and — unlike the primary dataset — is not
-    required (or expected) to score 100% on every axis. It must, however, actually
-    detect the two genuinely-injected defects (recall), proving the borderline/
-    ambiguous construction really does cross the rule thresholds as designed.
+def test_stress_scenario_runs_end_to_end():
+    """The full stress pipeline must run and detect the genuinely-injected defects
+    (recall), proving the borderline/ambiguous construction really does cross the rule
+    thresholds as designed. Precision is reported, not asserted: every non-injected
+    finding counts as a false positive, and the result must never be curated.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
@@ -93,9 +92,11 @@ def test_stress_scenario_runs_end_to_end_and_is_not_perfect():
     assert rules["overall_recall"] == 1.0
     assert rules["total_injected_defects"] == 3  # EG04(STRESS-01) + EG02+EG04(STRESS-02)
 
-    # This scenario is explicitly NOT curated to be perfect. It's fine (expected,
-    # even) for precision to be less than 100% because of noise on STRESS-03.
+    # Precision is whatever it is; the harness must account for every finding.
     assert 0.0 < rules["overall_precision"] <= 1.0
+    fps = rules["false_positives_on_clean_entities"] + rules["false_positives_on_defect_entities"]
+    assert len(fps) == rules["false_positives"]
+    assert rules["total_findings"] == rules["true_positives"] + rules["false_positives"]
 
 
 def test_stress_dataset_is_isolated_from_primary_demo_dataset():

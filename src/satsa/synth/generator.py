@@ -246,13 +246,17 @@ class SyntheticDataGenerator:
                 ent_assets.append(asset_obj)
             assets.extend(ent_assets)
 
-            # Rules
+            # Rules. Alerts below draw their rule_id from this same catalog, so every
+            # enabled rule can fire; otherwise NS05 (dormant rules) fires on every entity.
+            rules_by_category: dict[str, list[str]] = {}
             for r_idx in range(1, 31):
                 cat = CATEGORIES[(r_idx - 1) % len(CATEGORIES)]
+                catalog_rule_id = f"RULE-{cat.upper().replace(' ', '_')}-{r_idx:02d}"
+                rules_by_category.setdefault(cat, []).append(catalog_rule_id)
                 detection_rules.append(
                     DetectionRule(
                         entity_id=ent_id,
-                        rule_id=f"RULE-{cat.upper().replace(' ', '_')}-{r_idx:02d}",
+                        rule_id=catalog_rule_id,
                         category=cat,
                         mitre_tactic=f"TA000{(r_idx % 10) + 1}",
                         mitre_technique=f"T10{r_idx:02d}",
@@ -261,7 +265,16 @@ class SyntheticDataGenerator:
                     )
                 )
 
-            # Declared KPIs
+            # Declared KPIs. MTTR is declared for both critical and high, at values
+            # consistent with the healthy closure durations generated below (~45 and
+            # ~90 min including SOAR closures), so an honest entity reconciles under EG10.
+            for period, crit_mttr, high_mttr in (("2026-Q1", 52.0, 97.0), ("2026-Q2", 50.0, 95.0)):
+                declared_kpis.append(
+                    DeclaredKPI(entity_id=ent_id, period=period, metric="MTTR", severity="high", value=high_mttr)
+                )
+                declared_kpis.append(
+                    DeclaredKPI(entity_id=ent_id, period=period, metric="MTTR", severity="critical", value=crit_mttr)
+                )
             declared_kpis.extend(
                 [
                     DeclaredKPI(
@@ -270,13 +283,6 @@ class SyntheticDataGenerator:
                         metric="MTTA",
                         severity="critical",
                         value=12.0,
-                    ),
-                    DeclaredKPI(
-                        entity_id=ent_id,
-                        period="2026-Q1",
-                        metric="MTTR",
-                        severity="critical",
-                        value=55.0,
                     ),
                     DeclaredKPI(
                         entity_id=ent_id,
@@ -291,13 +297,6 @@ class SyntheticDataGenerator:
                         metric="MTTA",
                         severity="critical",
                         value=11.5,
-                    ),
-                    DeclaredKPI(
-                        entity_id=ent_id,
-                        period="2026-Q2",
-                        metric="MTTR",
-                        severity="critical",
-                        value=52.0,
                     ),
                     DeclaredKPI(
                         entity_id=ent_id,
@@ -354,7 +353,7 @@ class SyntheticDataGenerator:
             for alt_idx in range(1, ent_alerts_target + 1):
                 alt_id = f"{ent_id.replace('-', '')}-ALT-{alt_idx:06d}"
                 cat = self.rng.choice(CATEGORIES)
-                rule = f"RULE-{cat.upper().replace(' ', '_')}-{self.rng.randint(1, 5):02d}"
+                rule = self.rng.choice(rules_by_category[cat])
                 asset = self.rng.choice(ent_assets)
 
                 # Time distribution: normal working hours vs night
@@ -535,6 +534,31 @@ class SyntheticDataGenerator:
                     case_links.append(
                         CaseAlertLink(entity_id=ent_id, case_id=case_id, alert_id=alt_id)
                     )
+                    # Mandatory case lifecycle. Without it every critical case looks like it
+                    # skipped containment and EG12 fires on every entity.
+                    ir_lead = f"IR_LEAD_{ent_id.replace('-', '')}"
+                    case_open_ts = touch_ts + timedelta(minutes=5)
+                    for step, (action, from_st, to_st) in enumerate(
+                        [
+                            ("triage", "open", "triaged"),
+                            ("investigate", "triaged", "investigating"),
+                            ("contain", "investigating", "contained"),
+                            ("close", "contained", "closed"),
+                        ]
+                    ):
+                        workflows.append(
+                            WorkflowEvent(
+                                entity_id=ent_id,
+                                ref_type="case",
+                                ref_id=case_id,
+                                ts=case_open_ts + timedelta(minutes=20 * step),
+                                actor=ir_lead,
+                                action=action,
+                                from_status=from_st,
+                                to_status=to_st,
+                                note_len=60,
+                            )
+                        )
 
                     # External report for Critical TP
                     if severity == "critical":
@@ -550,7 +574,7 @@ class SyntheticDataGenerator:
         # --- Inject Specific Defects ---
 
         # CSE-02: KPI gap
-        declared_kpis, cse02_info = inject_cse02_kpi_gap(declared_kpis, 240.0)
+        declared_kpis, cse02_info = inject_cse02_kpi_gap(declared_kpis)
         ground_truth_defects.append(
             InjectedDefect(
                 entity_id="CSE-02",
@@ -684,6 +708,18 @@ class SyntheticDataGenerator:
 
         # CSE-08: Missing categories, low volume, sequence gaps, TP without cases
         alerts, cases, cse08_info = inject_cse08_missing_space(alerts, cases, self.rng)
+        cse08_id_map: dict[str, str] = cse08_info["id_map"]
+        for w in workflows:
+            if w.entity_id == "CSE-08" and w.ref_type == "alert" and w.ref_id in cse08_id_map:
+                w.ref_id = cse08_id_map[w.ref_id]
+        for c in closures:
+            if c.entity_id == "CSE-08" and c.ref_id in cse08_id_map:
+                c.ref_id = cse08_id_map[c.ref_id]
+        for e in escalations:
+            if e.entity_id == "CSE-08" and e.ref_id in cse08_id_map:
+                e.ref_id = cse08_id_map[e.ref_id]
+        # Its cases were dropped, so their alert links go too (NS04's TP-without-case signal).
+        case_links = [link for link in case_links if link.entity_id != "CSE-08"]
         ground_truth_defects.append(
             InjectedDefect(
                 entity_id="CSE-08",
@@ -698,10 +734,13 @@ class SyntheticDataGenerator:
             InjectedDefect(
                 entity_id="CSE-08",
                 rule_id="NS04",
-                defect_type="missing_records_sequence_gap",
+                defect_type="tp_alerts_without_cases",
                 affected_ids=["ID_GAP_CSE08"],
                 share=0.20,
-                description="ID sequence gaps and TP alerts missing case management records.",
+                description=(
+                    "High/Critical TP alerts with no case management record (NS04). The injected "
+                    "ID sequence gap is a data-quality signal, not an NS04 detection."
+                ),
             )
         )
 
