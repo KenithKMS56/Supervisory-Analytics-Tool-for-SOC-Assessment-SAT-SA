@@ -302,6 +302,12 @@ def validate_cmd(
     shadow_csv: str = typer.Option(
         "", "--shadow-csv", help="Optional path to historical manual review CSV for shadow pilot"
     ),
+    adjudication_csv: str = typer.Option(
+        "",
+        "--adjudication-csv",
+        help="With --shadow-csv: write the findings the workpaper does not adjudicate to this CSV "
+        "for blind examiner labelling (no scores or severities)",
+    ),
     output_md: str = typer.Option(
         "docs/validation_report.md", "--output-md", help="Output markdown report path"
     ),
@@ -320,7 +326,12 @@ def validate_cmd(
 
     from satsa.store.duckdb import DuckDBStore
     from satsa.store.sqlite import SQLiteStore
-    from satsa.validate.harness import ShadowPilotAdapter, ValidationHarness
+    from satsa.validate.harness import (
+        ADJUDICATION_COLUMNS,
+        ShadowPilotAdapter,
+        ValidationHarness,
+        adjudication_sheet,
+    )
 
     console.print(
         f"[bold blue]Running validation harness against:[/bold blue] [cyan]{ground_truth}[/cyan]"
@@ -342,6 +353,18 @@ def validate_cmd(
         shadow_res = adapter.evaluate_shadow_pilot(reviews, results["run_id"])
         if shadow_res.get("status") == "success":
             sqlite_store.save_shadow_result(results["run_id"], "cli", Path(shadow_csv).name, shadow_res)
+            if adjudication_csv:
+                import csv
+
+                sheet = adjudication_sheet(sqlite_store, shadow_res)
+                with open(adjudication_csv, "w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=ADJUDICATION_COLUMNS)
+                    writer.writeheader()
+                    writer.writerows(sheet)
+                console.print(
+                    f"[bold green][+] Adjudication sheet:[/bold green] {len(sheet)} unadjudicated findings "
+                    f"written to [cyan]{adjudication_csv}[/cyan]"
+                )
     stored = sqlite_store.list_shadow_results(results["run_id"], limit=1)
     md_file, html_file = harness.generate_report(
         output_md, output_html, run_id=results["run_id"], shadow_result=stored[0] if stored else None
@@ -393,8 +416,20 @@ def validate_cmd(
             f"finding recall {shadow_res['rule_finding_recall'] * 100:.1f}% ({shadow_res['matched_findings']}/{n}) | "
             f"queue record recall {shadow_res['queue_record_recall'] * 100:.1f}% ({shadow_res['matched_queue']}/{n}) | "
             f"precision {precision_text} | "
-            f"{len(shadow_res['findings_unadjudicated'])} findings not adjudicated"
+            f"{len(shadow_res['findings_unadjudicated'])} findings not adjudicated | "
+            f"rule config hash {shadow_res['config_hash']}"
         )
+        def ci(interval: list[float] | None) -> str:
+            return f" (95% CI {interval[0] * 100:.0f}-{interval[1] * 100:.0f}%)" if interval else ""
+
+        for r in shadow_res["per_rule"]:
+            adjudicated = r["findings_confirmed"] + r["findings_rejected"]
+            console.print(
+                f"      {r['rule_id']}: recall {r['reproduced']}/{r['confirmed']}{ci(r['recall_ci'])} | "
+                f"precision {r['findings_confirmed']}/{adjudicated}{ci(r['precision_ci'])} | "
+                f"{r['findings_unadjudicated']} not adjudicated | fires on "
+                f"{(r['firing_rate'] or 0) * 100:.0f}% of entities"
+            )
     elif shadow_res:
         console.print(f"\n[bold]Shadow Pilot Evaluation:[/bold] {shadow_res}")
 

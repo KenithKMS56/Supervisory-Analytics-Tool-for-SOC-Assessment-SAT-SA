@@ -78,6 +78,38 @@
   </div>
 </div>
 
+{% if res.per_rule is defined and res.per_rule %}
+<div class="card" style="margin-bottom: 2rem;">
+  <div class="card-title">
+    <span>Per-Rule Results</span>
+    <span style="font-size: 0.85rem; color: var(--text-secondary);">{{ res.entities_assessed }} entities assessed · rule config <code>{{ res.config_hash }}</code></span>
+  </div>
+  <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">
+    Counted per (entity, rule). Ranges are 95% confidence intervals; with few cases they are wide.
+    "Not adjudicated" findings are ones the workpaper never mentions: an examiner must label them
+    before precision means much (<code>satsa validate --shadow-csv … --adjudication-csv …</code> exports them without scores).
+  </p>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr><th>Rule</th><th>Recall</th><th>Precision</th><th>Not adjudicated</th><th>Fires on</th></tr>
+      </thead>
+      <tbody>
+        {% for r in res.per_rule %}
+        <tr>
+          <td><code>{{ r.rule_id }}</code></td>
+          <td>{% if r.recall is not none %}{{ "%.0f"|format(r.recall * 100) }}% ({{ r.reproduced }}/{{ r.confirmed }}) <span style="color: var(--text-muted);">{{ "%.0f"|format(r.recall_ci[0] * 100) }}–{{ "%.0f"|format(r.recall_ci[1] * 100) }}%</span>{% else %}—{% endif %}</td>
+          <td>{% if r.precision is not none %}{{ "%.0f"|format(r.precision * 100) }}% ({{ r.findings_confirmed }}/{{ r.findings_confirmed + r.findings_rejected }}) <span style="color: var(--text-muted);">{{ "%.0f"|format(r.precision_ci[0] * 100) }}–{{ "%.0f"|format(r.precision_ci[1] * 100) }}%</span>{% else %}—{% endif %}</td>
+          <td>{{ r.findings_unadjudicated }}</td>
+          <td>{% if r.firing_rate is not none %}{{ "%.0f"|format(r.firing_rate * 100) }}% of entities{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+
 <div class="card" style="margin-bottom: 2rem;">
   <div class="card-title">
     <span>Confirmed Issues in <code>{{ latest.source_name }}</code></span>

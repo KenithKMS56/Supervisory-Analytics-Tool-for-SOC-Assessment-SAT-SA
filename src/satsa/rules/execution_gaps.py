@@ -1,8 +1,40 @@
 """Execution Gap Detection Rules: EG01 through EG12."""
 
+import math
+from typing import Any
+
 from satsa.models.outputs import Finding, FindingEvidence
 from satsa.rules.base import BaseRule
 from satsa.store.duckdb import DuckDBStore
+
+# EG05's chance floor never exceeds this multiple of the configured min_repeat_count.
+CHANCE_FLOOR_CAP_FACTOR = 2
+
+
+def chance_repeat_floor(n_alerts: int, pair_space: int, max_chance_pairs: float, cap: int) -> int:
+    """Smallest repeat count k (at most `cap`) that chance alone would rarely reach.
+
+    Models alerts as spread evenly over the entity's asset x rule pairs, so each pair's
+    count is Poisson with mean n_alerts / pair_space. Returns the smallest k for which the
+    expected number of pairs reaching k by coincidence, pair_space * P(X >= k), is below
+    max_chance_pairs. Real alert streams are uneven, so genuinely noisy pairs sit far above
+    this floor; it only removes small-count repeats that volume alone explains.
+
+    Capped at `cap`: in a very busy entity with few pairs the model would call any repeat
+    count "just volume", but a pair firing dozens of times, always benign and never tuned, is
+    the defect itself.
+    """
+    if n_alerts <= 0 or pair_space <= 0:
+        return 1
+    lam = n_alerts / pair_space
+    pmf = math.exp(-lam)  # P(X = 0)
+    tail = 1.0  # P(X >= 0)
+    for k in range(1, cap):
+        tail -= pmf  # P(X >= k)
+        if pair_space * tail < max_chance_pairs:
+            return k
+        pmf *= lam / k  # P(X = k)
+    return cap
 
 
 class EG01FastClosure(BaseRule):
@@ -24,14 +56,16 @@ class EG01FastClosure(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        # Compute peer p5 close time for human High/Critical alerts
-        peer_sql = """
+        # Peer-cohort p5 close time for human High/Critical alerts. The entity itself is
+        # excluded, so its own fast closures cannot drag down the baseline they are judged by.
+        peer_clause, peer_params = self.peer_filter(entity_id, peer_ids)
+        peer_sql = f"""
         SELECT quantile_cont(epoch(closed_at) - epoch(created_at), 0.05) as peer_p5
         FROM alert
         WHERE severity_final IN ('high', 'critical') AND closed_by_type = 'human'
-          AND closed_at IS NOT NULL
+          AND closed_at IS NOT NULL AND {peer_clause}
         """
-        peer_res = store.query(peer_sql)
+        peer_res = store.query(peer_sql, peer_params)
         peer_p5 = (
             float(peer_res["peer_p5"][0])
             if not peer_res.is_empty() and peer_res["peer_p5"][0]
@@ -90,7 +124,11 @@ class EG01FastClosure(BaseRule):
                 severity="high" if score > 70 else "medium",
                 title=f"{self.name}: {share:.1%} fast high-severity closures",
                 rationale=rationale,
-                peer_comparison={"peer_p5_seconds": peer_p5, "entity_share": share},
+                peer_comparison={
+                    "peer_p5_seconds": peer_p5,
+                    "entity_share": share,
+                    "peer_count": len(peer_ids),
+                },
                 examiner_check=self.examiner_check,
                 benign_explanations=self.benign_explanations,
                 evidence_ids=sample_ids,
@@ -364,10 +402,24 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        # Tunable: min repeats of an all-benign (asset, rule) pair, and min number of
-        # such unremediated pairs before the entity is flagged.
+        # Tunable: min repeats of an all-benign (asset, rule) pair, min number of such
+        # unremediated pairs before the entity is flagged, and how many pairs chance alone
+        # may be expected to push over the repeat threshold.
         min_repeat_count = int(self.params.get("min_repeat_count", 8))
         min_unaddressed_pairs = int(self.params.get("min_unaddressed_pairs", 2))
+        max_chance_pairs = float(self.params.get("max_chance_pairs", 0.5))
+
+        # A busy entity with few assets gets pairs repeating several times by coincidence.
+        # The repeat threshold is therefore never below the entity's own chance level.
+        vol = store.query(
+            "SELECT count(*) AS n, count(DISTINCT asset_id) AS a, count(DISTINCT rule_id) AS r FROM alert WHERE entity_id = ?",
+            [entity_id],
+        )
+        n_alerts, pair_space = int(vol["n"][0]), int(vol["a"][0]) * int(vol["r"][0])
+        chance_floor = chance_repeat_floor(
+            n_alerts, pair_space, max_chance_pairs, cap=CHANCE_FLOOR_CAP_FACTOR * min_repeat_count
+        )
+        effective_min_repeats = max(min_repeat_count, chance_floor)
         sql = """
         WITH pairs AS (
             SELECT
@@ -391,7 +443,7 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
         WHERE r.linked_asset_id IS NULL
         ORDER BY p.pair_count DESC
         """
-        df = store.query(sql, [entity_id, min_repeat_count, entity_id])
+        df = store.query(sql, [entity_id, effective_min_repeats, entity_id])
         if df.is_empty():
             return [], []
 
@@ -409,7 +461,9 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
 
             rationale = (
                 f"Identified {unaddressed_pairs} (asset, rule) pairs generating {total_repeat_alerts} repeat alerts "
-                f"consistently closed as false positive/benign with no documented remediation or tuning ticket."
+                f"consistently closed as false positive/benign with no documented remediation or tuning ticket. "
+                f"Each pair repeated at least {effective_min_repeats} times (configured minimum {min_repeat_count}; "
+                f"chance level for this entity's volume {chance_floor})."
             )
             finding = Finding(
                 finding_id=f_id,
@@ -424,7 +478,11 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
                 severity="medium",
                 title=f"{self.name}: {unaddressed_pairs} recurring unaddressed pairs",
                 rationale=rationale,
-                peer_comparison={"unaddressed_pairs": unaddressed_pairs},
+                peer_comparison={
+                    "unaddressed_pairs": unaddressed_pairs,
+                    "effective_min_repeats": effective_min_repeats,
+                    "chance_floor": chance_floor,
+                },
                 examiner_check=self.examiner_check,
                 benign_explanations=self.benign_explanations,
                 evidence_ids=sample_records,
@@ -873,17 +931,54 @@ class EG11DispositionExtremes(BaseRule):
         tp_count = df["tp_count"][0]
         fp_rate = df["fp_count"][0] / max(total, 1)
 
-        # Tunable: min alert volume before dispositions are judged, and the max
-        # false-positive/benign rate (zero true positives always flags at that volume).
+        # Tunable: min alert volume before dispositions are judged; the robust-z cut-off and
+        # minimum spread for comparing the FP/benign rate with the peer cohort; and the
+        # absolute fallback rate used when fewer than MIN_PEERS_FOR_Z peers can be compared.
+        # Zero true positives always flags at that volume.
         min_alert_volume = int(self.params.get("min_alert_volume", 200))
+        max_robust_z = float(self.params.get("max_robust_z", 3.5))
+        min_spread = float(self.params.get("min_spread", 0.01))
         max_fp_rate = float(self.params.get("max_fp_rate", 0.98))
-        if total >= min_alert_volume and (fp_rate > max_fp_rate or tp_count == 0):
+        if total < min_alert_volume:
+            return [], []
+
+        peer_clause, peer_params = self.peer_filter(entity_id, peer_ids)
+        peer_df = store.query(
+            f"""
+            SELECT entity_id,
+                   count(CASE WHEN disposition IN ('false_positive', 'benign') THEN 1 END) * 1.0 / count(*) as fp_rate
+            FROM alert
+            WHERE {peer_clause}
+            GROUP BY entity_id
+            HAVING count(*) >= ?
+            """,
+            [*peer_params, min_alert_volume],
+        )
+        peer_rates = [float(v) for v in peer_df["fp_rate"].to_list()] if not peer_df.is_empty() else []
+        z_res = self.robust_z(fp_rate, peer_rates, min_spread)
+
+        comparison: dict[str, Any] = {"fp_rate": fp_rate, "total_alerts": total, "peer_count": len(peer_rates)}
+        if z_res is not None:
+            z, peer_median = z_res
+            rate_extreme = z >= max_robust_z
+            basis = (
+                f"robust z-score {z:.1f} against the median of {len(peer_rates)} peers "
+                f"({peer_median:.1%}; flagged at >= {max_robust_z:g})"
+            )
+            comparison.update(method="peer_robust_z", robust_z=round(z, 2), peer_median=peer_median)
+        else:
+            rate_extreme = fp_rate > max_fp_rate
+            basis = f"absolute threshold {max_fp_rate:.0%} (too few comparable peers)"
+            comparison.update(method="absolute")
+
+        if tp_count == 0 or rate_extreme:
             score, conf = self.compute_rule_score(fp_rate / 0.98, total)
             f_id = f"FND-EG11-{entity_id}-{run_id}"
 
             rationale = (
                 f"Abnormal disposition distribution: {total} total alerts processed with "
-                f"a {fp_rate:.1%} false-positive/benign rate and {tp_count} true positives over 6 months."
+                f"a {fp_rate:.1%} false-positive/benign rate ({basis}) and {tp_count} true positives "
+                "over 6 months."
             )
             finding = Finding(
                 finding_id=f_id,
@@ -898,7 +993,7 @@ class EG11DispositionExtremes(BaseRule):
                 severity="high",
                 title=f"{self.name}: {fp_rate:.1%} false positive rate",
                 rationale=rationale,
-                peer_comparison={"fp_rate": fp_rate, "total_alerts": total},
+                peer_comparison=comparison,
                 examiner_check=self.examiner_check,
                 benign_explanations=self.benign_explanations,
                 evidence_ids=[f"DISP-EXTREME-{entity_id}"],

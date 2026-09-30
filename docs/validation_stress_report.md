@@ -6,7 +6,7 @@
 > It is still synthetic and built against the rules' own thresholds, so a perfect score
 > shows the rules behave as specified near those thresholds, not real-world accuracy.
 
-**Run ID:** `RUN-20260929190149856475-66caf9f9` | **Seed:** `9901`
+**Run ID:** `RUN-20260930053829609607-e5133eb7` | **Seed:** `9901`
 
 | Metric | Result |
 |---|---|
@@ -31,7 +31,7 @@ entity and for any rule.
 
 ## Threshold sensitivity
 
-4 of 54 single-threshold perturbations (±20%) changed that rule's outcome.
+3 of 64 single-threshold perturbations (±20%) changed that rule's outcome.
 
 | Rule | Threshold | Baseline | Tested | Outcome at baseline | Outcome when tested |
 |---|---|---|---|---|---|
@@ -47,10 +47,12 @@ entity and for any rule.
 | `EG04` | `max_comment_hash_share` | 0.25 | 0.3 (+20%) | TP 2 / FN 0 / FP 0 | TP 0 / FN 2 / FP 0 (missed STRESS-01, STRESS-02) **changed** |
 | `EG04` | `min_hash_group_size` | 10 | 8 (-20%) | TP 2 / FN 0 / FP 0 | TP 2 / FN 0 / FP 0 |
 | `EG04` | `min_hash_group_size` | 10 | 12 (+20%) | TP 2 / FN 0 / FP 0 | TP 1 / FN 1 / FP 0 (missed STRESS-01) **changed** |
-| `EG05` | `min_repeat_count` | 8 | 6 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 1 (false alarm STRESS-03) **changed** |
+| `EG05` | `min_repeat_count` | 8 | 6 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `EG05` | `min_repeat_count` | 8 | 10 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `EG05` | `min_unaddressed_pairs` | 2 | 1 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 1 (false alarm STRESS-03) **changed** |
 | `EG05` | `min_unaddressed_pairs` | 2 | 3 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `EG05` | `max_chance_pairs` | 0.5 | 0.4 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `EG05` | `max_chance_pairs` | 0.5 | 0.6 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `EG06` | `min_bulk_closures_per_minute` | 8 | 6 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `EG06` | `min_bulk_closures_per_minute` | 8 | 10 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `EG06` | `max_deadline_hugging_share` | 0.25 | 0.2 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
@@ -67,6 +69,10 @@ entity and for any rule.
 | `EG10` | `mttr_gap_ratio_threshold` | 0.6 | 0.72 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `EG11` | `min_alert_volume` | 200 | 160 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `EG11` | `min_alert_volume` | 200 | 240 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `EG11` | `max_robust_z` | 3.5 | 2.8 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `EG11` | `max_robust_z` | 3.5 | 4.2 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `EG11` | `min_spread` | 0.01 | 0.008 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `EG11` | `min_spread` | 0.01 | 0.012 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `EG11` | `max_fp_rate` | 0.98 | 0.784 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `EG11` | `max_fp_rate` | 0.98 | 1.0 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `EG12` | `min_skipped_cases` | 2 | 1 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
@@ -75,12 +81,16 @@ entity and for any rule.
 | `NS01` | `min_silent_days` | 3 | 4 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `NS01` | `min_asset_criticality` | 3 | 2 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `NS01` | `min_asset_criticality` | 3 | 4 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
-| `NS02` | `min_peer_entity_count` | 6 | 5 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
-| `NS02` | `min_peer_entity_count` | 6 | 7 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `NS02` | `min_peer_share` | 0.6 | 0.48 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `NS02` | `min_peer_share` | 0.6 | 0.72 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `NS03` | `max_night_share` | 0.03 | 0.024 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `NS03` | `max_night_share` | 0.03 | 0.036 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `NS03` | `min_alert_volume` | 100 | 80 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `NS03` | `min_alert_volume` | 100 | 120 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `NS03` | `max_robust_z` | 3.5 | 2.8 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `NS03` | `max_robust_z` | 3.5 | 4.2 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `NS03` | `min_spread` | 0.02 | 0.016 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `NS03` | `min_spread` | 0.02 | 0.024 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `NS04` | `min_tp_without_case` | 3 | 2 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `NS04` | `min_tp_without_case` | 3 | 4 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `NS05` | `max_dormant_share` | 0.4 | 0.32 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |

@@ -2,10 +2,13 @@
 
 import csv
 import json
+import math
 from html import escape
 from pathlib import Path
 from typing import Any
 
+from satsa.models.canonical import Entity
+from satsa.peers.grouping import PeerResolver
 from satsa.rules.base import BaseRule
 from satsa.rules.registry import RuleRegistry
 from satsa.scoring.scorer import ScoringEngine
@@ -40,6 +43,25 @@ def assign_ranks(values: list[float], reverse: bool = True) -> list[float]:
         i = j + 1
 
     return ranks
+
+
+def _rate(successes: int, n: int) -> float | None:
+    return round(successes / n, 4) if n else None
+
+
+def wilson_interval(successes: int, n: int, z: float = 1.96) -> list[float] | None:
+    """95% Wilson score interval [low, high] for a proportion; None when n is 0.
+
+    Used instead of the normal approximation because pilot samples are small and
+    proportions sit near 0 or 1, where the normal interval is badly wrong.
+    """
+    if n == 0:
+        return None
+    p = successes / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return [round(max(0.0, centre - half), 4), round(min(1.0, centre + half), 4)]
 
 
 CONFIRMED_LABELS = ("confirmed", "issue", "true_positive")
@@ -152,9 +174,48 @@ class ShadowPilotAdapter:
         cleared_records = {(r["entity_id"], r["record_id"]) for r in cleared_reviews if r["record_id"]}
         cleared_in_queue = sorted(cleared_records & tool_queue_records)
 
+        # Per-rule figures at (entity, rule) level, with 95% Wilson intervals: a pooled number
+        # hides a rule that is always wrong behind rules that are always right.
+        cur.execute("SELECT count(*) AS n FROM entity_scores WHERE run_id = ?", (run_id,))
+        n_entities = int(cur.fetchone()["n"])
+        rule_ids = sorted({r for _, r in confirmed_pairs | cleared_pairs | tool_findings})
+        per_rule = []
+        for rule_id in rule_ids:
+            confirmed = {p for p in confirmed_pairs if p[1] == rule_id}
+            found = {p for p in tool_findings if p[1] == rule_id}
+            reproduced = len(confirmed & found)
+            rejected = len(found & cleared_pairs)
+            per_rule.append(
+                {
+                    "rule_id": rule_id,
+                    "confirmed": len(confirmed),
+                    "reproduced": reproduced,
+                    "recall": _rate(reproduced, len(confirmed)),
+                    "recall_ci": wilson_interval(reproduced, len(confirmed)),
+                    "findings": len(found),
+                    "findings_confirmed": reproduced,
+                    "findings_rejected": rejected,
+                    "findings_unadjudicated": len(found) - reproduced - rejected,
+                    "precision": _rate(reproduced, reproduced + rejected),
+                    "precision_ci": wilson_interval(reproduced, reproduced + rejected),
+                    "firing_rate": _rate(len(found), n_entities),
+                }
+            )
+        reproduced_pairs = len(confirmed_pairs & tool_findings)
+        cur.execute("SELECT config_hash FROM runs WHERE run_id = ?", (run_id,))
+        run_row = cur.fetchone()
+
         return {
             "status": "success",
             "run_id": run_id,
+            "config_hash": run_row["config_hash"] if run_row else None,
+            "entities_assessed": n_entities,
+            "confirmed_pairs": len(confirmed_pairs),
+            "reproduced_pairs": reproduced_pairs,
+            "pair_recall": _rate(reproduced_pairs, len(confirmed_pairs)),
+            "pair_recall_ci": wilson_interval(reproduced_pairs, len(confirmed_pairs)),
+            "precision_ci": wilson_interval(len(findings_confirmed), adjudicated),
+            "per_rule": per_rule,
             "total_manual_reviews": len(manual_reviews),
             "total_confirmed_issues": total_confirmed,
             "total_cleared_rows": len(cleared_reviews),
@@ -185,6 +246,8 @@ TARGETS = {
 
 
 SENSITIVITY_FACTORS = (0.8, 1.2)
+# Queue depths (alert items, highest score first) at which review-effort lift is reported.
+QUEUE_DEPTHS = (10, 25, 50, 100)
 
 
 def _perturb(value: Any, factor: float) -> Any:
@@ -248,6 +311,72 @@ def _badge(verdict: str) -> str:
     return f'<span class="badge{"" if verdict == "PASS" else " fail"}">{verdict}</span>'
 
 
+ADJUDICATION_COLUMNS = ["entity_id", "record_id", "rule_id", "label", "rule_name", "what_sat_sa_found", "what_to_check"]
+
+
+def adjudication_sheet(sqlite_store: SQLiteStore, result: dict[str, Any]) -> list[dict[str, str]]:
+    """Rows for examiners to label: every SAT-SA finding the workpaper did not adjudicate.
+
+    Blind by construction: no score, confidence, severity or risk rank, and rows are in
+    entity/rule order, so nothing signals how strongly the tool believes a finding. The
+    examiner fills `label` with `confirmed` or `not_an_issue`; the filled sheet is itself a
+    valid workpaper CSV (extra columns are ignored) to append and re-evaluate.
+    """
+    rows = []
+    for pair in sorted(result.get("findings_unadjudicated", [])):
+        entity_id, rule_id = pair.split(":", 1)
+        f = sqlite_store.conn.execute(
+            "SELECT title, rationale, examiner_check FROM findings WHERE run_id = ? AND entity_id = ? AND rule_id = ?",
+            (result["run_id"], entity_id, rule_id),
+        ).fetchone()
+        if f is None:
+            continue
+        rows.append(
+            {
+                "entity_id": entity_id,
+                "record_id": "",
+                "rule_id": rule_id,
+                "label": "",
+                "rule_name": f["title"].split(":", 1)[0],
+                "what_sat_sa_found": f["rationale"],
+                "what_to_check": f["examiner_check"],
+            }
+        )
+    return rows
+
+
+def _pct(value: float | None) -> str:
+    return "n/a" if value is None else f"{value * 100:.1f}%"
+
+
+def _ci(interval: list[float] | None) -> str:
+    return "" if interval is None else f" (95% CI {interval[0] * 100:.0f}–{interval[1] * 100:.0f}%)"
+
+
+def per_rule_markdown(res: dict[str, Any]) -> list[str]:
+    """Per-rule shadow-pilot table, or nothing for results stored before it existed."""
+    if not res.get("per_rule"):
+        return []
+    lines = [
+        "",
+        (
+            f"Per rule, at (entity, rule) level, over {res.get('entities_assessed', '?')} assessed entities "
+            f"(rule config hash `{res.get('config_hash')}`):"
+        ),
+        "",
+        "| Rule | Recall (reproduced / confirmed) | Precision (confirmed / adjudicated) | Not adjudicated | Fires on |",
+        "|---|---|---|---|---|",
+    ]
+    for r in res["per_rule"]:
+        adjudicated = r["findings_confirmed"] + r["findings_rejected"]
+        lines.append(
+            f"| `{r['rule_id']}` | {_pct(r['recall'])} ({r['reproduced']}/{r['confirmed']}){_ci(r['recall_ci'])} | "
+            f"{_pct(r['precision'])} ({r['findings_confirmed']}/{adjudicated}){_ci(r['precision_ci'])} | "
+            f"{r['findings_unadjudicated']} | {_pct(r['firing_rate'])} of entities |"
+        )
+    return lines
+
+
 SHADOW_CAVEAT = (
     "These figures are only as independent as the workpaper labels supplied: labels "
     "taken from real historical examiner findings are evidence; synthetic or stand-in "
@@ -288,6 +417,7 @@ def shadow_markdown(stored: dict[str, Any] | None) -> list[str]:
         lines += [f"- {r['entity_id']} / {r['rule_id']} (record {r['record_id'] or 'n/a'})" for r in missed]
     if res.get("findings_rejected"):
         lines += ["", "SAT-SA findings the workpaper cleared (false positives): " + ", ".join(res["findings_rejected"])]
+    lines += per_rule_markdown(res)
     return lines
 
 
@@ -298,7 +428,10 @@ def _precision_text(res: dict[str, Any]) -> str:
     if res["workpaper_precision"] is None:
         return "n/a (no SAT-SA finding is confirmed or cleared by a rule-level workpaper row)"
     confirmed, rejected = len(res["findings_confirmed"]), len(res["findings_rejected"])
-    return f"{res['workpaper_precision'] * 100:.1f}% ({confirmed}/{confirmed + rejected} adjudicated findings)"
+    return (
+        f"{res['workpaper_precision'] * 100:.1f}% ({confirmed}/{confirmed + rejected} adjudicated findings)"
+        f"{_ci(res.get('precision_ci'))}"
+    )
 
 
 def shadow_html(stored: dict[str, Any] | None) -> str:
@@ -325,6 +458,23 @@ def shadow_html(stored: dict[str, Any] | None) -> str:
         if missed
         else ""
     )
+    per_rule_html = (
+        f"<p>Per rule, at (entity, rule) level, over {res.get('entities_assessed', '?')} assessed entities "
+        f"(rule config hash <code>{escape(str(res.get('config_hash')))}</code>):</p>"
+        "<table><thead><tr><th>Rule</th><th>Recall</th><th>Precision</th><th>Not adjudicated</th>"
+        "<th>Fires on</th></tr></thead><tbody>"
+        + "".join(
+            f"<tr><td>{escape(r['rule_id'])}</td>"
+            f"<td>{_pct(r['recall'])} ({r['reproduced']}/{r['confirmed']}){_ci(r['recall_ci'])}</td>"
+            f"<td>{_pct(r['precision'])} ({r['findings_confirmed']}/{r['findings_confirmed'] + r['findings_rejected']})"
+            f"{_ci(r['precision_ci'])}</td>"
+            f"<td>{r['findings_unadjudicated']}</td><td>{_pct(r['firing_rate'])} of entities</td></tr>"
+            for r in res["per_rule"]
+        )
+        + "</tbody></table>"
+        if res.get("per_rule")
+        else ""
+    )
     return f"""<div class="card">
     <h2>Shadow-Pilot Results</h2>
     <p>Workpaper <code>{escape(stored["source_name"])}</code>, evaluated {escape(stored["created_at"])} by {escape(stored["actor"])}.</p>
@@ -342,6 +492,7 @@ def shadow_html(stored: dict[str, Any] | None) -> str:
     </table>
     {rejected_html}
     {missed_html}
+    {per_rule_html}
   </div>"""
 
 
@@ -528,11 +679,29 @@ class ValidationHarness:
                 "lift_factor": round(lift, 2),
             }
 
+        # Lift at increasing depths of the queue itself. The budgets above are fractions of all
+        # alerts and can each exceed the queue; these depths always fit, so they show whether
+        # the top of the queue is richer in affected alerts than the rest of it.
+        depth_results = {}
+        depths = sorted({d for d in QUEUE_DEPTHS if d < len(queue_alert_ids)} | {len(queue_alert_ids)})
+        for depth in depths:
+            if depth == 0:
+                continue
+            hits = sum(1 for rid in queue_alert_ids[:depth] if rid in affected_alerts)
+            hit_rate = hits / depth
+            depth_results[str(depth)] = {
+                "records_examined": depth,
+                "defects_found": hits,
+                "hit_rate": round(hit_rate, 4),
+                "lift_factor": round(hit_rate / random_baseline_prevalence, 2) if random_baseline_prevalence else 0.0,
+            }
+
         return {
             "total_alerts": total_alerts,
             "total_queue_items": len(queue_rows),
             "total_queue_alert_items": len(queue_alert_ids),
             "total_ground_truth_affected_records": len(affected_alerts),
+            "queue_depths": depth_results,
             "budgets": budget_results,
         }
 
@@ -634,12 +803,15 @@ class ValidationHarness:
         }
 
     def _rule_outcome(
-        self, rule_cls: type[BaseRule], params: dict[str, Any], entities: list[str]
+        self, rule_cls: type[BaseRule], params: dict[str, Any], peers: dict[str, list[str]]
     ) -> dict[str, list[str]]:
-        """Run one rule with the given params on every entity and score it against ground truth."""
+        """Run one rule with the given params on every entity (with the same peer cohorts
+        the assessment runner uses) and score it against ground truth."""
         rule = rule_cls(config_override={"params": params})
         injected = {d["entity_id"] for d in self.ground_truth.get("defects", []) if d["rule_id"] == rule.id}
-        detected = {e for e in entities if rule.evaluate(e, self.duckdb_store, [], "SENSITIVITY")[0]}
+        detected = {
+            e for e, peer_ids in peers.items() if rule.evaluate(e, self.duckdb_store, peer_ids, "SENSITIVITY")[0]
+        }
         return {
             "tp": sorted(detected & injected),
             "fn": sorted(injected - detected),
@@ -657,9 +829,14 @@ class ValidationHarness:
         Rules with no `params` in config cannot be perturbed and are listed as not covered.
         """
         registry = RuleRegistry(rules_config_path)
-        entities = self.duckdb_store.query("SELECT DISTINCT entity_id FROM entity ORDER BY entity_id")[
-            "entity_id"
-        ].to_list()
+        all_entities = [
+            Entity(**row) for row in self.duckdb_store.query("SELECT * FROM entity").iter_rows(named=True)
+        ]
+        unique = {e.entity_id: e for e in all_entities}
+        resolver = PeerResolver()
+        entities = {
+            eid: resolver.resolve_peers(ent, list(unique.values()))[0] for eid, ent in sorted(unique.items())
+        }
         rows: list[dict[str, Any]] = []
         not_covered: list[str] = []
         for rule in registry.get_all_rules():
@@ -863,6 +1040,21 @@ class ValidationHarness:
                 f"{b_data['hit_rate_top_k'] * 100:.1f}% | {b_data['random_baseline_hit_rate'] * 100:.2f}% | "
                 f"**{b_data['lift_factor']:.2f}x** |"
             )
+
+        md_lines.extend(
+            [
+                "",
+                "Lift by queue depth (alert items in score order; these depths always fit inside the queue):",
+                "",
+                "| Top queue alerts examined | Affected Alerts Found | Hit Rate | Lift Factor |",
+                "|---|---|---|---|",
+                *(
+                    f"| {d['records_examined']} | {d['defects_found']} | {d['hit_rate'] * 100:.1f}% | "
+                    f"**{d['lift_factor']:.2f}x** |"
+                    for d in lift.get("queue_depths", {}).values()
+                ),
+            ]
+        )
 
         md_lines.extend(
             [
