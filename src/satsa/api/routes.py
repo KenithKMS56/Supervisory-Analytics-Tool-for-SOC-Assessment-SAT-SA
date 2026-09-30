@@ -12,7 +12,8 @@ import shutil
 import statistics
 import tempfile
 import zipfile
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -25,6 +26,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
 from satsa.admin.rbac import SATSA_OPERATOR_ROLES, is_analyst, is_examiner
+from satsa.auth.identities import MIN_PASSPHRASE_LENGTH, passphrase_policy_error
 from satsa.auth.session import (
     SESSION_COOKIE_NAME,
     Identity,
@@ -72,12 +74,27 @@ SUPERVISORY_READ_ROLES = ("analyst", "examiner")
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    """At start, require a passphrase change on seeded accounts still using their default."""
+    store = SQLiteStore("data/satsa.db")
+    try:
+        for username in store.flag_unrotated_default_accounts():
+            logger.warning("Account %r still uses its published default passphrase; "
+                           "a new one must be set at first login.", username)
+    finally:
+        store.close()
+    yield
+
+
 app = FastAPI(
     title="SAT-SA Supervisory API",
     description="Supervisory Analytics Tool for SOC Assessment (NCIIPC)",
     version="0.1.0",
     docs_url="/docs",
     redoc_url=None,
+    lifespan=_lifespan,
 )
 
 # Setup directories
@@ -101,6 +118,9 @@ templates.env.globals["is_examiner"] = is_examiner
 # route's own dependency then enforces the specific role (see the RBAC table
 # in tests/test_rbac_matrix.py, which must list every route).
 PUBLIC_PATHS = {"/", "/login", "/logout", "/splash", "/api/session/status", "/openapi.json"}
+# The only gated paths open to a session that still owes a passphrase change.
+PASSWORD_CHANGE_PATH = "/change-password"
+PASSWORD_CHANGE_REQUIRED = "A new passphrase must be set at /change-password before this account can be used."
 PUBLIC_PREFIXES = ("/static/", "/docs")
 # Non-page GET endpoints (JSON APIs and file downloads): an anonymous request
 # gets 401 rather than a login redirect.
@@ -143,6 +163,11 @@ async def enforce_auth_middleware(request: Request, call_next):
     # it was refused at login) is denied on every gated path.
     if identity.role not in SATSA_OPERATOR_ROLES:
         return JSONResponse({"detail": NOT_SATSA_OPERATOR}, status_code=403)
+    # A seeded default (or admin-reset) passphrase buys exactly one thing: replacing it.
+    if identity.must_change_password and path != PASSWORD_CHANGE_PATH:
+        if request.method == "GET" and not path.startswith(NON_PAGE_PREFIXES):
+            return RedirectResponse(url=PASSWORD_CHANGE_PATH, status_code=303)
+        return JSONResponse({"detail": PASSWORD_CHANGE_REQUIRED}, status_code=403)
 
     return await call_next(request)
 
@@ -327,8 +352,11 @@ async def handle_login(
         )
 
     token = sqlite_store.create_session(identity_row["username"], identity_row["role"])
+    must_change = bool(identity_row.get("force_password_change"))
     sqlite_store.append_audit(
-        action="login", actor=identity_row["username"], details={"role": identity_row["role"]}
+        action="login",
+        actor=identity_row["username"],
+        details={"role": identity_row["role"], "password_change_required": must_change},
     )
     sqlite_store.record_live_event(
         "USER_LOGIN",
@@ -339,7 +367,7 @@ async def handle_login(
     )
     sqlite_store.close()
 
-    resp = RedirectResponse(url=safe_next, status_code=303)
+    resp = RedirectResponse(url=PASSWORD_CHANGE_PATH if must_change else safe_next, status_code=303)
     resp.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
@@ -349,6 +377,77 @@ async def handle_login(
         max_age=8 * 3600,
     )
     return resp
+
+
+@app.get("/change-password", response_class=HTMLResponse)
+async def view_change_password(
+    request: Request, identity: Identity = Depends(require_authenticated)
+) -> Response:
+    return templates.TemplateResponse(
+        request=request,
+        name="change_password.html",
+        context={
+            "active_tab": "login",
+            "error": "",
+            "forced": identity.must_change_password,
+            "min_length": MIN_PASSPHRASE_LENGTH,
+        },
+    )
+
+
+@app.post("/change-password")
+async def handle_change_password(
+    request: Request,
+    current_password: Annotated[str, Form()],
+    new_password: Annotated[str, Form()],
+    confirm_password: Annotated[str, Form()],
+    identity: Identity = Depends(require_authenticated),
+) -> Response:
+    """Replace the signed-in operator's own passphrase; lifts a forced change.
+
+    The current passphrase is asked for again, and a wrong one counts towards the login
+    lockout, so a borrowed session cannot be used to guess it.
+    """
+    from satsa.auth.identities import LOGIN_LOCKOUT_MINUTES, LOGIN_MAX_FAILURES, verify_passphrase
+
+    def _refuse(message: str) -> Response:
+        return templates.TemplateResponse(
+            request=request,
+            name="change_password.html",
+            context={
+                "active_tab": "login",
+                "error": message,
+                "forced": identity.must_change_password,
+                "min_length": MIN_PASSPHRASE_LENGTH,
+            },
+            status_code=400,
+        )
+
+    _, sqlite_store = get_stores()
+    try:
+        username = identity.username
+        if sqlite_store.count_recent_login_failures(username, LOGIN_LOCKOUT_MINUTES) >= LOGIN_MAX_FAILURES:
+            return _refuse("Too many failed attempts. Try again later.")
+        row = sqlite_store.get_identity(username)
+        if row is None or not verify_passphrase(current_password, row["pass_salt"], row["pass_hash"]):
+            sqlite_store.append_audit(
+                action="login_failed", actor=username, details={"reason": "bad_current_passphrase"}
+            )
+            return _refuse("The current passphrase is not correct.")
+        problem = passphrase_policy_error(new_password, confirm_password, current_password)
+        if problem:
+            return _refuse(problem)
+        sqlite_store.change_own_password(
+            username, new_password, keep_token=request.cookies.get(SESSION_COOKIE_NAME)
+        )
+        sqlite_store.append_audit(
+            action="password_changed",
+            actor=username,
+            details={"forced": identity.must_change_password},
+        )
+    finally:
+        sqlite_store.close()
+    return RedirectResponse(url="/portfolio", status_code=303)
 
 
 @app.post("/logout")
