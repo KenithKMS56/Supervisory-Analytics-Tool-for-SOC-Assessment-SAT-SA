@@ -8,6 +8,21 @@ import yaml
 from satsa.models.outputs import DomainScore, EntityScore, Finding
 
 
+def band_tier(risk_band: str) -> str:
+    """Display tier for a stored risk-band label: 'critical', 'moderate' or 'low'.
+
+    The single place that maps an entity's classification to a colour and to "requires
+    action" (anything above low), so the dashboard, HTML reports and PDFs agree with the
+    stored band rather than each re-deriving one from the risk index.
+    """
+    label = risk_band.strip().lower()
+    if label.startswith(("critical", "high")):
+        return "critical"
+    if label.startswith("moderate"):
+        return "moderate"
+    return "low"
+
+
 class ScoringEngine:
     """Computes rule scores, domain scores via Noisy-OR, and composite Entity Risk Index."""
 
@@ -90,7 +105,8 @@ class ScoringEngine:
         risk_index = round(
             (1.0 - self.breadth_weight) * base_score + self.breadth_weight * breadth_score, 1
         )
-        risk_band = self.classify_risk_band(risk_index)
+        entity_findings = [f for f in findings if f.entity_id == entity_id]
+        risk_band = self.apply_band_floor(self.classify_risk_band(risk_index), entity_findings)
 
         return EntityScore(
             run_id=run_id,
@@ -100,6 +116,38 @@ class ScoringEngine:
             distinct_rules_triggered=distinct_rules,
             domain_scores=dom_map,
         )
+
+    def band_floor(self, findings: list[Finding]) -> str | None:
+        """Lowest band label the entity's findings allow, or None when no floor applies.
+
+        The risk index averages over 8 domains, so one maximum-severity finding in one
+        domain cannot lift it past ~14/100: on the index alone, an entity with an
+        unreported critical incident is "Low Supervisory Concern". `band_floors` in the
+        config maps a finding severity to the minimum band key for an entity that has
+        such a finding with at least `min_confidence`.
+        """
+        floors = self.config.get("band_floors", {})
+        min_conf = float(floors.get("min_confidence", 0.5))
+        order = list(self.risk_bands)
+        best = -1
+        for f in findings:
+            key = floors.get(f.severity)
+            if key in self.risk_bands and f.confidence >= min_conf:
+                best = max(best, order.index(key))
+        if best < 0:
+            return None
+        band = self.risk_bands[order[best]]
+        return str(band.get("label", order[best].title()))
+
+    def apply_band_floor(self, index_band: str, findings: list[Finding]) -> str:
+        """The higher of the index-derived band and the findings' band floor."""
+        floor = self.band_floor(findings)
+        if floor is None:
+            return index_band
+        labels = [str(info.get("label", name.title())) for name, info in self.risk_bands.items()]
+        if index_band in labels and labels.index(floor) <= labels.index(index_band):
+            return index_band
+        return floor
 
     def classify_risk_band(self, score: float) -> str:
         """Assign risk band based on explicit cutoffs in config."""

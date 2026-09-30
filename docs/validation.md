@@ -115,7 +115,7 @@ Added in September 2026 so that every rule has a positive case (each sized to cr
 ## 2. Detector-Implementation Correctness Results (Primary Dataset)
 
 `satsa validate` against the ground truth in Section 1, with every finding counted (see
-Section 0.1). Figures from run `RUN-20260930053754723196-a9786774`; regenerate with
+Section 0.1). Figures from run `RUN-20260930060740856186-dc501387`; regenerate with
 `satsa validate`, and see `docs/validation_report.md` for the per-rule table.
 
 | Evaluation Metric | Measured Result | Benchmark Target | Verdict |
@@ -339,7 +339,7 @@ These are not historical examiner findings. They are also deliberately **not** t
 SAT-SA's own findings: labels copied from the tool's output would make recall and precision 100%
 by construction.
 
-**Result** (primary dataset, run `RUN-20260930053754723196-a9786774`):
+**Result** (primary dataset, run `RUN-20260930060740856186-dc501387`):
 
 | Measure | Value | What it means |
 |---|---|---|
@@ -351,8 +351,8 @@ by construction.
 | Cleared records in the queue | **0/15** | None of the individually cleared clean-entity alerts were queued. |
 | Queue coverage of *all* affected IDs | 44/498; at least one queue item for 13 of 21 defects | Computed by the build script over every affected ID, not just the capped sample. |
 
-**Reading the queue figure.** The review queue samples up to 30 items per entity (70% top-risk,
-30% stratified random; 134 items in this run). It is built to put *examples* of each triggered rule
+**Reading the queue figure.** The review queue holds up to 30 items per entity (cited records up to
+70% of that, plus 9 random controls; 134 items in this run, 44 cited and 90 random). It is built to put *examples* of each triggered rule
 in front of an examiner, not to list every affected record, so record-level recall is expected to be
 low for large defects: 14 of the 195 EG01 fast-closure alerts and 2 of the 204 EG11 relabelled
 alerts are queued. EG07's burst alerts (0/35) are not queued because EG07's evidence is the analyst,

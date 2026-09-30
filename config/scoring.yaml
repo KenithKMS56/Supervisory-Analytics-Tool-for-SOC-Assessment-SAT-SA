@@ -62,8 +62,21 @@ risk_bands:
     label: "Critical Supervisory Concern"
     color: "#ef4444"
 
+# Minimum risk band for an entity with a finding of the given severity (at or above
+# min_confidence). The risk index is an average over 8 domains, so a single critical finding
+# cannot lift it out of the "low" band on its own; the floor stops such an entity being
+# labelled "Low Supervisory Concern". The index and the ranking are not changed. Values are
+# keys of risk_bands; remove a line to disable that floor.
+band_floors:
+  min_confidence: 0.5
+  critical: high
+  high: moderate
+
+# Per entity: up to queue_size_per_entity items. Records cited as evidence by findings fill
+# up to top_risk_ratio of it, highest accumulated finding score first; the rest of the size is
+# a random control sample of the entity's other alerts, stratified by severity. An entity with
+# few or no cited records therefore gets a shorter, mostly random queue.
 review_queue:
   top_risk_ratio: 0.70
-  stratified_random_ratio: 0.30
-  default_sample_size: 100
+  queue_size_per_entity: 30
   random_seed: 42

@@ -40,6 +40,7 @@ from satsa.peers.grouping import PeerResolver
 from satsa.report.generator import ReportGenerator, ReportNotFoundError
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
+from satsa.scoring.scorer import ScoringEngine, band_tier
 from satsa.security import (
     is_valid_entity_id,
     is_valid_finding_id,
@@ -88,6 +89,7 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["get_identity"] = get_current_identity
 # Role-adaptive views: templates decide what to show from these, never from
 # raw role strings, so every alias of a role (e.g. "NCIIPC Analyst") matches.
+templates.env.globals["band_tier"] = band_tier
 templates.env.globals["is_analyst"] = is_analyst
 templates.env.globals["is_examiner"] = is_examiner
 
@@ -575,7 +577,7 @@ async def view_portfolio(request: Request) -> Response:
     cur.execute("SELECT count(*) FROM review_queue WHERE run_id = ?", (run_id,))
     queue_count = cur.fetchone()[0]
 
-    critical_count = sum(1 for e in ranked_entities if e["risk_index"] >= 25.0)
+    critical_count = sum(1 for e in ranked_entities if band_tier(e["risk_band"]) != "low")
 
     # Cross-entity ("systemic") findings for this run -- a distinct section,
     # not folded into any per-entity finding card. See satsa.rules.systemic.
@@ -675,6 +677,15 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
         duckdb_store, cur, entity_id, run_id, radar_domains
     )
     kpi_comparison = _kpi_reconciliation(duckdb_store, entity_id)
+    # The stored band can be higher than the index alone gives (band_floors in scoring.yaml).
+    band_note = ""
+    if score_row:
+        index_band = ScoringEngine().classify_risk_band(float(score_row["risk_index"]))
+        if index_band != score_row["risk_band"]:
+            band_note = (
+                f"The risk index alone would be “{index_band}”. The band is raised because this entity "
+                "has a critical or high severity finding (band_floors in config/scoring.yaml)."
+            )
     kpi_gap_threshold = float(
         _load_rules_config()["rules"].get("EG10", {}).get("params", {}).get("mttr_gap_ratio_threshold", 0.60)
     )
@@ -694,6 +705,7 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
             "radar_entity_vals": radar_entity_vals,
             "radar_peer_vals": radar_peer_vals,
             "peer_label": peer_label,
+            "band_note": band_note,
             "kpi_comparison": kpi_comparison,
             "kpi_gap_threshold": kpi_gap_threshold,
         },

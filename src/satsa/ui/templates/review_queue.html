@@ -6,7 +6,7 @@
 <div class="header-section">
   <div class="header-title">
     <h1>Prioritised Supervisory Review Queue</h1>
-    <p>Scientifically stratified queue: <strong>70% Top-Risk indicators</strong> combined with <strong>30% Stratified Random controls</strong> for lift benchmarking.</p>
+    <p>Per entity: records cited by findings (highest accumulated score first, up to 70% of the queue size) plus a <strong>severity-stratified random control sample</strong>. Entities with few cited records get a shorter, mostly random queue.</p>
   </div>
   {% set identity = get_identity(request) %}
   {% set can_decide = identity and is_examiner(identity.role) %}
@@ -23,13 +23,10 @@
 </div>
 
 <!-- Queue Stats Strip -->
-{% set top_risk_count = 0 %}
-{% set random_count = 0 %}
-{% set confirmed_count = 0 %}
-{% for item in queue_items %}
-  {% if item.is_random %}{% set random_count = random_count + 1 %}{% else %}{% set top_risk_count = top_risk_count + 1 %}{% endif %}
-  {% if item.examiner_status == 'confirmed' %}{% set confirmed_count = confirmed_count + 1 %}{% endif %}
-{% endfor %}
+{# Counted with filters: a {% set %} inside a {% for %} does not survive the loop in Jinja. #}
+{% set random_count = queue_items|selectattr('is_random')|list|length %}
+{% set top_risk_count = queue_items|length - random_count %}
+{% set confirmed_count = queue_items|selectattr('examiner_status', 'equalto', 'confirmed')|list|length %}
 
 <div class="stats-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 2rem;">
   <div class="stat-card">
@@ -38,12 +35,12 @@
     <div class="stat-desc">Stratified supervisory inquest pool</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">Top-Risk Quota (70%)</div>
+    <div class="stat-label">Cited by Findings</div>
     <div class="stat-value" style="color: var(--risk-crit);">{{ top_risk_count }}</div>
     <div class="stat-desc">High accumulated anomaly weight</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">Stratified Controls (30%)</div>
+    <div class="stat-label">Random Controls</div>
     <div class="stat-value" style="color: var(--accent-indigo);">{{ random_count }}</div>
     <div class="stat-desc">Zero-bias baseline verification</div>
   </div>

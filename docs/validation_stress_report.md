@@ -6,7 +6,7 @@
 > It is still synthetic and built against the rules' own thresholds, so a perfect score
 > shows the rules behave as specified near those thresholds, not real-world accuracy.
 
-**Run ID:** `RUN-20260930053829609607-e5133eb7` | **Seed:** `9901`
+**Run ID:** `RUN-20260930060817197198-326c2ae8` | **Seed:** `9901`
 
 | Metric | Result |
 |---|---|

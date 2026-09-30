@@ -38,6 +38,7 @@
   <div class="stat-box">
     <div class="stat-val">{{ score.risk_band }}</div>
     <div class="stat-lbl">Risk Classification</div>
+    {% if band_note %}<div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.4rem;">{{ band_note }}</div>{% endif %}
   </div>
   <div class="stat-box">
     <div class="stat-val">{{ findings|length }}</div>

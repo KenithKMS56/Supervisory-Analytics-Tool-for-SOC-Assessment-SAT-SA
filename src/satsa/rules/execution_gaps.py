@@ -626,7 +626,9 @@ class EG07AnalystImplausibility(BaseRule):
 
         max_hourly_val = df["hourly_closures"].max()
         max_hourly = int(str(max_hourly_val)) if max_hourly_val is not None else 0
-        score, conf = self.compute_rule_score(max_hourly / 30.0, df.shape[0])
+        # Confidence rests on the closures observed in the busiest hour, not on how many
+        # analyst-hours crossed the line: one hour with 35 closures is 35 observations.
+        score, conf = self.compute_rule_score(max_hourly / 30.0, max_hourly)
         f_id = f"FND-EG07-{entity_id}-{run_id}"
         analysts = df["closed_by"].unique().to_list()
 
