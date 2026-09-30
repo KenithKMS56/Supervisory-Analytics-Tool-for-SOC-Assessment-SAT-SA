@@ -1,13 +1,15 @@
 """Negative Space Detection Rules: NS01 through NS08."""
 
 import math
+from typing import Any
 
 from satsa.models.outputs import Finding, FindingEvidence
 from satsa.rules.base import BaseRule
 from satsa.store.duckdb import DuckDBStore
 
-# Length of the supervisory review period NS08 expects a submission to cover.
-REVIEW_PERIOD_MONTHS = 6
+# Allowed range for NS08's `review_period_months` (config/rules.yaml). Outside it the
+# configuration is rejected when the rule is built, not silently clamped.
+REVIEW_PERIOD_MONTHS_RANGE = (1, 24)
 
 
 class NS01SilentCriticalAssets(BaseRule):
@@ -454,7 +456,7 @@ class NS05RuleCoverageGaps(BaseRule):
 
             rationale = (
                 f"{len(dormant_rules)} of {total_rules} ({dormant_share:.1%}) enabled SIEM detection rules "
-                f"never fired a single alert over the 6-month observation period."
+                f"never fired a single alert in the submitted observation period."
             )
             finding = Finding(
                 finding_id=f_id,
@@ -640,7 +642,7 @@ class NS08SubmissionCompleteness(BaseRule):
     """NS08: Submission completeness (alerts missing for months of the review period).
 
     The review period is the months the portfolio's submissions cover, up to
-    REVIEW_PERIOD_MONTHS; an entity alone in the portfolio is held to the full period.
+    `review_period_months`; an entity alone in the portfolio is held to the full period.
     """
 
     id = "NS08"
@@ -656,6 +658,21 @@ class NS08SubmissionCompleteness(BaseRule):
         "Review submission logs for missing monthly batch data or data ingestion parse failures."
     )
 
+    def __init__(self, config_override: dict[str, Any] | None = None):
+        super().__init__(config_override)
+        self.review_period_months()  # reject an out-of-range period before any assessment runs
+
+    def review_period_months(self) -> int:
+        """Length of the supervisory review period in months, from config, range-checked."""
+        value = self.params.get("review_period_months", 6)
+        low, high = REVIEW_PERIOD_MONTHS_RANGE
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ValueError(
+                f"NS08 review_period_months must be a whole number of months between {low} and "
+                f"{high}; config/rules.yaml has {value!r}."
+            )
+        return value
+
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
@@ -670,12 +687,13 @@ class NS08SubmissionCompleteness(BaseRule):
 
         month_cnt = len(own)
         # Months the entity is expected to cover: what the portfolio as a whole submitted,
-        # capped at the review period. Judging a short or partly-elapsed period against a
-        # fixed six months would flag every entity.
+        # capped at the configured review period. Judging a short or partly-elapsed period
+        # against the full period would flag every entity.
+        review_months = self.review_period_months()
         others = self.population(
             store, "SELECT count(DISTINCT entity_id) FROM alert WHERE entity_id != ?", [entity_id]
         )
-        expected = min(REVIEW_PERIOD_MONTHS, len(portfolio)) if others else REVIEW_PERIOD_MONTHS
+        expected = min(review_months, len(portfolio)) if others else review_months
         if month_cnt < expected:
             missing_months = expected - month_cnt
             score, conf = self.compute_rule_score(missing_months / 2.0, 10)

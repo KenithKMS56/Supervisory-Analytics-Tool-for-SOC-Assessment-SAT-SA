@@ -2,7 +2,7 @@
 #
 # Per rule: display metadata, min_sample and severity_weight (read by BaseRule), and a
 # `params` block whose keys are read by that rule via self.params.get(key, default). Every
-# rule has one except EG03 and NS07 (zero tolerance) and NS08 (fixed 6-month period). Defaults in code equal the values below,
+# rule has one except EG03 and NS07 (zero tolerance). Defaults in code equal the values below,
 # so removing a key does not change behaviour. tests/test_config_drift.py fails if a key
 # here is not read by its rule, or if stray top-level keys appear.
 rules:
@@ -243,5 +243,8 @@ rules:
     min_sample: 1
     severity_weight: 90
     description: Alerts cover fewer months than the review period, i.e. the months the portfolio's submissions
-      cover, up to 6 (a missing monthly batch). An entity alone in the portfolio is held to 6 months.
-      (Volume drops are NS03's concern; null rates are reported by the ingest data-quality checks.)
+      cover, up to review_period_months (a missing monthly batch). An entity alone in the portfolio is
+      held to the full review_period_months. (Volume drops are NS03's concern; null rates are reported
+      by the ingest data-quality checks.)
+    params:
+      review_period_months: 6

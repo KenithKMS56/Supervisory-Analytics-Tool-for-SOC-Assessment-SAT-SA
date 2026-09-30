@@ -40,6 +40,7 @@ from satsa.models.canonical import Entity
 from satsa.models.outputs import ExaminerFeedback
 from satsa.peers.grouping import PeerResolver
 from satsa.report.generator import ReportGenerator, ReportNotFoundError
+from satsa.rules.negative_space import REVIEW_PERIOD_MONTHS_RANGE
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
 from satsa.scoring.scorer import ScoringEngine, band_tier, blind_review_concordance
@@ -1986,6 +1987,10 @@ TUNABLE_PARAMS: list[dict[str, Any]] = [
     {"rule": "NS06", "key": "min_ghost_assets", "type": "int", "min": 1, "max": 100000, "step": 1,
      "label": "NS06 - min inventory assets with no telemetry",
      "help": "Flag when at least this many inventory assets have no log events and no alerts."},
+    {"rule": "NS08", "key": "review_period_months", "type": "int",
+     "min": REVIEW_PERIOD_MONTHS_RANGE[0], "max": REVIEW_PERIOD_MONTHS_RANGE[1], "step": 1,
+     "label": "NS08 - supervisory review period (months)",
+     "help": "Months a submission is expected to cover. An entity is held to the months the portfolio submitted, up to this many; an entity alone in the portfolio is held to all of them."},
 ]
 
 RULES_CONFIG_PATH = Path("config/rules.yaml")

@@ -12,6 +12,7 @@
 
 import inspect
 import re
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -44,10 +45,11 @@ EXPECTED_PARAMS = {
     "NS04": {"min_tp_without_case": 3},
     "NS05": {"max_dormant_share": 0.40, "min_dormant_rules": 5},
     "NS06": {"min_ghost_assets": 2},
+    "NS08": {"review_period_months": 6},
 }
 # EG03 and NS07 are zero-tolerance (one unescalated critical TP / one unreported critical
-# incident is a finding) and NS08 checks the fixed 6-month review period: no knobs.
-UNTUNABLE_RULES = {"EG03", "NS07", "NS08"}
+# incident is a finding): no knobs.
+UNTUNABLE_RULES = {"EG03", "NS07"}
 
 
 def _cfg() -> dict:
@@ -286,3 +288,70 @@ def test_tuning_save_reruns_the_selected_period_not_a_hardcoded_one(analyst_clie
                 store.conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (rid,))
         store.conn.commit()
         store.close()
+
+
+# ---------------------------------------------------------------- NS08 review period
+
+
+def _ns08_store(tmp_path, months_by_entity):
+    store = DuckDBStore(tmp_path / "ns08")
+    n = 0
+    for entity, months in months_by_entity.items():
+        for month in months:
+            n += 1
+            store.execute(
+                "INSERT INTO alert (entity_id, alert_id, created_at) VALUES (?, ?, ?)",
+                [entity, f"A{n}", datetime(2026, month, 10, 9, 0, 0)],
+            )
+    return store
+
+
+def test_ns08_review_period_comes_from_config(tmp_path):
+    """A lone entity with 4 months of alerts: short of a 6-month period, complete for a 4-month one."""
+    from satsa.rules.negative_space import NS08SubmissionCompleteness
+
+    store = _ns08_store(tmp_path, {"SOLO": [1, 2, 3, 4]})
+    try:
+        default = NS08SubmissionCompleteness()
+        findings, _ = default.evaluate("SOLO", store, [], "RUN-X")
+        assert findings and findings[0].peer_comparison == {"active_months": 4, "expected_months": 6}
+
+        four = NS08SubmissionCompleteness({"params": {"review_period_months": 4}})
+        assert four.evaluate("SOLO", store, [], "RUN-X")[0] == []
+
+        twelve = NS08SubmissionCompleteness({"params": {"review_period_months": 12}})
+        findings, _ = twelve.evaluate("SOLO", store, [], "RUN-X")
+        assert findings[0].peer_comparison["expected_months"] == 12
+        assert "12-month supervisory review period" in findings[0].rationale
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("bad", [0, -3, 25, 600, 6.5, "6", True, None])
+def test_ns08_review_period_out_of_range_is_rejected(bad):
+    from satsa.rules.negative_space import NS08SubmissionCompleteness
+
+    with pytest.raises(ValueError, match="review_period_months must be a whole number of months between 1 and 24"):
+        NS08SubmissionCompleteness({"params": {"review_period_months": bad}})
+
+
+def test_out_of_range_review_period_in_rules_yaml_stops_the_registry(tmp_path):
+    cfg = _cfg()
+    cfg["rules"]["NS08"]["params"]["review_period_months"] = 99
+    path = tmp_path / "rules.yaml"
+    path.write_text(yaml.dump(cfg, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="review_period_months"):
+        RuleRegistry(path)
+
+
+def test_tuning_form_rejects_an_out_of_range_review_period():
+    from fastapi import HTTPException
+
+    from satsa.api.routes import _apply_tuning_form
+
+    with pytest.raises(HTTPException) as exc:
+        _apply_tuning_form({"NS08__review_period_months": "30"}, _cfg())
+    assert exc.value.status_code == 422
+    cfg, changes = _apply_tuning_form({"NS08__review_period_months": "3"}, _cfg())
+    assert cfg["rules"]["NS08"]["params"]["review_period_months"] == 3
+    assert changes == {"NS08__review_period_months": {"old": 6, "new": 3}}
