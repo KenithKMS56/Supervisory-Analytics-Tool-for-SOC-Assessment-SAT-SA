@@ -22,13 +22,17 @@ class SourceAdapter:
     """Reads raw datasets across multiple input file formats."""
 
     @staticmethod
-    def read_csv(file_path: Path | str) -> list[dict[str, Any]]:
-        """Read CSV file into list of row dictionaries."""
+    def read_csv_frame(file_path: Path | str) -> pl.DataFrame:
+        """Read a CSV file as a columnar frame (an empty frame if the file does not exist)."""
         path = Path(file_path)
         if not path.exists():
-            return []
-        df = pl.read_csv(path, infer_schema_length=1000)
-        return df.to_dicts()
+            return pl.DataFrame()
+        return pl.read_csv(path, infer_schema_length=1000)
+
+    @staticmethod
+    def read_csv(file_path: Path | str) -> list[dict[str, Any]]:
+        """Read CSV file into list of row dictionaries."""
+        return SourceAdapter.read_csv_frame(file_path).to_dicts()
 
     @staticmethod
     def read_json(file_path: Path | str) -> list[dict[str, Any]]:
