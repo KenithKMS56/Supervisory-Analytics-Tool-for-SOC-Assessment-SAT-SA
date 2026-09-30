@@ -34,7 +34,10 @@ class RobustStats:
     ) -> float:
         """
         Calculate robust z-score: 0.6745 * (x - median) / MAD.
-        Handles zero MAD via fallback to mean absolute deviation or zero.
+        Handles zero MAD via fallback to mean absolute deviation. When the reference values
+        have no spread at all, a value equal to the median scores 0 and any other value is
+        infinitely extreme (+/-inf) -- previously it scored 0, hiding real outliers among
+        identical peers.
         """
         if median is None and values is not None:
             median = RobustStats.median(values)
@@ -50,7 +53,9 @@ class RobustStats:
                 mean_dev = sum(abs(x - med) for x in values) / len(values)
                 if mean_dev > 0:
                     return float(0.6745 * (value - med) / (1.2533 * mean_dev))
-            return 0.0
+            if value == med:
+                return 0.0
+            return float("inf") if value > med else float("-inf")
 
         return float(0.6745 * (value - med) / m)
 

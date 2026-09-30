@@ -52,7 +52,7 @@ satsa ingest --data-dir /path/to/extracted_csvs --parquet-dir data --db-path dat
 ```bash
 satsa run --period 2026-Q1
 ```
-- Computes daily SQL metrics in DuckDB, runs robust statistics and SPC break detection, evaluates rules EG01–EG12 and NS01–NS08, aggregates domain scores via Noisy-OR, updates SQLite state, and logs execution to the audit chain.
+- Resolves each entity's peer cohort, evaluates rules EG01–EG12 and NS01–NS08 in DuckDB SQL, aggregates domain scores via Noisy-OR, updates SQLite state, and logs execution to the audit chain.
 
 ### SOP-03: Generating Supervisory Reports
 ```bash

@@ -8,16 +8,25 @@ scoring and each generator bug, so neither kind of error can quietly return.
 
 import json
 from collections import Counter, defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from satsa.rules.execution_gaps import chance_repeat_floor
 from satsa.rules.registry import RuleRegistry
+from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
 from satsa.synth.generator import SyntheticDataGenerator
 from satsa.synth.stress import generate_stress_dataset
-from satsa.validate.harness import ShadowPilotAdapter, ValidationHarness, _perturb
+from satsa.validate.harness import (
+    ADJUDICATION_COLUMNS,
+    ShadowPilotAdapter,
+    ValidationHarness,
+    _perturb,
+    adjudication_sheet,
+    wilson_interval,
+)
 
 RUN = "RUN-TEST-INTEGRITY"
 
@@ -94,6 +103,139 @@ def test_missed_defects_are_named(tmp_path):
     assert res["overall_recall"] == 0.5
 
 
+# ------------------------------------------------------------------ peer cohorts
+
+
+@pytest.fixture
+def peer_store(tmp_path):
+    """FAST closes 20 high alerts in 60 s; SLOW-1/SLOW-2 take an hour. Only SLOW-* report Malware."""
+    store = DuckDBStore(tmp_path / "store")
+    base = datetime(2026, 2, 1, 9, 0, 0)
+    for ent, secs, cat in (("FAST", 60, "Phishing"), ("SLOW-1", 3600, "Malware"), ("SLOW-2", 3600, "Malware")):
+        for i in range(20):
+            created = base + timedelta(hours=i)
+            store.execute(
+                "INSERT INTO alert (entity_id, alert_id, severity_final, closed_by_type, created_at, closed_at, category)"
+                " VALUES (?, ?, 'high', 'human', ?, ?, ?)",
+                [ent, f"{ent}-{i}", created, created + timedelta(seconds=secs), cat],
+            )
+    yield store
+    store.close()
+
+
+def test_eg01_baseline_comes_from_peers_not_the_entity_itself(peer_store):
+    """With the portfolio-wide p5 (including FAST's own 60 s closures) FAST was never
+    'faster than p5'; against its peers' baseline it is."""
+    rule = RuleRegistry().get_rule("EG01")
+    findings, _ = rule.evaluate("FAST", peer_store, ["SLOW-1", "SLOW-2"], "RUN-X")
+    assert findings and findings[0].peer_comparison["peer_p5_seconds"] == 3600
+    # No resolved cohort: every other entity is the baseline, still excluding FAST.
+    assert rule.evaluate("FAST", peer_store, [], "RUN-X")[0]
+    assert rule.evaluate("SLOW-1", peer_store, ["SLOW-2"], "RUN-X")[0] == []
+
+
+def test_ns02_standard_categories_come_from_the_peer_cohort(peer_store):
+    rule = RuleRegistry().get_rule("NS02")
+    findings, _ = rule.evaluate("FAST", peer_store, ["SLOW-1", "SLOW-2"], "RUN-X")
+    assert findings and findings[0].evidence_ids == ["Malware"]
+    # The verdict depends on the cohort: against SLOW-2 nothing is missing; against
+    # FAST, SLOW-1 lacks FAST's Phishing.
+    assert rule.evaluate("SLOW-1", peer_store, ["SLOW-2"], "RUN-X")[0] == []
+    assert rule.evaluate("SLOW-1", peer_store, ["FAST"], "RUN-X")[0][0].evidence_ids == ["Phishing"]
+
+
+def _disposition_store(tmp_path, specs):
+    """specs: {entity: (n_alerts, n_night, n_true_positive)}."""
+    store = DuckDBStore(tmp_path / "zstore")
+    base = datetime(2026, 2, 1, 0, 0, 0)
+    for ent, (n, n_night, n_tp) in specs.items():
+        for i in range(n):
+            hour = 22 if i < n_night else 12
+            disp = "true_positive" if i < n_tp else "false_positive"
+            store.execute(
+                "INSERT INTO alert (entity_id, alert_id, created_at, disposition) VALUES (?, ?, ?, ?)",
+                [ent, f"{ent}-{i}", base + timedelta(days=i % 150, hours=hour), disp],
+            )
+    return store
+
+
+def test_ns03_flags_night_share_far_below_peers_even_above_the_absolute_floor(tmp_path):
+    store = _disposition_store(
+        tmp_path,
+        {"LOW": (1000, 100, 50), "P1": (1000, 220, 50), "P2": (1000, 215, 50), "P3": (1000, 225, 50)},
+    )
+    rule = RuleRegistry().get_rule("NS03")
+    try:
+        findings, _ = rule.evaluate("LOW", store, ["P1", "P2", "P3"], "RUN-X")
+        assert findings and findings[0].peer_comparison["method"] == "peer_robust_z"
+        assert findings[0].peer_comparison["robust_z"] <= -3.5
+        # Too few comparable peers: the absolute 3% floor applies, and 10% passes it.
+        assert rule.evaluate("LOW", store, ["P1", "P2"], "RUN-X")[0] == []
+    finally:
+        store.close()
+
+
+def test_eg11_judges_fp_rate_against_peers_not_a_fixed_98_percent(tmp_path):
+    # SOC99 closes 99% as FP; its peers sit at 98.5% +/- 0.5%. Normal for this cohort.
+    store = _disposition_store(
+        tmp_path,
+        {"SOC99": (1000, 0, 10), "P1": (1000, 0, 15), "P2": (1000, 0, 10), "P3": (1000, 0, 20)},
+    )
+    rule = RuleRegistry().get_rule("EG11")
+    try:
+        assert rule.evaluate("SOC99", store, ["P1", "P2", "P3"], "RUN-X")[0] == []
+        # With too few peers the fixed 98% fallback applies and flags it.
+        fallback, _ = rule.evaluate("SOC99", store, ["P1"], "RUN-X")
+        assert fallback and fallback[0].peer_comparison["method"] == "absolute"
+    finally:
+        store.close()
+
+
+def test_chance_repeat_floor_scales_with_volume_and_is_capped():
+    # Sparse: 100 alerts over 1,000 pairs. Even 3 repeats would be surprising.
+    assert chance_repeat_floor(100, 1000, 0.5, cap=16) == 3
+    # The synthetic large entities: 2,250 alerts over 1,800 pairs -> 8, where coincidence stops.
+    assert chance_repeat_floor(2250, 1800, 0.5, cap=16) == 8
+    # Denser volume needs more repeats before they mean anything...
+    assert chance_repeat_floor(9000, 1800, 0.5, cap=100) > chance_repeat_floor(2250, 1800, 0.5, cap=100)
+    # ...but never more than the cap, however busy (and no underflow at extreme volume).
+    assert chance_repeat_floor(2_000_000, 2, 0.5, cap=16) == 16
+    assert chance_repeat_floor(0, 0, 0.5, cap=16) == 1
+
+
+def test_eg05_ignores_coincidental_repeats_but_keeps_chronic_pairs(tmp_path):
+    """BUSY: 3 assets x 3 rules, 54 all-benign alerts (6 per pair): every pair 'repeats', by volume
+    alone. CHRONIC adds two pairs firing 40 times each on top of the same background."""
+    store = DuckDBStore(tmp_path / "eg05")
+    base = datetime(2026, 2, 1, 9, 0, 0)
+
+    def add(ent, asset, rule, n, start):
+        for i in range(n):
+            store.execute(
+                "INSERT INTO alert (entity_id, alert_id, asset_id, rule_id, disposition, created_at)"
+                " VALUES (?, ?, ?, ?, 'benign', ?)",
+                [ent, f"{ent}-{asset}-{rule}-{start + i}", asset, rule, base + timedelta(hours=start + i)],
+            )
+
+    for ent in ("BUSY", "CHRONIC"):
+        for a in range(3):
+            for r in range(3):
+                add(ent, f"A{a}", f"R{r}", 6, 0)
+    add("CHRONIC", "A0", "R0", 40, 100)
+    add("CHRONIC", "A1", "R1", 40, 100)
+
+    try:
+        # With the threshold lowered to 6, BUSY's uniform 6-per-pair background is below its
+        # own chance level and is not flagged; without the floor all 9 pairs would count.
+        rule = type(RuleRegistry().get_rule("EG05"))(config_override={"params": {"min_repeat_count": 6}})
+        assert rule.evaluate("BUSY", store, [], "RUN-X")[0] == []
+        findings, _ = rule.evaluate("CHRONIC", store, [], "RUN-X")
+        assert findings and findings[0].peer_comparison["unaddressed_pairs"] == 2
+        assert findings[0].peer_comparison["effective_min_repeats"] > 6
+    finally:
+        store.close()
+
+
 # ------------------------------------------------------------------ threshold sensitivity
 
 
@@ -131,6 +273,45 @@ def test_shadow_precision_uses_rule_level_cleared_rows(tmp_path):
     # A finding the workpaper never mentions is unadjudicated, not a false positive.
     assert res["findings_unadjudicated"] == ["E-4:NS02"]
     assert res["cleared_records_in_queue"] == ["E-3:ALT-9"]
+
+
+def test_wilson_interval_is_wide_for_small_samples_and_bounded():
+    assert wilson_interval(0, 0) is None
+    low, high = wilson_interval(3, 3)
+    assert high == 1.0 and 0.40 < low < 0.50  # 3/3 is far from proof of 100%
+    low, high = wilson_interval(50, 100)
+    assert 0.40 < low < 0.41 and 0.59 < high < 0.60
+
+
+def test_shadow_reports_per_rule_figures_config_hash_and_firing_rate(tmp_path):
+    store = _store_with(tmp_path, [("E-1", "EG01"), ("E-2", "EG01"), ("E-3", "EG05"), ("E-4", "NS02")])
+    for ent in ("E-1", "E-2", "E-3", "E-4"):
+        store.conn.execute(
+            "INSERT INTO entity_scores (run_id, entity_id, risk_index, risk_band, distinct_rules_triggered)"
+            " VALUES (?, ?, 1.0, 'Low', 1)",
+            (RUN, ent),
+        )
+    store.conn.commit()
+    reviews = [
+        {"entity_id": "E-1", "record_id": "", "rule_id": "EG01", "label": "confirmed"},
+        {"entity_id": "E-9", "record_id": "", "rule_id": "EG01", "label": "confirmed"},  # missed
+        {"entity_id": "E-2", "record_id": "", "rule_id": "EG01", "label": "not_an_issue"},
+    ]
+    res = ShadowPilotAdapter(store).evaluate_shadow_pilot(reviews, RUN)
+    eg01 = next(r for r in res["per_rule"] if r["rule_id"] == "EG01")
+    assert (eg01["confirmed"], eg01["reproduced"], eg01["recall"]) == (2, 1, 0.5)
+    assert (eg01["findings_confirmed"], eg01["findings_rejected"], eg01["precision"]) == (1, 1, 0.5)
+    assert eg01["firing_rate"] == 0.5 and eg01["recall_ci"][0] < 0.5 < eg01["recall_ci"][1]
+    ns02 = next(r for r in res["per_rule"] if r["rule_id"] == "NS02")
+    assert ns02["precision"] is None and ns02["findings_unadjudicated"] == 1
+    assert res["config_hash"] == "x" and res["pair_recall"] == 0.5
+
+    # The blind sheet lists only unadjudicated findings, with no score or severity.
+    sheet = adjudication_sheet(store, res)
+    store.close()
+    assert [(r["entity_id"], r["rule_id"]) for r in sheet] == [("E-3", "EG05"), ("E-4", "NS02")]
+    assert set(sheet[0]) == set(ADJUDICATION_COLUMNS) and all(r["label"] == "" for r in sheet)
+    assert not {"score", "confidence", "severity"} & set(sheet[0])
 
 
 def test_shadow_precision_is_none_without_rule_level_adjudication(tmp_path):

@@ -9,7 +9,7 @@ The **Supervisory Analytics Tool for SOC Assessment (SAT-SA)** is an air-gapped,
 ## 1. Non-Negotiable Core Principles & "No AI/ML" Statement
 
 SAT-SA adheres strictly to statutory explainability and regulatory integrity:
-1. **Explicit "No AI/ML" Architecture:** Zero neural networks, zero LLMs, zero non-deterministic heuristics. Every finding is derived from relational algebra (SQL in DuckDB), deterministic rule predicates, and classical robust statistics (Median, Median Absolute Deviation [MAD], IQR, CUSUM, EWMA, Jaccard similarity).
+1. **Explicit "No AI/ML" Architecture:** Zero neural networks, zero LLMs, zero non-deterministic heuristics. Every finding is derived from relational algebra (SQL in DuckDB) and deterministic rule predicates with configurable thresholds, some compared against a peer cohort. NS03 and EG11 flag robust z-score (median/MAD) outliers against the peer cohort; IQR and CUSUM/EWMA exist in `satsa/peers/` but no rule uses them.
 2. **Strict Air-Gap & Data Minimization:** Operates entirely offline with 127.0.0.1 default binding. Outbound network sockets are blocked at runtime. Ingested actor names are pseudonymised via HMAC-SHA256 (`.satsa_salt`), and internal IPs/PII are redacted using deterministic regex masking.
 3. **Cryptographic Tamper-Evidence:** All ingestion manifests, assessment runs, configuration changes, and examiner actions are recorded in an append-only SQLite log with `prev_hash` hash chaining (SHA3-256 for new entries). The chain detects edits, insertions, deletions and reordering within the chain; truncation of the newest entries is detected by comparing against an off-box `satsa audit head` checkpoint (DECISIONS.md ADR-005).
 
@@ -38,9 +38,9 @@ flowchart TD
     end
 
     subgraph Analytical Core
-        DUCK --> METRICS[DuckDB SQL Aggregation Engine]
-        METRICS --> ROBUST[Robust Stats & SPC CUSUM/EWMA]
-        ROBUST --> RULES[Deterministic Rules Engine EG01-12 & NS01-08]
+        DUCK --> PEERS[Peer Cohort Resolver]
+        PEERS --> RULES[Deterministic Rules Engine EG01-12 & NS01-08]
+        DUCK --> RULES
         RULES --> SCORER[Noisy-OR Probabilistic Scorer]
         SCORER --> QUEUE[Prioritised Review Queue 70% Top / 30% Random]
     end

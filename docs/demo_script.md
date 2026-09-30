@@ -21,7 +21,7 @@ Open your browser to `http://127.0.0.1:8000`.
 1. **Action:** Navigate to `http://127.0.0.1:8000/portfolio`.
 2. **Presenter Script:**
    > *"Welcome to SAT-SA, NCIIPC's air-gapped supervisory analytics platform for SOC oversight.
-   > Here on the Portfolio screen, we see 10 Critical Sector Entities ranked across 8 supervisory domains using deterministic robust statistics and Noisy-OR probability—strictly without AI or black-box models.
+   > Here on the Portfolio screen, we see 10 Critical Sector Entities ranked across 8 supervisory domains using deterministic rules and Noisy-OR probability—strictly without AI or black-box models.
    > Notice how entities with operational breakdowns like CSE-07 and CSE-08 immediately surface at the top of the risk index, while disciplined entities like CSE-04 remain safely in the low-concern tier."*
 
 ---
@@ -29,7 +29,7 @@ Open your browser to `http://127.0.0.1:8000`.
 ### [0:25 - 0:50] Step 2: Entity Profile & Reported vs Recomputed KPIs
 1. **Action:** Click on **CSE-02** (Apex Central Bank) to open `/entity/CSE-02`.
 2. **Presenter Script:**
-   > *"Let's drill into CSE-02. Here we see the entity's 8-domain radar chart benchmarked against banking sector peers.
+   > *"Let's drill into CSE-02. Here we see the entity's 8-domain radar chart against the median of its peer cohort (the cohort is named above the chart; in this demo portfolio it is all large entities, since there are too few banks for a sector cohort).
    > Down in the Reported vs Recomputed KPI panel, SAT-SA exposes an immediate execution gap: the entity self-declared a High/Critical MTTR of 35 minutes, but recomputing directly from raw SIEM timestamps puts its actual MTTR at roughly 45 minutes for critical and 90 minutes for high alerts (the panel shows this run's exact figures)—a KPI reconciliation gap flagged under rule EG10."*
 
 ---
@@ -51,11 +51,11 @@ Open your browser to `http://127.0.0.1:8000`.
 
 ---
 
-### [1:35 - 1:50] Step 5: Prioritized Review Queue & ~5x Lift
+### [1:35 - 1:50] Step 5: Prioritized Review Queue & Lift
 1. **Action:** Click **Review Queue** in top navbar (`/queue`).
 2. **Presenter Script:**
    > *"Rather than reviewing millions of logs, the examiner uses our mathematically stratified Review Queue: 70% top-risk alerts combined with 30% stratified random controls.
-   > On our synthetic validation dataset, alerts in this queue are about five times as likely to be defect-affected as alerts picked at random. That is a design check on synthetic data, not a real-world guarantee. Examiners can mark audit dispositions directly with one click."*
+   > On our synthetic validation dataset, the top 25 alerts in this queue are about nineteen times as likely to be defect-affected as alerts picked at random, and the whole queue about five times. That is a design check on synthetic data, not a real-world guarantee. Examiners can mark audit dispositions directly with one click."*
 
 ### [1:50 - 2:10] Step 6: Blinded Supervisory Review (Cognitive Bias Mitigation)
 1. **Action:** Click **Blind Review** in top navbar (`/blind-review`).

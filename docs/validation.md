@@ -31,12 +31,13 @@ ever shown to stay quiet. Their new defects are, like the rest of Section 2, bui
 exceed each threshold; only EG04 and EG02 are tested near a threshold (Section 2A).
 
 Threshold sensitivity: each of the 17 rules with tunable thresholds is re-run with every threshold
-moved ±20% (Section 4A). Two rules, EG05 and EG11, turn clean entities into findings under a modest
-move, so their thresholds sit close to the synthetic data's normal background.
+moved ±20% (Section 4A). EG05 and EG11 used to turn clean entities into findings under a modest
+move; EG11 now compares with peers by robust z-score and EG05's repeat threshold now rises to the
+entity's own chance level, and neither does any more (Section 4A).
 
 What neither synthetic scenario covers:
 - **Realistic distributions.** Thresholds are only probed against uniformly random synthetic data;
-  real alert streams are heavy-tailed, which matters most for EG05 and EG11 (Section 4A).
+  real alert streams are heavy-tailed, so how often each rule fires on real submissions is unknown.
 - **Scale.** 21 injected (entity, rule) defects and 3 clean entities; one finding more or less moves
   precision by several points.
 
@@ -114,7 +115,7 @@ Added in September 2026 so that every rule has a positive case (each sized to cr
 ## 2. Detector-Implementation Correctness Results (Primary Dataset)
 
 `satsa validate` against the ground truth in Section 1, with every finding counted (see
-Section 0.1). Figures from run `RUN-20260929190127377530-7e1661fd`; regenerate with
+Section 0.1). Figures from run `RUN-20260930053754723196-a9786774`; regenerate with
 `satsa validate`, and see `docs/validation_report.md` for the per-rule table.
 
 | Evaluation Metric | Measured Result | Benchmark Target | Verdict |
@@ -186,8 +187,19 @@ items and non-alert ground-truth IDs are excluded from both.
 | **5%** | 812 | 109 (queue exhausted) | 16 | **14.7%** | 2.67% | **5.50x** |
 
 *Reading this table:* the queue holds only 109 alert items (134 items in total), fewer than even
-the 1% budget, so every budget examines the whole queue and reports the same figure. The lift is
-therefore "the whole queue vs. random", not a curve over budgets. The figure moves with the ground
+the 1% budget, so every budget examines the whole queue and reports the same figure: "the whole
+queue vs. random". The curve is in the queue-depth table:
+
+| Top queue alerts examined (score order) | Affected Alerts Found | Hit Rate | Lift Factor |
+|---|---|---|---|
+| 10 | 4 | 40.0% | **14.98x** |
+| 25 | 13 | 52.0% | **19.47x** |
+| 50 | 14 | 28.0% | **10.49x** |
+| 100 | 16 | 16.0% | **5.99x** |
+| 109 (whole queue) | 16 | 14.7% | **5.50x** |
+
+Affected alerts are concentrated at the top: 13 of the 16 found are in the first 25 items, and the
+30% stratified-random part of the queue further down adds little. The figure moves with the ground
 truth: adding the EG11 defect (about 200 CSE-07 alerts relabelled, all counted as affected) raised
 the random baseline from 1.20% to 2.67% and cut lift from 10.69x to 5.50x without any change to the
 queue. As with Section 2, treat it as a design check of the prioritisation logic on synthetic data,
@@ -218,27 +230,43 @@ every entity, and score it against the ground truth. 17 of the 20 rules have tun
 EG03 and NS07 are zero-tolerance and NS08 checks the fixed 6-month review period, so they have none.
 Full tables: Section 7 of `docs/validation_report.md` and `docs/validation_stress_report.md`.
 
-**Primary dataset: 5 of 54 perturbations change an outcome.**
+**Primary dataset: 3 of 64 perturbations change an outcome.**
 
 | Threshold | Moved to | Effect | What it means |
 |---|---|---|---|
-| EG05 `min_repeat_count` 8 | 6 | False alarms on 6 entities, including all 3 clean ones | **Thin margin against noise.** Random repeats alone produce enough all-benign (asset, rule) pairs at 6. Real alert streams are far more repetitive than uniform random data (a few noisy rules generate most alerts), so expect EG05 to fire widely on real submissions until calibrated. |
-| EG11 `max_fp_rate` 0.98 | 0.784 | False alarms on 8 of 10 entities | The synthetic entities' normal FP/benign rate is about 91%. Real SOCs commonly run at 95–99%, so the 0.98 threshold may sit close to normal on real data as well. |
 | EG05 `min_unaddressed_pairs` 2 | 3 | Misses CSE-09 | The injected defect has exactly 2 pairs: margin chosen when it was built. |
 | EG07 `min_closures_per_analyst_hour` 30 | 36 | Misses CSE-08 | The injected burst is 35 closures: margin chosen when it was built. |
 | NS05 `max_dormant_share` 0.40 | 0.48 | Misses CSE-09 | The injected catalog is 45% dormant: margin chosen when it was built. |
 
-**Stress scenario: 4 of 54.** Raising EG04's share to 0.30 loses both borderline defects
-(STRESS-01 at 27.5%, STRESS-02 at 30%), and raising its group size to 12 loses STRESS-01; lowering
-EG05's repeat count to 6 or its pair count to 1 flags the noisy clean STRESS-03. These are the
-near-threshold cases the scenario was built to contain, so they confirm the sweep sees them.
+**EG11 before and after the peer comparison.** With a fixed `max_fp_rate` of 0.98, moving it to
+0.784 raised false alarms on 8 of 10 entities: the synthetic FP/benign rate is about 91%, and real
+SOCs commonly run at 95–99%, so a fixed 98% sits close to normal. EG11 now flags an FP rate with a
+robust z-score of at least 3.5 above its peer cohort's median (NS03 does the same for night share,
+on the low side), and uses the fixed rate only with fewer than 3 comparable peers. Moving the z
+cut-off or spread floor ±20% changes nothing: CSE-07 sits at z ≈ +8 and CSE-10's night share at
+z ≈ −11, while clean entities stay near 0.
 
-**Reading this.** The last three primary rows and all stress rows reflect margins chosen when the
-synthetic data was built, not properties of real SOCs. The two informative rows are EG05 and EG11,
-where a modest move turns clean entities into findings: those thresholds sit close to the
-synthetic data's normal background, and are the first candidates for calibration in a pilot. The
-other 49 primary perturbations change nothing, which only says the other injected defects were
-built with more than 20% margin.
+**EG05 before and after the chance floor.** With a fixed `min_repeat_count` of 8, lowering it to 6
+raised false alarms on 6 entities, including all 3 clean ones: in an entity with ~2,000 alerts over
+~1,800 asset × rule pairs, a few pairs repeat 6–7 times by coincidence. EG05 now raises the repeat
+threshold to the entity's chance level (the count fewer than `max_chance_pairs` = 0.5 pairs would
+reach by coincidence under a Poisson model of its volume), capped at twice `min_repeat_count`. For
+the medium and large synthetic entities that level is 8; lowering the configured minimum to 6 no
+longer changes any result. (A peer z-score does not suit EG05: its measure, a count of chronic
+pairs, is 0 for nearly every peer.) The model assumes alerts spread evenly over pairs; real streams
+are uneven, so genuinely noisy pairs sit far above the floor and are still flagged, which is the
+rule's purpose. How widely it then fires on real SOCs is for the pilot to measure.
+
+**Stress scenario: 3 of 64.** Raising EG04's share to 0.30 loses both borderline defects
+(STRESS-01 at 27.5%, STRESS-02 at 30%), and raising its group size to 12 loses STRESS-01; lowering
+EG05's pair count to 1 flags the noisy clean STRESS-03, which does have one unremediated chronic
+pair. These are the near-threshold cases the scenario was built to contain, so they confirm the
+sweep sees them.
+
+**Reading this.** Every remaining changed outcome, primary and stress, reflects a margin chosen when
+the synthetic data was built, not a property of real SOCs. No ±20% move of any threshold now turns
+a clean entity into a finding on the primary dataset. That says the thresholds are not balanced on
+the synthetic data's noise; it does not say they are right for real data.
 
 ---
 
@@ -274,6 +302,12 @@ relying on SAT-SA operationally.
    actor. The `/shadow-pilot` page lists them, and `satsa validate` writes the latest one for the
    report's run into Section 5 of `docs/validation_report.md` and `.html`.
 
+The step-by-step procedure, including freezing the rule config first and the blind adjudication
+of findings the workpapers don't mention, is in [`docs/shadow_pilot_runbook.md`](shadow_pilot_runbook.md).
+Each evaluation also reports per-rule recall and precision with 95% Wilson confidence intervals,
+each rule's firing rate across the assessed entities, and the run's rule-config hash;
+`--adjudication-csv` exports the unadjudicated findings without scores for examiners to label.
+
 No shadow-pilot run against real NCIIPC/CSE data has been executed as of this writing; Sections 2
 and 2A remain synthetic-only until one is. Section 5A below is a rehearsal of the pipeline, not
 such a run.
@@ -305,14 +339,15 @@ These are not historical examiner findings. They are also deliberately **not** t
 SAT-SA's own findings: labels copied from the tool's output would make recall and precision 100%
 by construction.
 
-**Result** (primary dataset, run `RUN-20260929190127377530-7e1661fd`):
+**Result** (primary dataset, run `RUN-20260930053754723196-a9786774`):
 
 | Measure | Value | What it means |
 |---|---|---|
 | `rule_finding_recall` | **1.0** (47/47 confirmed rows) | Restates Section 2's 21/21 recall in workpaper form (same ground truth). Not new evidence. |
-| `queue_record_recall` | **0.532** (25/47) | 25 labelled records are in the review queue. |
+| `queue_record_recall` | **0.553** (26/47) | 26 labelled records are in the review queue. |
 | `workpaper_precision` | **1.0** (21/21 adjudicated findings) | Restates Section 2's precision: the cleared rows come from the same ground truth. Not new evidence. |
 | Unadjudicated findings | **0** | The stand-in adjudicates every entity it names; a real workpaper will not. |
+| Per-rule intervals | e.g. EG01 recall 1/1, 95% CI 21–100% | One confirmed case per rule proves very little: with this few cases every per-rule interval spans most of the range. A real pilot needs many entities per rule. |
 | Cleared records in the queue | **0/15** | None of the individually cleared clean-entity alerts were queued. |
 | Queue coverage of *all* affected IDs | 44/498; at least one queue item for 13 of 21 defects | Computed by the build script over every affected ID, not just the capped sample. |
 
