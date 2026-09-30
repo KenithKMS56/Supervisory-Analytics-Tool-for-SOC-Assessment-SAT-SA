@@ -22,13 +22,17 @@ class SourceAdapter:
     """Reads raw datasets across multiple input file formats."""
 
     @staticmethod
-    def read_csv(file_path: Path | str) -> list[dict[str, Any]]:
-        """Read CSV file into list of row dictionaries."""
+    def read_csv_frame(file_path: Path | str) -> pl.DataFrame:
+        """Read a CSV file as a columnar frame (an empty frame if the file does not exist)."""
         path = Path(file_path)
         if not path.exists():
-            return []
-        df = pl.read_csv(path, infer_schema_length=1000)
-        return df.to_dicts()
+            return pl.DataFrame()
+        return pl.read_csv(path, infer_schema_length=1000)
+
+    @staticmethod
+    def read_csv(file_path: Path | str) -> list[dict[str, Any]]:
+        """Read CSV file into list of row dictionaries."""
+        return SourceAdapter.read_csv_frame(file_path).to_dicts()
 
     @staticmethod
     def read_json(file_path: Path | str) -> list[dict[str, Any]]:
@@ -65,14 +69,14 @@ class SourceAdapter:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         # Identifiers can't be bound as parameters, so only read a table that
-        # actually exists in the export, and quote it with ']' escaped.
+        # actually exists in the export, quoted as an identifier ('"' doubled).
         cursor.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)
         )
         if cursor.fetchone() is None:
             conn.close()
             return []
-        quoted = "[" + table_name.replace("]", "]]") + "]"
+        quoted = '"' + table_name.replace('"', '""') + '"'
         cursor.execute(f"SELECT * FROM {quoted}")
         rows = [dict(r) for r in cursor.fetchall()]
         conn.close()

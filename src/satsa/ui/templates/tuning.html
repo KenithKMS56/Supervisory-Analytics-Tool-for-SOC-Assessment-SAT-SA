@@ -51,7 +51,27 @@
       Adjust heuristic cut-offs for the supervisory assessment engine. Changes are saved to <code>config/rules.yaml</code> and re-hashed:
     </p>
 
+    {% if preview %}
+    <div class="notice-banner" style="margin-bottom: 1.5rem;">
+      <strong>Preview only — nothing has been saved.</strong>
+      With the values below, period {{ preview.period }} would have
+      <strong>{{ preview.findings_after }}</strong> findings (latest run: {{ preview.findings_before }}).
+      {% if not preview.changes %}No threshold differs from the saved configuration.{% endif %}
+      <ul style="margin: 0.5rem 0 0 1.2rem;">
+        <li>Thresholds changed: {% for field, c in preview.changes.items() %}<code>{{ field.replace("__", ".") }}</code> {{ c.old }} → {{ c.new }}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}</li>
+        <li>New findings ({{ preview.added|length }}): {{ preview.added|join(", ") or "none" }}</li>
+        <li>Findings that would disappear ({{ preview.removed|length }}): {{ preview.removed|join(", ") or "none" }}</li>
+        <li>Risk-band changes ({{ preview.band_changes|length }}): {% for b in preview.band_changes %}{{ b.entity_id }} {{ b.before }} → {{ b.after }}{% if not loop.last %}; {% endif %}{% else %}none{% endfor %}</li>
+      </ul>
+    </div>
+    {% endif %}
+
     <form method="post" action="/tuning/save">
+      <div style="margin-bottom: 1.5rem; max-width: 320px;">
+        <label for="period" style="display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.35rem;">Review period to assess:</label>
+        <input type="text" id="period" name="period" value="{{ selected_period }}" pattern="\d{4}-(Q[1-4]|H[12]|0[1-9]|1[0-2])"
+               title="e.g. 2026-Q1, 2026-H2 or 2026-03" class="form-control">
+      </div>
       {% for group_prefix, group_title, color in [("EG", "Execution Gap Parameters", "var(--accent-blue)"), ("NS", "Negative Space Parameters", "var(--accent-indigo)")] %}
       <h3 style="color: {{ color }}; margin-bottom: 1rem;">{{ group_title }}</h3>
       <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem;">
@@ -74,6 +94,9 @@
         implemented, so no window setting is offered.
       </p>
 
+      <button type="submit" formaction="/tuning/preview" class="btn btn-secondary" style="margin-right: 0.75rem;">
+        Preview Effect (nothing saved)
+      </button>
       <button type="submit" class="btn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
@@ -106,9 +129,9 @@
     </div>
 
     <div class="card">
-      <h3>Statutory Governance</h3>
+      <h3>Reproducibility</h3>
       <p style="color: var(--text-secondary); font-size: 0.82rem; line-height: 1.5;">
-        Under Rule 3 of NCIIPC Rules, 2013, all supervisory assessment parameters must maintain mathematical determinism. The config hash above is recorded on every assessment run manifest to ensure audit reproducibility.
+        Assessment is deterministic: the same data and the same parameters give the same findings. The config hash above is recorded on every assessment run manifest, and every parameter change is written to the audit trail, so a run can be reproduced and a change traced.
       </p>
     </div>
   </div>

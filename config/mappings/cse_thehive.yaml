@@ -1,36 +1,63 @@
-# TheHive 5 Case & Alert JSON/NDJSON Mapping
-format: "json"
+# TheHive 5: alerts and cases.
+#
+# Two JSON exports (field names as the TheHive 5 API returns them), a JSON array or NDJSON:
+#   thehive_alerts*.json   POST /api/v1/query  [{"_name": "listAlert"}]
+#   thehive_cases*.json    POST /api/v1/query  [{"_name": "listCase"}]
+#
+# Use:  satsa ingest --data-dir <export dir> --source thehive --entity <CSE id>
+# What this export cannot supply is listed by the ingest report and in docs/connectors.md.
+source: "thehive5"
 entity_id: "CSE-03"
-timezone: "UTC"
 timestamp_format: "epoch_ms"
+# TheHive ids are storage keys, not a running counter: the id-sequence-gap check does not apply.
+sequential_ids: false
 
-column_mappings:
-  alert_id: "_id"
-  rule_id: "sourceRef"
-  category: "type"
-  severity_orig: "severity"
-  severity_final: "severity"
-  asset_id: "artefacts.data"
-  created_at: "createdAt"
-  acknowledged_at: "startDate"
-  closed_at: "endDate"
-  closed_by: "owner"
-  closed_by_type: "ownerType"
-  status: "status"
-  disposition: "resolutionStatus"
+tables:
+  - table: alert
+    files: ["thehive_alert*"]
+    required: [alert_id, created_at]
+    columns:
+      alert_id: _id
+      # TheHive has no detection-rule identifier. The alert title is used, which is a stable
+      # rule name only when the feeder (SIEM connector) writes one.
+      rule_id: title
+      category: type
+      severity_orig: severity
+      severity_final: severity
+      created_at: date
+      acknowledged_at: inProgressDate
+      first_touch_at: inProgressDate
+      closed_at: [closedDate, importedDate]
+      closed_by: assignee
+      status: stage
+      # No disposition: TheHive records the verdict on the case an alert is imported into.
+
+  - table: case_alert_link
+    files: ["thehive_alert*"]
+    required: [case_id, alert_id]    # only alerts that were imported into a case
+    columns:
+      case_id: caseId
+      alert_id: _id
+
+  - table: case_record
+    files: ["thehive_case*"]
+    required: [case_id, opened_at]
+    columns:
+      case_id: _id
+      severity: severity
+      status: stage
+      owner: assignee                # pseudonymised by the pipeline
+      opened_at: startDate
+      closed_at: endDate
 
 value_mappings:
   severity:
-    1: "low"
-    2: "medium"
-    3: "high"
-    4: "critical"
+    "1": "low"
+    "2": "medium"
+    "3": "high"
+    "4": "critical"
   status:
     "New": "open"
     "InProgress": "open"
-    "Resolved": "closed"
-    "Deleted": "closed"
-  disposition:
-    "TruePositive": "true_positive"
-    "FalsePositive": "false_positive"
-    "Indeterminate": "unknown"
+    "Imported": "escalated"
+    "Closed": "closed"

@@ -608,16 +608,19 @@ class SyntheticDataGenerator:
                 description="Fast closures of High/Critical alerts without investigation.",
             )
         )
-        ground_truth_defects.append(
-            InjectedDefect(
-                entity_id="CSE-03",
-                rule_id="EG03",
-                defect_type="missing_escalations",
-                affected_ids=cse03_info["affected_unescalated_ids"],
-                share=len(cse03_info["affected_unescalated_ids"]) / max(1, len(alerts)),
-                description="Critical true-positive alerts closed without escalation.",
+        # At low volumes the fast-closure sample can contain no critical true positive; then
+        # no escalation was stripped and there is no EG03 defect to record.
+        if cse03_info["affected_unescalated_ids"]:
+            ground_truth_defects.append(
+                InjectedDefect(
+                    entity_id="CSE-03",
+                    rule_id="EG03",
+                    defect_type="missing_escalations",
+                    affected_ids=cse03_info["affected_unescalated_ids"],
+                    share=len(cse03_info["affected_unescalated_ids"]) / max(1, len(alerts)),
+                    description="Critical true-positive alerts closed without escalation.",
+                )
             )
-        )
 
         # CSE-05: Silent critical assets (already zero logs generated, also drop alerts on AST-0001 for 15 days)
         # Generalized to the whole SYSTEMIC_MSSP_GROUP (CSE-02, CSE-05, CSE-09):

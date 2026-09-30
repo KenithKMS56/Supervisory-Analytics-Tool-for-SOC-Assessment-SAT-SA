@@ -24,16 +24,40 @@ PBKDF2_ALGO = "sha256"
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCKOUT_MINUTES = 15
 
-# Demo/default identities seeded into a fresh database so the offline demo
-# is usable out of the box. These are intentionally documented (see
-# docs/functional_design.md, Section 2) as CHANGE-ME credentials: a real
-# NCIIPC deployment MUST rotate these before use, e.g. via:
-#   satsa users set-password <username>
+# Default identities seeded into a fresh database so a new install can be opened
+# at all. Their passphrases are published (README, login pages), so every seeded
+# account is created with force_password_change set: the first login gets a
+# session that can do nothing except choose a new passphrase.
 DEFAULT_IDENTITIES: tuple[tuple[str, str, str], ...] = (
     ("admin", "admin", "ChangeMe-Admin#2026"),
     ("analyst", "analyst", "ChangeMe-Analyst#2026"),
     ("examiner", "examiner", "ChangeMe-Examiner#2026"),
 )
+# Bootstrap administrator of the NCIIPC Admin Portal (seeded by seed_default_admin).
+BOOTSTRAP_ADMIN_IDENTITY: tuple[str, str, str] = (
+    "nciipc_admin",
+    "NCIIPC Super Administrator",
+    "ChangeMe-NCIIPC#2026",
+)
+# username -> published default passphrase, for every seeded account.
+SEEDED_DEFAULT_PASSPHRASES: dict[str, str] = {
+    username: passphrase for username, _, passphrase in (*DEFAULT_IDENTITIES, BOOTSTRAP_ADMIN_IDENTITY)
+}
+
+MIN_PASSPHRASE_LENGTH = 12
+
+
+def passphrase_policy_error(new: str, confirm: str, current: str) -> str | None:
+    """Why a self-chosen passphrase is not acceptable, or None when it is."""
+    if new != confirm:
+        return "The new passphrase and its confirmation do not match."
+    if len(new) < MIN_PASSPHRASE_LENGTH:
+        return f"The new passphrase must be at least {MIN_PASSPHRASE_LENGTH} characters long."
+    if new == current:
+        return "The new passphrase must differ from the current one."
+    if new in SEEDED_DEFAULT_PASSPHRASES.values():
+        return "That is a published default passphrase. Choose a different one."
+    return None
 
 
 def generate_salt() -> bytes:

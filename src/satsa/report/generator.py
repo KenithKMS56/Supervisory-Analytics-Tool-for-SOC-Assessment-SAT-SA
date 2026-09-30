@@ -18,6 +18,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from satsa import FINDING_NOTICE
 from satsa.report.pdf_charts import (
     CRITICAL_THRESHOLD,
     MODERATE_THRESHOLD,
@@ -304,13 +305,6 @@ class ReportGenerator:
         except duckdb.Error:
             return {}
         return df.to_dicts()[0] if not df.is_empty() else {}
-
-    def _entity_names(self) -> dict[str, str]:
-        try:
-            df = self.duckdb_store.query("SELECT entity_id, name FROM entity")
-        except duckdb.Error:
-            return {}
-        return {r["entity_id"]: r["name"] for r in df.to_dicts() if r.get("name")}
 
     @staticmethod
     def _ordered_domains(scores: dict[str, float]) -> list[str]:
@@ -849,12 +843,14 @@ class ReportGenerator:
         cur.execute("SELECT * FROM findings ORDER BY score DESC")
         rows = cur.fetchall()
 
+        # Every exported row carries the notice: a CSV is read and forwarded without the
+        # page it was downloaded from.
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if rows:
-                writer.writerow(rows[0].keys())
+                writer.writerow([*rows[0].keys(), "supervisory_notice"])
                 for r in rows:
-                    writer.writerow(list(r))
+                    writer.writerow([*r, FINDING_NOTICE])
         return path
 
     def export_queue_csv(self, output_path: Path | str) -> Path:
@@ -868,9 +864,9 @@ class ReportGenerator:
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if rows:
-                writer.writerow(rows[0].keys())
+                writer.writerow([*rows[0].keys(), "supervisory_notice"])
                 for r in rows:
-                    writer.writerow(list(r))
+                    writer.writerow([*r, FINDING_NOTICE])
         return path
 
     def export_metrics_csv(self, output_path: Path | str) -> Path:

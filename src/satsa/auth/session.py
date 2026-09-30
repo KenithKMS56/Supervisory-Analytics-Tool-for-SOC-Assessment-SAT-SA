@@ -24,6 +24,9 @@ class Identity(BaseModel):
     cse_name: str | None = None
     status: str = "ACTIVE"
     is_admin_user: bool = False
+    # Set while the account must choose a new passphrase (seeded default or admin reset);
+    # such a session is refused everywhere except the change-password page.
+    must_change_password: bool = False
 
 
 # Role equivalence mapping to ensure backward and forward compatibility
@@ -72,6 +75,7 @@ def get_current_identity(request: Request, db_path: str = "data/satsa.db") -> Id
         cse_name=session.get("cse_name"),
         status=session.get("status") or "ACTIVE",
         is_admin_user=bool(session.get("is_admin_user")),
+        must_change_password=bool(session.get("force_password_change")),
     )
 
 

@@ -6,7 +6,7 @@
 > It is still synthetic and built against the rules' own thresholds, so a perfect score
 > shows the rules behave as specified near those thresholds, not real-world accuracy.
 
-**Run ID:** `RUN-20260930113545529122-77e8686a` | **Seed:** `9901`
+**Run ID:** `RUN-20260930170735789522-57e5ad21` | **Seed:** `9901`
 
 | Metric | Result |
 |---|---|
@@ -31,7 +31,7 @@ entity and for any rule.
 
 ## Threshold sensitivity
 
-3 of 64 single-threshold perturbations (±20%) changed that rule's outcome.
+3 of 66 single-threshold perturbations (±20%) changed that rule's outcome.
 
 | Rule | Threshold | Baseline | Tested | Outcome at baseline | Outcome when tested |
 |---|---|---|---|---|---|
@@ -99,5 +99,7 @@ entity and for any rule.
 | `NS05` | `min_dormant_rules` | 5 | 6 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `NS06` | `min_ghost_assets` | 2 | 1 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 | `NS06` | `min_ghost_assets` | 2 | 3 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `NS08` | `review_period_months` | 6 | 5 (-20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
+| `NS08` | `review_period_months` | 6 | 7 (+20%) | TP 0 / FN 0 / FP 0 | TP 0 / FN 0 / FP 0 |
 
-Not covered: EG03, NS07, NS08 have no tunable threshold (no `params` in `config/rules.yaml`): EG03 and NS07 are zero-tolerance and NS08 checks the fixed 6-month review period. A rule showing TP 0 / FN 0 has no injected defect in this dataset.
+Not covered: EG03, NS07 have no tunable threshold (no `params` in `config/rules.yaml`): they are zero-tolerance, one unescalated critical true positive or one unreported critical incident is a finding. A rule showing TP 0 / FN 0 has no injected defect in this dataset.

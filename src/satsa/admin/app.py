@@ -14,7 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from satsa.admin.routes import AdminAuthRequired
+from satsa.admin.routes import AdminAuthRequired, AdminPasswordChangeRequired
 from satsa.admin.routes import router as admin_router
 from satsa.store.sqlite import SQLiteStore
 
@@ -30,6 +30,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Ensure default organisations, CSEs, and admin account are seeded
     store.seed_default_organisations_and_cses()
     store.seed_default_admin()
+    # A database seeded before first-login rotation was enforced is covered here.
+    store.flag_unrotated_default_accounts()
     app.state.store = store
     yield
     store.close()
@@ -57,6 +59,19 @@ async def admin_auth_required_handler(request: Request, exc: AdminAuthRequired) 
     if request.method == "GET" and not request.url.path.startswith("/api/"):
         return RedirectResponse(url="/login", status_code=303)
     return JSONResponse({"detail": "Authentication required."}, status_code=401)
+
+
+@app.exception_handler(AdminPasswordChangeRequired)
+async def admin_password_change_required_handler(
+    request: Request, exc: AdminPasswordChangeRequired
+) -> Response:
+    """A default or reset passphrase must be replaced before anything else is served."""
+    if request.method == "GET" and not request.url.path.startswith("/api/"):
+        return RedirectResponse(url="/change-password", status_code=303)
+    return JSONResponse(
+        {"detail": "A new passphrase must be set at /change-password before this account can be used."},
+        status_code=403,
+    )
 
 
 @app.exception_handler(404)

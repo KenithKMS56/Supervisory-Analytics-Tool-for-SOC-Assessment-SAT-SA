@@ -17,7 +17,8 @@ from satsa.models.outputs import (
     Run,
 )
 from satsa.peers.grouping import PeerResolver
-from satsa.rules.registry import RULE_DEPENDENCIES, RuleRegistry
+from satsa.rules.base import data_reference_date
+from satsa.rules.registry import RuleRegistry, rule_tables
 from satsa.rules.systemic import SystemicCorrelationDetector
 from satsa.scoring.prioritiser import ReviewPrioritiser
 from satsa.scoring.scorer import ScoringEngine
@@ -75,9 +76,9 @@ class AssessmentRunner:
                     "DELETE FROM dq_issues WHERE check_name IN ('rule_dependency_empty', 'rule_not_assessed')"
                 )
         rules_by_table: dict[str, list[str]] = {}
-        for rule_id, tables in sorted(RULE_DEPENDENCIES.items()):
-            for table in tables:
-                rules_by_table.setdefault(table, []).append(rule_id)
+        for rule in self.registry.get_all_rules():
+            for table in rule_tables(rule.id):
+                rules_by_table.setdefault(table, []).append(rule.id)
 
         not_assessed: dict[str, dict[str, list[str]]] = {}
         for table, rule_ids in sorted(rules_by_table.items()):
@@ -145,8 +146,18 @@ class AssessmentRunner:
         actor: str = "system",
         refresh_tables: bool = True,
         record_data_gaps: bool = True,
+        dry_run: bool = False,
+        reference_date: datetime | None = None,
     ) -> dict[str, Any]:
         """Run full evaluation pipeline.
+
+        `reference_date` is the date the assessment is "as of" for time-dependent rules
+        (EG09's case age). It defaults to the latest timestamp in the submitted data, never
+        the wall clock, and is recorded in the run manifest.
+
+        `dry_run=True` evaluates and scores exactly as a real run would but persists nothing:
+        no run row, findings, scores, queue, audit entry or DQ changes. The result carries
+        the findings themselves (`findings`) so a caller can preview a configuration.
 
         `refresh_tables=False` assesses the store exactly as the caller prepared it instead
         of reloading every table from Parquet. satsa.scoring.history relies on this: it
@@ -188,11 +199,16 @@ class AssessmentRunner:
         all_queue_items: list[ReviewQueueItem] = []
 
         not_assessed = self._report_empty_dependencies(
-            [e.entity_id for e in entities], self.sqlite_store.get_submitted_tables(), record=record_data_gaps
+            [e.entity_id for e in entities],
+            self.sqlite_store.get_submitted_tables(),
+            record=record_data_gaps and not dry_run,
         )
 
         # Evaluate rules per entity
         all_rules = self.registry.get_all_rules()
+        as_of = reference_date or data_reference_date(self.duckdb_store)
+        for rule in all_rules:
+            rule.reference_date = as_of
         for entity in entities:
             ent_id = entity.entity_id
             peers, _cohort_label, _is_weak = self.peer_resolver.resolve_peers(entity, entities)
@@ -235,6 +251,7 @@ class AssessmentRunner:
             "timestamp": now.isoformat(),
             "config_hash": config_hash,
             "code_version": code_version,
+            "reference_date": as_of.isoformat() if as_of else None,
             "entities_evaluated": [e.entity_id for e in entities],
             "entities_skipped_invalid_id": skipped_entity_ids,
             "total_findings": len(all_findings),
@@ -253,6 +270,29 @@ class AssessmentRunner:
         # Cross-entity ("systemic") correlation: looks ACROSS the per-entity
         # findings just computed, not within any single entity's data.
         systemic_findings = self.systemic_detector.evaluate(entities, all_findings, run_id)
+
+        result: dict[str, Any] = {
+            "status": "success",
+            "run_id": run_id,
+            "period": period,
+            "config_hash": config_hash,
+            "reference_date": as_of.isoformat() if as_of else None,
+            "entities_count": len(entities),
+            "findings_count": len(all_findings),
+            "queue_count": len(all_queue_items),
+            "systemic_findings_count": len(systemic_findings),
+            "entity_scores": {
+                es.entity_id: {"risk_index": es.risk_index, "risk_band": es.risk_band}
+                for es in all_entity_scores
+            },
+        }
+        if dry_run:
+            result["dry_run"] = True
+            result["findings"] = [
+                {"entity_id": f.entity_id, "rule_id": f.rule_id, "score": f.score, "severity": f.severity, "title": f.title}
+                for f in all_findings
+            ]
+            return result
 
         # Save to SQLite
         self.sqlite_store.save_run(run_obj)
@@ -276,16 +316,4 @@ class AssessmentRunner:
             },
         )
 
-        return {
-            "status": "success",
-            "run_id": run_id,
-            "config_hash": config_hash,
-            "entities_count": len(entities),
-            "findings_count": len(all_findings),
-            "queue_count": len(all_queue_items),
-            "systemic_findings_count": len(systemic_findings),
-            "entity_scores": {
-                es.entity_id: {"risk_index": es.risk_index, "risk_band": es.risk_band}
-                for es in all_entity_scores
-            },
-        }
+        return result

@@ -139,10 +139,17 @@ def inject_cse07_metric_gaming_and_templates(
             target_delay_mins = int(sla_mins * rng.uniform(0.92, 0.99))
             a.closed_at = a.created_at + timedelta(minutes=target_delay_mins)
 
-    # 3. Bulk month-end closures: Group 15 alerts to close at exact same minute by same analyst
-    bulk_targets = cse07_alerts[:15]
+    # 3. Bulk month-end closures: 15 alerts closed in the same minute by the same analyst.
+    # The sweep clears the low/medium alerts raised most recently before it. Taking the
+    # first 15 alerts regardless of date closed some of them months before they were
+    # created, and those impossible durations made EG10 fire or not by seed.
     bulk_actor = "ANALYST_G_007"
     bulk_ts = datetime(2026, 3, 31, 17, 58, 0)
+    backlog = sorted(
+        (a for a in cse07_alerts if a.severity_final in ("low", "medium") and a.created_at and a.created_at < bulk_ts),
+        key=lambda a: (a.created_at, a.alert_id),
+    )
+    bulk_targets = backlog[-15:]
     for a in bulk_targets:
         a.closed_at = bulk_ts
         a.closed_by = bulk_actor
@@ -222,6 +229,10 @@ def inject_cse09_repeat_alerts(
     injected_count = 0
     base_time = datetime(2026, 2, 1, 10, 0, 0)
     for i in range(12):
+        # One start hour per alert. Drawing the hour separately for created, acknowledged and
+        # closed put some closures hours before the alert was raised. Six draws are kept so
+        # the random stream, and with it every later injection, is unchanged.
+        hour_1, _, _ = (rng.randint(1, 4) for _ in range(3))
         alt1 = Alert(
             entity_id="CSE-09",
             alert_id=f"CSE09-ALT-REP1-{i:03d}",
@@ -230,14 +241,15 @@ def inject_cse09_repeat_alerts(
             severity_orig="medium",
             severity_final="medium",
             asset_id=asset_1,
-            created_at=base_time + timedelta(days=i * 2, hours=rng.randint(1, 4)),
-            acknowledged_at=base_time + timedelta(days=i * 2, hours=rng.randint(1, 4), minutes=10),
-            closed_at=base_time + timedelta(days=i * 2, hours=rng.randint(1, 4), minutes=40),
+            created_at=base_time + timedelta(days=i * 2, hours=hour_1),
+            acknowledged_at=base_time + timedelta(days=i * 2, hours=hour_1, minutes=10),
+            closed_at=base_time + timedelta(days=i * 2, hours=hour_1, minutes=40),
             closed_by="ANALYST_09_01",
             closed_by_type="human",
             disposition="benign",
             status="closed",
         )
+        hour_2, _, _ = (rng.randint(1, 4) for _ in range(3))
         alt2 = Alert(
             entity_id="CSE-09",
             alert_id=f"CSE09-ALT-REP2-{i:03d}",
@@ -246,9 +258,9 @@ def inject_cse09_repeat_alerts(
             severity_orig="high",
             severity_final="high",
             asset_id=asset_2,
-            created_at=base_time + timedelta(days=i * 2, hours=rng.randint(1, 4)),
-            acknowledged_at=base_time + timedelta(days=i * 2, hours=rng.randint(1, 4), minutes=15),
-            closed_at=base_time + timedelta(days=i * 2, hours=rng.randint(1, 4), minutes=55),
+            created_at=base_time + timedelta(days=i * 2, hours=hour_2),
+            acknowledged_at=base_time + timedelta(days=i * 2, hours=hour_2, minutes=15),
+            closed_at=base_time + timedelta(days=i * 2, hours=hour_2, minutes=55),
             closed_by="ANALYST_09_02",
             closed_by_type="human",
             disposition="false_positive",
@@ -391,7 +403,12 @@ def inject_cse03_unacknowledged_escalations(escalations: list[Escalation]) -> di
 
 def inject_cse05_stale_open_cases(cases: list[Case]) -> dict[str, Any]:
     """EG09: four CSE-05 high-severity cases left open since spring (> 14 days stale)."""
-    targets = sorted((c for c in cases if c.entity_id == "CSE-05" and c.severity == "high"), key=lambda c: c.case_id)[:4]
+    # The four opened earliest. Picking by case id could choose cases opened in the last
+    # days of the period, which are open but not stale.
+    targets = sorted(
+        (c for c in cases if c.entity_id == "CSE-05" and c.severity == "high"),
+        key=lambda c: (c.opened_at, c.case_id),
+    )[:4]
     for c in targets:
         c.status = "open"
         c.closed_at = None

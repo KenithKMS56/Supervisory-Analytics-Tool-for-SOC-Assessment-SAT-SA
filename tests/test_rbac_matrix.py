@@ -45,6 +45,8 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("GET", "/login"): (PUBLIC, True),
     ("POST", "/login"): (PUBLIC, False),
     ("POST", "/logout"): (PUBLIC, False),
+    ("GET", "/change-password"): (ALL, True),
+    ("POST", "/change-password"): (ALL, False),
     ("GET", "/api/session/status"): (PUBLIC, False),
     ("GET", "/splash"): (PUBLIC, True),
     ("GET", "/"): (PUBLIC, True),
@@ -84,6 +86,7 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("POST", "/upload/trigger-demo"): (INGEST, False),
     ("POST", "/api/v1/submissions"): (INGEST, False),
     ("POST", "/tuning/save"): (TUNING, False),
+    ("POST", "/tuning/preview"): (TUNING, False),
     ("GET", "/tuning/export-pack"): (RULEPACK, False),
     ("POST", "/tuning/import-pack"): (RULEPACK, False),
 }
@@ -92,6 +95,8 @@ ADMIN_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("GET", "/login"): (PUBLIC, True),
     ("POST", "/login"): (PUBLIC, False),
     ("POST", "/logout"): (PUBLIC, False),
+    ("GET", "/change-password"): (ADMIN_ONLY, True),
+    ("POST", "/change-password"): (ADMIN_ONLY, False),
     ("GET", "/splash"): (PUBLIC, True),
     ("GET", "/"): (PUBLIC, True),  # splash for guests, overview for admins
     ("GET", "/overview"): (ADMIN_ONLY, True),
