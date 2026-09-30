@@ -227,12 +227,12 @@ runs once per assessment, AFTER all per-entity rules, and looks ACROSS the whole
 
 ## 4. Scoring, Aggregation & Prioritization Mathematics
 
-### 4.1 Calibrated Rule Score (0–100)
-$$\text{Score}(r) = \min\left(100.0, \; \text{Strength}(r) \times \text{SeverityWeight}(r) \times \text{Confidence}(r)\right)$$
-- **Severity Weights:** Critical = 1.0, High = 0.8, Medium = 0.5, Low = 0.25.
-- **Confidence Damping Factor:**
-  $$\text{Confidence} = \min\left(1.0, \; \frac{n}{n_{\min}}\right)$$
-  *(where $n_{\min}$ is the minimum sample threshold specified in `config/scoring.yaml`).*
+### 4.1 Rule Score (0–100)
+$$\text{Score}(r) = \frac{\min(2, \; \text{Distance}(r))}{2} \times \text{SeverityWeight}(r) \times \text{Confidence}(r)$$
+- **Distance** is how far the measured value is past the rule's threshold (e.g. measured share ÷ threshold share), capped at 2, so a finding at twice its threshold or more scores the full severity weight.
+- **SeverityWeight** is per rule (`severity_weight` in `config/rules.yaml`, 70–95), and is therefore also the maximum score a rule can produce.
+- **Confidence:** $\min\left(1.0, \; n / n_{\min}\right)$, where $n_{\min}$ is the rule's `min_sample` in `config/rules.yaml`.
+- **Known limitation:** for several count-based rules (EG03, EG08, EG09, EG12, NS04, NS06, NS07) $n$ is the number of offending items, not the size of the population examined, so a small number of serious cases scores low: 3 critical cases without containment (EG12, `min_sample` 15) get confidence 0.2 and a score of 12. The band floor in Section 4.3 is not affected by this for findings at confidence ≥ 0.5, but the index is.
 
 ### 4.2 Capability Domain Score (Probabilistic Noisy-OR)
 For domain $d$ encompassing $m$ triggered rules with scores $s_1, s_2, \dots, s_m \in [0, 100]$:
@@ -241,9 +241,14 @@ $$S_d = 100 \times \left(1 - \prod_{i=1}^m \left(1 - \frac{s_i}{100}\right)\righ
 ### 4.3 Composite Entity Risk Index
 $$\text{RiskIndex} = (1 - w_{\text{breadth}}) \left(\sum_{d=1}^8 w_d S_d\right) + w_{\text{breadth}} \times \min(100.0, \; 10 \times N_{\text{distinct\_rules}})$$
 - Standard domain weights $w_d$ sum to 1.0 (configured in `config/scoring.yaml`).
-- Default breadth weight $w_{\text{breadth}} = 0.15$.
-- **Categorical Risk Bands:**
-  - $\ge 70.0$: High Supervisory Concern
-  - $40.0 - 69.9$: Elevated Supervisory Concern
-  - $20.0 - 39.9$: Moderate Supervisory Concern
-  - $< 20.0$: Low Supervisory Concern
+- Default breadth weight $w_{\text{breadth}} = 0.10$.
+- **Risk bands by index** (`risk_bands` in `config/scoring.yaml`): 0–25 Low, 25–50 Moderate, 50–75 High, 75–100 Critical Supervisory Concern.
+- **Band floor** (`band_floors`): the index is a weighted average over 8 domains, so a single maximum-score finding in one domain cannot lift it above about 14. To stop an entity with, say, an unreported critical incident being labelled "Low Supervisory Concern", an entity with a **critical**-severity finding (confidence ≥ 0.5) is classified at least **High**, and one with a **high**-severity finding at least **Moderate**. The floor changes the band only: the index and the entity ranking are unchanged, and the entity profile states when the band was raised.
+- The dashboard, HTML reports and PDFs all take an entity's classification, colour and "requires action" status (any band above Low) from this stored band.
+
+### 4.4 Review Queue
+Per entity, up to `queue_size_per_entity` (30) items (`review_queue` in `config/scoring.yaml`):
+1. **Cited records:** records named as evidence by the entity's findings, ordered by accumulated finding score, up to `top_risk_ratio` (70%) of the size.
+2. **Random controls:** the remainder of the size (9 of 30), sampled from the entity's other alerts and stratified by severity, with a fixed seed.
+
+The 70/30 split is an upper bound on cited records, not the actual mix: rules cite only a few example records, and entity-level findings cite none, so an entity with few cited records gets a shorter, mostly random queue (a clean entity gets only the 9 controls). In the synthetic run the queue is 44 cited records and 90 random controls.

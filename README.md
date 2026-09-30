@@ -115,7 +115,7 @@ The application provides a fully server-rendered, responsive web interface:
    - Cognitive debiasing workspace: presents raw empirical metrics (MTTR, SOAR volume, true-positive rates) without scores.
    - Allows examiners to formulate independent assessments before revealing the Inter-Rater Concordance Matrix.
 5. **Stratified Supervisory Review Queue (`/queue`)**:
-   - 70% risk-stratified / 30% random control sampling mechanism to optimize supervisory review hours.
+   - Per-entity review queue: records cited by findings (up to 70% of the queue size) plus a severity-stratified random control sample.
    - Examiner disposition logging (`Confirmed`, `Not an Issue`, `Needs More Data`) with persistent record keeping.
 6. **Regulatory Rules Catalog (`/rules`)**:
    - Comprehensive interactive directory of all 20 detection rules (EG01–EG12 & NS01–NS08).
@@ -255,7 +255,7 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 | **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations) | $\ge 0.8500$ | Meets target |
 | **Rule Threshold Sensitivity** (primary dataset) | **3 of 64** single-threshold ±20% moves change an outcome, all injected defects built just over their threshold (EG05 pairs, EG07, NS05). None creates a false alarm on a clean entity. (EG05's and EG11's fixed thresholds did, before the chance floor and the peer robust z-score.) | n/a -- reported for transparency | Margins are synthetic; real calibration needs the pilot |
 | **DuckDB Scan Throughput** | **10,623,549 rows/second** | $\ge 1,000,000$ | Measured, exceeds target |
-| **Automated Test Suite** | **724 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.13 from freshly generated data; CI runs 3.11 and 3.13 | 100% passing | Verified locally on 3.13 |
+| **Automated Test Suite** | **728 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.13 from freshly generated data; CI runs 3.11 and 3.13 | 100% passing | Verified locally on 3.13 |
 
 ---
 

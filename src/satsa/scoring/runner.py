@@ -42,7 +42,12 @@ class AssessmentRunner:
         self.registry = RuleRegistry(rules_config_path)
         self.scorer = ScoringEngine(scoring_config_path)
         self.peer_resolver = PeerResolver(peers_config_path)
-        self.prioritiser = ReviewPrioritiser()
+        queue_cfg = self.scorer.config.get("review_queue", {})
+        self.prioritiser = ReviewPrioritiser(
+            top_ratio=float(queue_cfg.get("top_risk_ratio", 0.70)),
+            seed=int(queue_cfg.get("random_seed", 42)),
+        )
+        self.queue_size_per_entity = int(queue_cfg.get("queue_size_per_entity", 30))
         self.systemic_detector = SystemicCorrelationDetector(systemic_config_path)
 
     def run_assessment(
@@ -115,7 +120,7 @@ class AssessmentRunner:
                 findings=ent_findings,
                 evidences=ent_evidences,
                 store=self.duckdb_store,
-                total_size=30,
+                total_size=self.queue_size_per_entity,
             )
             all_queue_items.extend(q_items)
 

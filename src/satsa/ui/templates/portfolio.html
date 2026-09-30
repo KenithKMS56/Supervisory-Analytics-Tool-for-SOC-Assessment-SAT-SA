@@ -237,7 +237,7 @@
       </thead>
       <tbody>
         {% for e in ranked_entities %}
-        <tr data-action-required="{% if e.risk_index >= 25 %}true{% else %}false{% endif %}">
+        <tr data-action-required="{% if band_tier(e.risk_band) != 'low' %}true{% else %}false{% endif %}">
           <td><strong>#{{ loop.index }}</strong></td>
           <td><a href="/entity/{{ e.entity_id }}" style="color: var(--accent-link); font-weight: 600;">{{ e.entity_id }}</a></td>
           <td>{{ e.name }}</td>
@@ -245,9 +245,9 @@
           <td>{{ e.size_band }}</td>
           <td><strong style="font-size: 1.05rem; color: {% if e.risk_index >= 50 %}var(--risk-crit){% elif e.risk_index >= 25 %}var(--risk-mod){% else %}var(--risk-low){% endif %}; font-family: var(--font-mono);">{{ e.risk_index }}</strong></td>
           <td>
-            {% if e.risk_index >= 50 %}
+            {% if band_tier(e.risk_band) == 'critical' %}
               <span class="badge badge-crit">{{ e.risk_band }}</span>
-            {% elif e.risk_index >= 25 %}
+            {% elif band_tier(e.risk_band) == 'moderate' %}
               <span class="badge badge-mod">{{ e.risk_band }}</span>
             {% else %}
               <span class="badge badge-low">{{ e.risk_band }}</span>

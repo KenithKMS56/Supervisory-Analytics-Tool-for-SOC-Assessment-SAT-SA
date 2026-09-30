@@ -42,7 +42,7 @@ flowchart TD
         PEERS --> RULES[Deterministic Rules Engine EG01-12 & NS01-08]
         DUCK --> RULES
         RULES --> SCORER[Noisy-OR Probabilistic Scorer]
-        SCORER --> QUEUE[Prioritised Review Queue 70% Top / 30% Random]
+        SCORER --> QUEUE[Review Queue: cited records + random controls]
     end
 
     subgraph Presentation & Governance
@@ -85,7 +85,7 @@ flowchart TD
   - **Rule Score:** Distance beyond dynamic peer threshold damped by sample size confidence: $\text{Score} = \text{strength} \times \text{weight} \times \min(1, n / n_{\min})$.
   - **Domain Score:** Probabilistic Noisy-OR combination across 8 capability domains: $S_d = 100 \times \left(1 - \prod (1 - s_i/100)\right)$.
   - **Entity Risk Index:** Weighted sum of 8 capability domain scores plus breadth penalty.
-  - **Review Queue:** 70% highest-scoring alerts/cases + 30% stratified random controls.
+  - **Review Queue:** per entity, records cited by findings (highest accumulated score first, up to 70% of the queue size) plus a severity-stratified random control sample.
 
 ---
 
