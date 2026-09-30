@@ -1,4 +1,10 @@
-"""Review queue prioritization: 70% top-risk alerts, 30% stratified random sample."""
+"""Review queue: records cited by findings, plus a stratified random control sample.
+
+Per entity, cited records fill up to `top_ratio` of the queue size (highest accumulated
+finding score first) and the remainder of the size is a random sample of other alerts,
+stratified by severity. The mix is therefore top_ratio / (1 - top_ratio) only when enough
+cited records exist; an entity with no findings gets a short, all-random queue.
+"""
 
 import random
 from collections import defaultdict
@@ -10,9 +16,8 @@ from satsa.store.duckdb import DuckDBStore
 class ReviewPrioritiser:
     """Builds the prioritized supervisory examination queue with explainable selection reasons."""
 
-    def __init__(self, top_ratio: float = 0.70, random_ratio: float = 0.30, seed: int = 42):
+    def __init__(self, top_ratio: float = 0.70, seed: int = 42):
         self.top_ratio = top_ratio
-        self.random_ratio = random_ratio
         self.seed = seed
 
     def build_queue(
@@ -24,7 +29,7 @@ class ReviewPrioritiser:
         store: DuckDBStore,
         total_size: int = 50,
     ) -> list[ReviewQueueItem]:
-        """Generate ranked queue containing 70% top-risk items and 30% stratified random items."""
+        """Generate the entity's queue: cited records (up to top_ratio of total_size), then random controls."""
         # 1. Aggregate evidence hits and score per record
         record_scores: dict[str, float] = defaultdict(float)
         record_rules: dict[str, list[str]] = defaultdict(list)

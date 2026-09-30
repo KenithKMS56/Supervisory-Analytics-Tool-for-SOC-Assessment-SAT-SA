@@ -54,7 +54,7 @@ Open your browser to `http://127.0.0.1:8000`.
 ### [1:35 - 1:50] Step 5: Prioritized Review Queue & Lift
 1. **Action:** Click **Review Queue** in top navbar (`/queue`).
 2. **Presenter Script:**
-   > *"Rather than reviewing millions of logs, the examiner uses our mathematically stratified Review Queue: 70% top-risk alerts combined with 30% stratified random controls.
+   > *"Rather than reviewing millions of logs, the examiner uses the Review Queue: the records our findings cite, highest risk first, plus a random control sample from each entity.
    > On our synthetic validation dataset, the top 25 alerts in this queue are about nineteen times as likely to be defect-affected as alerts picked at random, and the whole queue about five times. That is a design check on synthetic data, not a real-world guarantee. Examiners can mark audit dispositions directly with one click."*
 
 ### [1:50 - 2:10] Step 6: Blinded Supervisory Review (Cognitive Bias Mitigation)

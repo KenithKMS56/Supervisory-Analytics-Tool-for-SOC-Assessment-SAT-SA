@@ -25,6 +25,7 @@ from satsa.report.plain_language import (
     MOD_FG,
     Comparison,
 )
+from satsa.scoring.scorer import band_tier
 
 INK = colors.HexColor("#0f172a")
 MUTED = colors.HexColor("#64748b")
@@ -51,11 +52,23 @@ BAND_LOW = BandStyle("LOW", LOW_BG, LOW_FG, LOW_FG, hatch=False)
 
 
 def band_for(score: float) -> BandStyle:
+    """Colour band for a raw 0-100 score (domain scores, gauges). For an entity's
+    classification use band_for_label, which follows the stored risk band."""
     if score >= CRITICAL_THRESHOLD:
         return BAND_CRITICAL
     if score >= MODERATE_THRESHOLD:
         return BAND_MODERATE
     return BAND_LOW
+
+
+def band_for_label(risk_band: str) -> BandStyle:
+    """Style for an entity's stored risk band, named by the band's own first word
+    (LOW / MODERATE / HIGH / CRITICAL) so the PDF shows the same classification as the UI."""
+    base = {"critical": BAND_CRITICAL, "moderate": BAND_MODERATE, "low": BAND_LOW}[band_tier(risk_band)]
+    name = (risk_band.split() or [base.name])[0].upper()
+    styled = BandStyle(name, "#000000", "#000000", "#000000", hatch=base.hatch)
+    styled.fill, styled.stroke, styled.text = base.fill, base.stroke, base.text
+    return styled
 
 
 def _hatch(x: float, y: float, w: float, h: float, color: colors.Color, step: float = 4.0) -> Group:

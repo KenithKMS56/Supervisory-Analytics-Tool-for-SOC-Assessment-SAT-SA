@@ -23,6 +23,7 @@ from satsa.report.pdf_charts import (
     MODERATE_THRESHOLD,
     band_bar_chart,
     band_for,
+    band_for_label,
     domain_weakness_chart,
     risk_gauge,
 )
@@ -52,6 +53,7 @@ from satsa.report.plain_language import (
     action_for,
     headline,
 )
+from satsa.scoring.scorer import band_tier
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
 
@@ -88,6 +90,14 @@ class ReportNotFoundError(LookupError):
 
 def _hex(color: colors.Color) -> str:
     return "#" + color.hexval()[2:]
+
+
+_BADGE_CLASS = {"critical": "badge-crit", "moderate": "badge-mod", "low": "badge-low"}
+
+
+def _tier_bg(risk_band: str) -> colors.Color:
+    """Cell background for an entity's stored risk band."""
+    return colors.HexColor({"critical": CRIT_BG, "moderate": MOD_BG, "low": LOW_BG}[band_tier(risk_band)])
 
 
 def _band_bg(score: float) -> colors.Color:
@@ -187,7 +197,7 @@ class ReportGenerator:
     <h2>Supervisory Risk Executive Summary</h2>
     <p style="font-size: 1.25rem; margin: 10px 0;">
       Entity Supervisory Risk Index: <strong>{risk_index:.1f} / 100</strong> &nbsp;
-      <span class="badge {"badge-crit" if risk_index >= 50 else ("badge-mod" if risk_index >= 25 else "badge-low")}">{risk_band}</span>
+      <span class="badge {_BADGE_CLASS[band_tier(risk_band)]}">{risk_band}</span>
     </p>
     <p>This assessment analysed the entity's periodic SOC submission across 8 supervisory domains, evaluating deterministic execution gaps and negative space patterns without AI/ML models.</p>
   </div>
@@ -332,7 +342,7 @@ class ReportGenerator:
         dom_scores = {r["domain"]: float(r["score"]) for r in cur.fetchall()}
         findings = self._load_findings("entity_id = ? AND run_id = ?", (entity_id, meta.run_id))
 
-        band = band_for(risk_index)
+        band = band_for_label(score_row["risk_band"])
         counts = {a: 0 for a in ("ESCALATE", "MONITOR", "NOTE")}
         for f in findings:
             counts[action_for(f["severity"]).label] += 1
@@ -470,11 +480,11 @@ class ReportGenerator:
         dq_rows = [dict(r) for r in cur.fetchall()]
 
         total = len(entities)
-        # Same "requires action" definition as the portfolio dashboard (risk_index >= 25).
-        attention = sum(1 for e in entities if e["risk_index"] >= MODERATE_THRESHOLD)
+        # Same "requires action" definition as the portfolio dashboard: any band above low.
+        attention = sum(1 for e in entities if band_tier(e["risk_band"]) != "low")
         band_counts = {"CRITICAL": 0, "MODERATE": 0, "LOW": 0}
         for e in entities:
-            band_counts[band_for(e["risk_index"]).name] += 1
+            band_counts[band_tier(e["risk_band"]).upper()] += 1
         escalations = [f for f in findings if action_for(f["severity"]).label == "ESCALATE"]
         n_monitor = sum(1 for f in findings if action_for(f["severity"]).label == "MONITOR")
         n_note = len(findings) - len(escalations) - n_monitor
@@ -588,10 +598,10 @@ class ReportGenerator:
             row: list[Any] = [
                 e["entity_id"],
                 f"{e['risk_index']:.1f}",
-                band_for(e["risk_index"]).name,
+                band_for_label(e["risk_band"]).name,
                 str(e["distinct_rules_triggered"]),
             ]
-            extra.append(("BACKGROUND", (1, i), (2, i), _band_bg(e["risk_index"])))
+            extra.append(("BACKGROUND", (1, i), (2, i), _tier_bg(e["risk_band"])))
             for j, d in enumerate(all_domains):
                 score = domain_map.get(e["entity_id"], {}).get(d)
                 row.append("-" if score is None else f"{score:.0f}")
@@ -640,7 +650,7 @@ class ReportGenerator:
                 [Paragraph("Critical Sector Entities require supervisory attention", hero_txt)],
                 [
                     Paragraph(
-                        "Supervisory risk index of 25 or higher (moderate or critical band), the "
+                        "Classified above the low band (by risk index, or by a critical or high severity finding), the "
                         "same threshold the SAT-SA portfolio dashboard uses.",
                         hero_sub,
                     )
@@ -968,7 +978,7 @@ class ReportGenerator:
             "".join(
                 f"<tr><td><strong>{e['entity_id']}</strong></td>"
                 f"<td>{e['risk_index']:.1f}</td>"
-                f"<td><span class='badge {'badge-crit' if e['risk_index'] >= 50 else ('badge-mod' if e['risk_index'] >= 25 else 'badge-low')}'>{e['risk_band']}</span></td>"
+                f"<td><span class='badge {_BADGE_CLASS[band_tier(e['risk_band'])]}'>{e['risk_band']}</span></td>"
                 f"<td>{e['distinct_rules_triggered']}</td>"
                 + "".join(
                     f"<td style='background: {'#fee2e2' if domain_map.get(e['entity_id'], {}).get(d, 0) >= 50 else ('#fef9c3' if domain_map.get(e['entity_id'], {}).get(d, 0) >= 25 else '#ffffff')}'>{domain_map.get(e['entity_id'], {}).get(d, 0.0):.1f}</td>"
