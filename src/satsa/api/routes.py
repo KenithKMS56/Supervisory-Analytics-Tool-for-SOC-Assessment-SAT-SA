@@ -1562,6 +1562,13 @@ def handle_upload(
                 msg = "Warning: No supported CSV/JSON files could be parsed from upload."
             elif res.get("status") == "error":
                 msg = f"Error: {res.get('message', 'Failed to ingest batch')}"
+            elif res.get("status") == "partial":
+                # Do not assess on a half-stored submission: a missing table reads as a SOC defect.
+                msg = (
+                    "Error: these tables could not be stored: "
+                    f"{', '.join(res.get('failed_tables', []))}. No assessment was run; see Data Quality, "
+                    "fix the files and upload again."
+                )
             else:
                 # Trigger assessment run
                 sqlite_store.record_live_event(

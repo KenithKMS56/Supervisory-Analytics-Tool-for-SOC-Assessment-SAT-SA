@@ -818,6 +818,27 @@ class SyntheticDataGenerator:
                 )
             )
 
+        # Every SOC raises some tuning tickets. Without any, the remediation table is empty for
+        # all entities and EG05's "no ticket" reading could not be told apart from "table not
+        # submitted". CSE-09's injected chronic pairs deliberately get none.
+        chronic_pairs = {tuple(p) for p in cse09_info["pairs"]}
+        for ent in entities:
+            tunable = [al for al in alerts if al.entity_id == ent.entity_id and al.created_at]
+            for t_idx, tuned in enumerate(self.rng.sample(tunable, min(4, len(tunable))), start=1):
+                if (tuned.asset_id, tuned.rule_id) in chronic_pairs or tuned.created_at is None:
+                    continue
+                remediations.append(
+                    Remediation(
+                        entity_id=ent.entity_id,
+                        ticket_id=f"{ent.entity_id.replace('-', '')}-TUNE-{t_idx:03d}",
+                        linked_asset_id=tuned.asset_id,
+                        linked_rule_id=tuned.rule_id,
+                        type="tuning",
+                        created_at=tuned.created_at + timedelta(days=2),
+                        closed_at=tuned.created_at + timedelta(days=9),
+                    )
+                )
+
         # Build GroundTruth
         ground_truth = GroundTruth(
             version="1.0.0",

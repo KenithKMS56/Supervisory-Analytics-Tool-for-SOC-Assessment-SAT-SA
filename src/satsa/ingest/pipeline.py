@@ -1,5 +1,7 @@
 """End-to-end ingestion pipeline orchestrator with intelligent canonical schema mapping."""
 
+import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,17 @@ from satsa.models.outputs import DQIssue
 from satsa.security import is_valid_entity_id, require_entity_id
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
+
+logger = logging.getLogger(__name__)
+
+# Child tables whose rows must reference an alert in the same submission:
+# (table, foreign-key column, which rows the check applies to).
+_ALERT_CHILD_TABLES: list[tuple[str, str, Callable[[dict[str, Any]], bool]]] = [
+    ("closure", "ref_id", lambda r: True),
+    ("workflow_event", "ref_id", lambda r: str(r.get("ref_type", "alert")) == "alert"),
+    ("escalation", "ref_id", lambda r: True),
+    ("case_alert_link", "alert_id", lambda r: True),
+]
 
 
 def default_entity_record(entity_id: str) -> dict[str, Any]:
@@ -563,11 +576,39 @@ class IngestionPipeline:
                 )
                 all_dq_issues.extend(orphan_issues)
 
-        # Save DQ issues to SQLite
-        for dq in all_dq_issues:
-            self.sqlite_store.save_dq_issue(dq)
+            # Child records must point at an alert (or case) that is in the submission.
+            # A closure, workflow event, escalation or case link whose parent is missing
+            # makes EG02/EG03/NS04 read "no investigation / no escalation / no case" for
+            # the wrong reason, and can itself indicate withheld records.
+            ent_alert_ids = {str(a.get("alert_id")) for a in ent_alerts if a.get("alert_id")}
+            if ent_alert_ids:
+                for child_table, fk_col, keep in _ALERT_CHILD_TABLES:
+                    children = [
+                        r for r in tables_data.get(child_table, []) if r.get("entity_id") == ent_id and keep(r)
+                    ]
+                    if children:
+                        all_dq_issues.extend(
+                            DQValidator.check_orphan_references(
+                                children, ent_alert_ids, fk_col, ent_id, child_table, "alert"
+                            )
+                        )
+            ent_case_ids = {
+                str(c.get("case_id"))
+                for tbl in ("case", "case_record")
+                for c in tables_data.get(tbl, [])
+                if c.get("entity_id") == ent_id and c.get("case_id")
+            }
+            ent_links = [r for r in tables_data.get("case_alert_link", []) if r.get("entity_id") == ent_id]
+            if ent_case_ids and ent_links:
+                all_dq_issues.extend(
+                    DQValidator.check_orphan_references(
+                        ent_links, ent_case_ids, "case_id", ent_id, "case_alert_link", "case"
+                    )
+                )
 
-        # Write to partitioned Parquet via DuckDBStore
+        # Write to partitioned Parquet via DuckDBStore. A table that fails to store must
+        # not vanish quietly: rules would then read its absence as a SOC defect.
+        failed_tables: list[str] = []
         for table_name, rows in tables_data.items():
             if rows:
                 try:
@@ -575,8 +616,28 @@ class IngestionPipeline:
                     # Canonical table names: map 'case_record' to 'case' if DuckDB DDL requires
                     duck_tbl = "case" if table_name == "case_record" else table_name
                     self.duckdb_store.write_partitioned_parquet(duck_tbl, df)
-                except Exception:  # noqa: BLE001, S112
-                    continue
+                except Exception as exc:
+                    logger.exception("Failed to store table %r (%d rows)", table_name, len(rows))
+                    failed_tables.append(table_name)
+                    all_dq_issues.append(
+                        DQIssue(
+                            issue_id=f"DQ-WRITE-FAILED-{primary_entity}-{table_name}",
+                            entity_id=primary_entity,
+                            check_name="table_write_failed",
+                            severity="error",
+                            count=len(rows),
+                            sample_records=[],
+                            details=(
+                                f"Table '{table_name}' ({len(rows)} rows) could not be stored "
+                                f"({type(exc).__name__}). Findings that depend on it are unreliable "
+                                "until the submission is re-ingested."
+                            ),
+                        )
+                    )
+
+        # Save DQ issues to SQLite
+        for dq in all_dq_issues:
+            self.sqlite_store.save_dq_issue(dq)
 
         # Build manifest and append to audit log
         batch, _manifest_dict = ManifestBuilder.build_manifest(
@@ -592,14 +653,16 @@ class IngestionPipeline:
                 "row_counts": row_counts,
                 "entities_detected": list(entities_present),
                 "dq_issues_found": len(all_dq_issues),
+                "failed_tables": failed_tables,
             },
         )
 
         return {
-            "status": "success",
+            "status": "partial" if failed_tables else "success",
             "batch_id": batch.batch_id,
             "entities": list(entities_present),
             "row_counts": row_counts,
+            "failed_tables": failed_tables,
             "dq_issues": len(all_dq_issues),
             "unattributed_rows": unattributed,
         }

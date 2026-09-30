@@ -251,11 +251,11 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 | **Entity Rank Precision@7** (primary, unambiguous dataset) | **100.0%** (top-7 entities ranked accurately) | $\ge 90.0\%$ | Meets target |
 | **Defect Precision** (primary, unambiguous dataset; every finding counted) | **100.0%** (21 of 21 findings; 0 false positives on any entity) | $\ge 85.0\%$ | Meets target |
 | **Stress Scenario Defect Precision** (borderline/ambiguous/noisy, synthetic) | **100.0%** (3 of 3 findings) | n/a -- reported for transparency | Synthetic; thresholds known when built |
-| **Review-Effort Lift** (primary dataset) | **19.5x** for the top 25 queue alerts, **10.5x** for the top 50, **5.50x** for the whole 109-alert queue, vs random sampling. (Every 1%/2%/5% budget exceeds the queue, so those all equal 5.50x.) *See docs/validation.md Section 3.* | $\ge 5.00x$ | Meets target |
+| **Review-Effort Lift** (primary dataset) | **21.0x** for the top 25 queue alerts, **12.7x** for the top 50, **5.98x** for the whole 119-alert queue, vs random sampling. (Every 1%/2%/5% budget exceeds the queue, so those all equal 5.98x.) *See docs/validation.md Section 3.* | $\ge 5.00x$ | Meets target |
 | **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations) | $\ge 0.8500$ | Meets target |
 | **Rule Threshold Sensitivity** (primary dataset) | **3 of 64** single-threshold ±20% moves change an outcome, all injected defects built just over their threshold (EG05 pairs, EG07, NS05). None creates a false alarm on a clean entity. (EG05's and EG11's fixed thresholds did, before the chance floor and the peer robust z-score.) | n/a -- reported for transparency | Margins are synthetic; real calibration needs the pilot |
 | **DuckDB Scan Throughput** | **10,623,549 rows/second** | $\ge 1,000,000$ | Measured, exceeds target |
-| **Automated Test Suite** | **729 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.13 from freshly generated data; CI runs 3.11 and 3.13 | 100% passing | Verified locally on 3.13 |
+| **Automated Test Suite** | **734 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.13 from freshly generated data; CI runs 3.11 and 3.13 | 100% passing | Verified locally on 3.13 |
 
 ---
 

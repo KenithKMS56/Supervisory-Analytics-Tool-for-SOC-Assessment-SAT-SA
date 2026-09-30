@@ -9,6 +9,7 @@ from typing import Any
 from satsa.models.canonical import Entity
 from satsa.models.outputs import (
     DomainScore,
+    DQIssue,
     EntityScore,
     Finding,
     FindingEvidence,
@@ -16,7 +17,7 @@ from satsa.models.outputs import (
     Run,
 )
 from satsa.peers.grouping import PeerResolver
-from satsa.rules.registry import RuleRegistry
+from satsa.rules.registry import RULE_DEPENDENCIES, RuleRegistry
 from satsa.rules.systemic import SystemicCorrelationDetector
 from satsa.scoring.prioritiser import ReviewPrioritiser
 from satsa.scoring.scorer import ScoringEngine
@@ -49,6 +50,43 @@ class AssessmentRunner:
         )
         self.queue_size_per_entity = int(queue_cfg.get("queue_size_per_entity", 30))
         self.systemic_detector = SystemicCorrelationDetector(systemic_config_path)
+
+    def _report_empty_dependencies(self, entity_ids: list[str]) -> None:
+        """Record a DQ warning for each (entity, table) a rule depends on that has no rows.
+
+        A rule such as EG03 reads "no escalation rows" as "never escalated". If the entity
+        simply did not submit that table, the finding is an artifact. The rules still run
+        (absence may be the real defect); the warning tells the examiner which findings to
+        confirm against the submission before relying on them.
+        """
+        with self.sqlite_store.conn:
+            self.sqlite_store.conn.execute("DELETE FROM dq_issues WHERE check_name = 'rule_dependency_empty'")
+        rules_by_table: dict[str, list[str]] = {}
+        for rule_id, tables in sorted(RULE_DEPENDENCIES.items()):
+            for table in tables:
+                rules_by_table.setdefault(table, []).append(rule_id)
+        for table, rule_ids in sorted(rules_by_table.items()):
+            df = self.duckdb_store.query(f'SELECT DISTINCT entity_id FROM "{table}"')
+            present = set(df["entity_id"].to_list()) if not df.is_empty() else set()
+            for entity_id in entity_ids:
+                if entity_id in present:
+                    continue
+                self.sqlite_store.save_dq_issue(
+                    DQIssue(
+                        issue_id=f"DQ-DEPENDENCY-{entity_id}-{table}",
+                        entity_id=entity_id,
+                        check_name="rule_dependency_empty",
+                        severity="warning",
+                        count=len(rule_ids),
+                        sample_records=rule_ids,
+                        details=(
+                            f"No '{table}' records for this entity. {', '.join(rule_ids)} "
+                            f"{'depends' if len(rule_ids) == 1 else 'depend'} on that table: any finding from "
+                            "them may mean the table was not submitted rather than a SOC defect, and a "
+                            "missing finding does not mean the control works. Confirm what was submitted."
+                        ),
+                    )
+                )
 
     def run_assessment(
         self,
@@ -89,6 +127,8 @@ class AssessmentRunner:
         all_domain_scores: list[DomainScore] = []
         all_entity_scores: list[EntityScore] = []
         all_queue_items: list[ReviewQueueItem] = []
+
+        self._report_empty_dependencies([e.entity_id for e in entities])
 
         # Evaluate rules per entity
         all_rules = self.registry.get_all_rules()

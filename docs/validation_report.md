@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-**Run ID:** `RUN-20260930063308360511-73288831` | **Validation Engine:** Fully Deterministic (No AI/ML)
+**Run ID:** `RUN-20260930080152730787-c2c8d6f0` | **Validation Engine:** Fully Deterministic (No AI/ML)
 
 ## 1. Executive Summary & Verification Criteria
 This report documents whether each detection rule's code correctly implements its own specified logic, measured against a synthetic ground-truth dataset across 10 Critical Sector Entities (CSEs) whose injected defects are deliberately built to clearly exceed each rule's threshold. High scores here demonstrate implementation correctness on an unambiguous dataset, not real-world detection accuracy -- see docs/validation.md Section 0 for the harder, more realistic 'stress scenario' (`satsa validate-stress`) and Section 5 for the Shadow-Pilot mode against real historical findings.
@@ -58,23 +58,23 @@ Precision counts every finding whose (entity, rule) pair is not an injected defe
 | `NS08` | 1 | 0 | 0 |
 
 ## 4. Review-Effort Lift Analysis
-Review-effort lift compares the share of defect-affected alerts among the review queue's top alert items with the share among all alerts (what random sampling would find), at budgets of 1%, 2% and 5% of total alerts. Both sides count alert records only. The queue holds 109 alert items (134 items in total); where a budget exceeds that, only the items that exist are counted as examined.
+Review-effort lift compares the share of defect-affected alerts among the review queue's top alert items with the share among all alerts (what random sampling would find), at budgets of 1%, 2% and 5% of total alerts. Both sides count alert records only. The queue holds 119 alert items (147 items in total); where a budget exceeds that, only the items that exist are counted as examined.
 
 | Audit Budget (% of Alerts) | Budget (alerts) | Queue Alerts Examined | Affected Alerts Found | Queue Hit Rate | Random Sampling Rate | Lift Factor |
 |---|---|---|---|---|---|---|
-| **1%** | 162 | 109 (queue exhausted) | 16 | 14.7% | 2.67% | **5.50x** |
-| **2%** | 325 | 109 (queue exhausted) | 16 | 14.7% | 2.67% | **5.50x** |
-| **5%** | 812 | 109 (queue exhausted) | 16 | 14.7% | 2.67% | **5.50x** |
+| **1%** | 162 | 119 (queue exhausted) | 19 | 16.0% | 2.67% | **5.98x** |
+| **2%** | 325 | 119 (queue exhausted) | 19 | 16.0% | 2.67% | **5.98x** |
+| **5%** | 812 | 119 (queue exhausted) | 19 | 16.0% | 2.67% | **5.98x** |
 
 Lift by queue depth (alert items in score order; these depths always fit inside the queue):
 
 | Top queue alerts examined | Affected Alerts Found | Hit Rate | Lift Factor |
 |---|---|---|---|
 | 10 | 4 | 40.0% | **14.98x** |
-| 25 | 13 | 52.0% | **19.47x** |
-| 50 | 14 | 28.0% | **10.49x** |
-| 100 | 16 | 16.0% | **5.99x** |
-| 109 | 16 | 14.7% | **5.50x** |
+| 25 | 14 | 56.0% | **20.97x** |
+| 50 | 17 | 34.0% | **12.73x** |
+| 100 | 19 | 19.0% | **7.12x** |
+| 119 | 19 | 16.0% | **5.98x** |
 
 ## 5. Shadow-Pilot Integration Method
 The `ShadowPilotAdapter` class allows regulatory examiners to validate SAT-SA against historical manual examination findings.
@@ -84,13 +84,13 @@ Examiners provide historical CSV logs with schema `(entity_id, record_id, rule_i
 3. **Workpaper precision**: Of the SAT-SA findings the workpaper adjudicates, the share examiners confirmed. Findings the workpaper does not mention are listed as unadjudicated, not counted as false positives.
 
 ### Shadow-Pilot Results
-Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-30T06:34:00.992146+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
+Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-30T08:02:11.729596+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
 
 | Measure | Value |
 |---|---|
 | Workpaper rows | 122 (47 confirmed) |
 | Historical finding recall | 100.0% (47/47) |
-| Queue record recall | 55.3% (26/47) |
+| Queue record recall | 57.5% (27/47) |
 | Workpaper precision | 100.0% (21/21 adjudicated findings) (95% CI 85–100%) |
 | Findings not adjudicated by the workpaper | 0 |
 | Cleared records still in the review queue | 0/15 |
