@@ -30,6 +30,11 @@ _ALERT_CHILD_TABLES: list[tuple[str, str, Callable[[dict[str, Any]], bool]]] = [
 ]
 
 
+def _store_table(canonical_table: str) -> str:
+    """Name a table is stored and queried under (`case_record` is stored as `case`)."""
+    return "case" if canonical_table == "case_record" else canonical_table
+
+
 def default_entity_record(entity_id: str) -> dict[str, Any]:
     """Registry record for a CSE first seen in submitted data rather than onboarded via /upload/add-entity."""
     return {
@@ -386,6 +391,11 @@ class IngestionPipeline:
         # table -> number of rows with no entity_id (and no default entity given)
         unattributed: dict[str, int] = {}
 
+        # Tables this submission includes, whether or not they hold rows: a header-only file
+        # says "we submit this table and it is empty", which is different from not sending it.
+        declared_tables: set[str] = set()
+        unreadable_files: list[str] = []
+
         for f in raw_files:
             try:
                 if f.suffix.lower() == ".csv":
@@ -394,11 +404,13 @@ class IngestionPipeline:
                     raw_rows = SourceAdapter.read_json(f)
 
                 if not raw_rows:
+                    declared_tables.add(_store_table(self.resolve_canonical_table(f.stem, [])))
                     continue
 
                 processed_files.append(f)
                 headers = list(raw_rows[0].keys())
                 canonical_table = self.resolve_canonical_table(f.stem, headers)
+                declared_tables.add(_store_table(canonical_table))
 
                 normalized_rows = []
                 for r in raw_rows:
@@ -422,8 +434,11 @@ class IngestionPipeline:
                 row_counts[canonical_table] = row_counts.get(canonical_table, 0) + len(
                     normalized_rows
                 )
-            except Exception:  # noqa: BLE001, S112
-                continue
+            except Exception:
+                # Reported below as a DQ error: a file dropped without trace would make
+                # its table look absent, and rules would read that as a SOC defect.
+                logger.exception("Could not read submission file %s", f.name)
+                unreadable_files.append(f.name)
 
         if unattributed and not any(tables_data.values()):
             counts = ", ".join(f"{n} {t}" for t, n in sorted(unattributed.items()))
@@ -508,6 +523,22 @@ class IngestionPipeline:
 
         # Run Data Quality checks per entity
         all_dq_issues = []
+        if unreadable_files:
+            all_dq_issues.append(
+                DQIssue(
+                    issue_id=f"DQ-UNREADABLE-{primary_entity}-{'-'.join(sorted(unreadable_files))[:80]}",
+                    entity_id=primary_entity,
+                    check_name="file_unreadable",
+                    severity="error",
+                    count=len(unreadable_files),
+                    sample_records=sorted(unreadable_files)[:5],
+                    details=(
+                        f"{len(unreadable_files)} submitted file(s) could not be read and were not ingested: "
+                        f"{', '.join(sorted(unreadable_files))}. Rules that depend on their tables are unreliable "
+                        "until the files are fixed and re-submitted."
+                    ),
+                )
+            )
         for tbl, bad_ids in sorted(rejected_ids.items()):
             all_dq_issues.append(
                 DQIssue(
@@ -643,6 +674,11 @@ class IngestionPipeline:
         batch, _manifest_dict = ManifestBuilder.build_manifest(
             entity_id=primary_entity, files=processed_files, row_counts=row_counts
         )
+        # Submission manifest: every entity in this batch submitted these tables. A table whose
+        # file failed to store is not counted, so its rules are not assessed on missing data.
+        manifest_tables = declared_tables - {_store_table(t) for t in failed_tables}
+        self.sqlite_store.record_submitted_tables(entities_present, manifest_tables, batch.batch_id)
+
         self.sqlite_store.append_audit(
             action="ingest",
             actor="pipeline",
@@ -663,6 +699,8 @@ class IngestionPipeline:
             "entities": list(entities_present),
             "row_counts": row_counts,
             "failed_tables": failed_tables,
+            "unreadable_files": sorted(unreadable_files),
+            "submitted_tables": sorted(manifest_tables),
             "dq_issues": len(all_dq_issues),
             "unattributed_rows": unattributed,
         }

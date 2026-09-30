@@ -5,7 +5,7 @@ import hashlib
 import json
 import sqlite3
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -176,6 +176,20 @@ class SQLiteStore:
                 self.conn.execute(
                     f"CREATE INDEX IF NOT EXISTS idx_{table}_actor_action ON {table} (actor, action)"
                 )
+            # Submission manifest: which tables each entity has ever submitted (a file or
+            # payload section was present, even with zero rows). Lets the assessment tell
+            # "submitted but empty" (absence is a signal) from "never submitted" (cannot assess).
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS submitted_tables (
+                    entity_id TEXT NOT NULL,
+                    table_name TEXT NOT NULL,
+                    batch_id TEXT,
+                    recorded_at TIMESTAMP NOT NULL,
+                    PRIMARY KEY (entity_id, table_name)
+                )
+                """
+            )
             # One JSON batch submission per (entity, period): see claim_batch_submission.
             self.conn.execute(
                 """
@@ -667,6 +681,30 @@ class SQLiteStore:
             row["result"] = json.loads(row.pop("result_json"))
             rows.append(row)
         return rows
+
+    # --- Submission manifest ---
+
+    def record_submitted_tables(
+        self, entity_ids: Iterable[str], tables: Iterable[str], batch_id: str | None = None
+    ) -> None:
+        """Record that each entity's submission included each table (cumulative across batches)."""
+        now = utc_now_iso()
+        rows = [(e, t, batch_id, now) for e in sorted(set(entity_ids)) for t in sorted(set(tables))]
+        with self.conn:
+            self.conn.executemany(
+                "INSERT INTO submitted_tables (entity_id, table_name, batch_id, recorded_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (entity_id, table_name) DO UPDATE SET batch_id = excluded.batch_id, "
+                "recorded_at = excluded.recorded_at",
+                rows,
+            )
+
+    def get_submitted_tables(self) -> dict[str, set[str]]:
+        """entity_id -> tables it has submitted. An entity with no entry has no manifest at all
+        (data stored before manifests existed, or written directly), not an empty submission."""
+        out: dict[str, set[str]] = {}
+        for r in self.conn.execute("SELECT entity_id, table_name FROM submitted_tables"):
+            out.setdefault(r["entity_id"], set()).add(r["table_name"])
+        return out
 
     # --- Periodic batch submissions (one per entity and period) ---
 

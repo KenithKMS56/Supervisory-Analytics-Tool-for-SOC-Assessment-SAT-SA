@@ -292,10 +292,8 @@ def test_rule_dependencies_name_real_rules_and_tables(tmp_path):
         store.close()
 
 
-def test_assessment_warns_when_a_rule_depends_on_a_table_with_no_rows(tmp_path):
-    """An alerts-only submission has no escalation table, so EG03 would read every critical
-    true positive as unescalated. The run must say so on the DQ view, and stop saying so once
-    the table is supplied."""
+def _assess(tmp_path, files: dict[str, tuple[str, list[str]]]):
+    """Ingest the given CSVs for DEP-ENT, run an assessment, return (EG03 fired?, {check: {key: details}})."""
     from satsa.ingest.pipeline import IngestionPipeline
     from satsa.scoring.runner import AssessmentRunner
     from satsa.store.duckdb import DuckDBStore
@@ -303,33 +301,102 @@ def test_assessment_warns_when_a_rule_depends_on_a_table_with_no_rows(tmp_path):
 
     src = tmp_path / "in"
     src.mkdir()
-    _write_csv(
-        src / "alert.csv",
-        "entity_id,alert_id,created_at,severity_final,disposition",
-        ["DEP-ENT,A-1,2026-01-05T09:00:00,critical,true_positive"],
-    )
+    for name, (header, rows) in files.items():
+        _write_csv(src / name, header, rows)
     sqlite_store = SQLiteStore(tmp_path / "s.db")
     duck = DuckDBStore(tmp_path / "d")
-    pipeline = IngestionPipeline(duck, sqlite_store)
-    pipeline.ingest_directory(src)
-    runner = AssessmentRunner(duck, sqlite_store)
-    runner.run_assessment(period="T", actor="test")
-
-    def warned_tables():
-        rows = sqlite_store.conn.execute(
-            "SELECT issue_id, sample_records_json FROM dq_issues WHERE check_name = 'rule_dependency_empty'"
-        ).fetchall()
-        return {r["issue_id"].removeprefix("DQ-DEPENDENCY-DEP-ENT-"): r["sample_records_json"] for r in rows}
-
-    first = warned_tables()
-    assert "EG03" in first["escalation"] and "NS07" in first["external_report"]
-
-    more = tmp_path / "more"
-    more.mkdir()
-    _write_csv(more / "escalation.csv", "entity_id,esc_id,ref_id,escalated_at", ["DEP-ENT,E-1,A-1,2026-01-05T09:05:00"])
-    pipeline.ingest_directory(more)
-    runner.run_assessment(period="T", actor="test")
-    second = warned_tables()
+    ingest = IngestionPipeline(duck, sqlite_store).ingest_directory(src)
+    run = AssessmentRunner(duck, sqlite_store).run_assessment(period="T", actor="test")
+    eg03 = sqlite_store.conn.execute(
+        "SELECT count(*) FROM findings WHERE run_id = ? AND rule_id = 'EG03'", (run["run_id"],)
+    ).fetchone()[0]
+    notes: dict[str, dict[str, str]] = {}
+    for r in sqlite_store.conn.execute("SELECT check_name, issue_id, details FROM dq_issues"):
+        notes.setdefault(r["check_name"], {})[r["issue_id"]] = r["details"]
     duck.close()
     sqlite_store.close()
-    assert "escalation" not in second and "external_report" in second
+    return ingest, bool(eg03), notes
+
+
+_CRITICAL_TP_ALERT = (
+    "entity_id,alert_id,created_at,severity_final,disposition",
+    ["DEP-ENT,A-1,2026-01-05T09:00:00,critical,true_positive"],
+)
+
+
+def test_rule_is_not_assessed_when_its_table_was_never_submitted(tmp_path):
+    """Alerts only: there is no escalation table, so EG03 must not accuse the entity of never
+    escalating. It is reported as not assessed instead."""
+    ingest, eg03_fired, notes = _assess(tmp_path, {"alert.csv": _CRITICAL_TP_ALERT})
+    assert ingest["submitted_tables"] == ["alert"]
+    assert not eg03_fired
+    assert "escalation" in notes["rule_not_assessed"]["DQ-NOT-ASSESSED-DEP-ENT-EG03"]
+    assert "DQ-DEPENDENCY-DEP-ENT-escalation" not in notes.get("rule_dependency_empty", {})
+
+
+def test_rule_runs_when_its_table_was_submitted_empty(tmp_path):
+    """A header-only escalation.csv says 'we submit escalations and there are none': now the
+    unescalated critical true positive is a real finding."""
+    ingest, eg03_fired, notes = _assess(
+        tmp_path,
+        {"alert.csv": _CRITICAL_TP_ALERT, "escalation.csv": ("entity_id,esc_id,ref_id,escalated_at", [])},
+    )
+    assert "escalation" in ingest["submitted_tables"]
+    assert eg03_fired
+    assert "DQ-NOT-ASSESSED-DEP-ENT-EG03" not in notes.get("rule_not_assessed", {})
+    assert "was submitted for this entity but holds no records" in (
+        notes["rule_dependency_empty"]["DQ-DEPENDENCY-DEP-ENT-escalation"]
+    )
+
+
+def test_rule_runs_with_a_warning_when_there_is_no_manifest(tmp_path):
+    """Data stored without a manifest (before manifests existed, or written directly) keeps the
+    old behaviour: the rule runs and the DQ view warns the finding may be an artifact."""
+    from satsa.scoring.runner import AssessmentRunner
+    from satsa.store.duckdb import DuckDBStore
+    from satsa.store.sqlite import SQLiteStore
+
+    duck = DuckDBStore(tmp_path / "d")
+    sqlite_store = SQLiteStore(tmp_path / "s.db")
+    duck.execute("INSERT INTO entity (entity_id, name) VALUES ('OLD-ENT', 'Old')")
+    duck.execute(
+        "INSERT INTO alert (entity_id, alert_id, severity_final, disposition, created_at)"
+        " VALUES ('OLD-ENT', 'A-1', 'critical', 'true_positive', '2026-01-05 09:00:00')"
+    )
+    run = AssessmentRunner(duck, sqlite_store).run_assessment(period="T", actor="test")
+    fired = sqlite_store.conn.execute(
+        "SELECT count(*) FROM findings WHERE run_id = ? AND rule_id = 'EG03'", (run["run_id"],)
+    ).fetchone()[0]
+    detail = sqlite_store.conn.execute(
+        "SELECT details FROM dq_issues WHERE issue_id = 'DQ-DEPENDENCY-OLD-ENT-escalation'"
+    ).fetchone()
+    not_assessed = sqlite_store.conn.execute(
+        "SELECT count(*) FROM dq_issues WHERE check_name = 'rule_not_assessed'"
+    ).fetchone()[0]
+    duck.close()
+    sqlite_store.close()
+    assert fired == 1 and not_assessed == 0
+    assert "no record of what it submitted" in detail["details"]
+
+
+def test_an_unreadable_file_is_reported_and_kept_out_of_the_manifest(tmp_path, monkeypatch):
+    from satsa.ingest import pipeline as pipeline_module
+
+    real_read = pipeline_module.SourceAdapter.read_csv
+
+    def flaky(path):
+        if path.name == "escalation.csv":
+            raise ValueError("corrupt file")
+        return real_read(path)
+
+    monkeypatch.setattr(pipeline_module.SourceAdapter, "read_csv", staticmethod(flaky))
+    ingest, eg03_fired, notes = _assess(
+        tmp_path,
+        {
+            "alert.csv": _CRITICAL_TP_ALERT,
+            "escalation.csv": ("entity_id,esc_id,ref_id,escalated_at", ["DEP-ENT,E-1,A-1,2026-01-05T09:05:00"]),
+        },
+    )
+    assert ingest["unreadable_files"] == ["escalation.csv"] and "escalation" not in ingest["submitted_tables"]
+    assert any("escalation.csv" in d for d in notes["file_unreadable"].values())
+    assert not eg03_fired and "DQ-NOT-ASSESSED-DEP-ENT-EG03" in notes["rule_not_assessed"]

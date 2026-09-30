@@ -51,26 +51,58 @@ class AssessmentRunner:
         self.queue_size_per_entity = int(queue_cfg.get("queue_size_per_entity", 30))
         self.systemic_detector = SystemicCorrelationDetector(systemic_config_path)
 
-    def _report_empty_dependencies(self, entity_ids: list[str]) -> None:
-        """Record a DQ warning for each (entity, table) a rule depends on that has no rows.
+    def _report_empty_dependencies(
+        self, entity_ids: list[str], submitted: dict[str, set[str]]
+    ) -> dict[str, dict[str, list[str]]]:
+        """Decide, per entity, which rules cannot be assessed, and report data gaps on the DQ view.
 
-        A rule such as EG03 reads "no escalation rows" as "never escalated". If the entity
-        simply did not submit that table, the finding is an artifact. The rules still run
-        (absence may be the real defect); the warning tells the examiner which findings to
-        confirm against the submission before relying on them.
+        A rule such as EG03 reads "no escalation rows" as "never escalated". What that means
+        depends on the entity's submission manifest (tables it has ever submitted):
+
+        - table **not in the manifest**: the entity never sent it, so the rule is *not assessed*
+          for that entity (returned here, reported as `rule_not_assessed`);
+        - table **in the manifest but with no rows**: the entity submitted an empty table, so
+          absence is a real signal; the rule runs and `rule_dependency_empty` notes the basis;
+        - entity with **no manifest at all** (data stored before manifests existed): the rule
+          runs and `rule_dependency_empty` warns that the finding may be an artifact.
+
+        Returns entity_id -> {rule_id: [missing tables]} for the rules to skip.
         """
         with self.sqlite_store.conn:
-            self.sqlite_store.conn.execute("DELETE FROM dq_issues WHERE check_name = 'rule_dependency_empty'")
+            self.sqlite_store.conn.execute(
+                "DELETE FROM dq_issues WHERE check_name IN ('rule_dependency_empty', 'rule_not_assessed')"
+            )
         rules_by_table: dict[str, list[str]] = {}
         for rule_id, tables in sorted(RULE_DEPENDENCIES.items()):
             for table in tables:
                 rules_by_table.setdefault(table, []).append(rule_id)
+
+        not_assessed: dict[str, dict[str, list[str]]] = {}
         for table, rule_ids in sorted(rules_by_table.items()):
             df = self.duckdb_store.query(f'SELECT DISTINCT entity_id FROM "{table}"')
             present = set(df["entity_id"].to_list()) if not df.is_empty() else set()
             for entity_id in entity_ids:
                 if entity_id in present:
                     continue
+                manifest = submitted.get(entity_id)
+                if manifest is not None and table not in manifest:
+                    for rule_id in rule_ids:
+                        not_assessed.setdefault(entity_id, {}).setdefault(rule_id, []).append(table)
+                    continue
+                verb = "depends" if len(rule_ids) == 1 else "depend"
+                if manifest is None:
+                    basis = (
+                        f"No '{table}' records for this entity, and no record of what it submitted. "
+                        f"{', '.join(rule_ids)} {verb} on that table: any finding from them may mean the table "
+                        "was not submitted rather than a SOC defect, and a missing finding does not mean the "
+                        "control works. Confirm what was submitted."
+                    )
+                else:
+                    basis = (
+                        f"'{table}' was submitted for this entity but holds no records for it. "
+                        f"{', '.join(rule_ids)} {verb} on that table and treat the absence as the SOC's "
+                        "behaviour; confirm with the entity that the empty table is complete."
+                    )
                 self.sqlite_store.save_dq_issue(
                     DQIssue(
                         issue_id=f"DQ-DEPENDENCY-{entity_id}-{table}",
@@ -79,14 +111,28 @@ class AssessmentRunner:
                         severity="warning",
                         count=len(rule_ids),
                         sample_records=rule_ids,
+                        details=basis,
+                    )
+                )
+
+        for entity_id, rules in sorted(not_assessed.items()):
+            for rule_id, missing in sorted(rules.items()):
+                self.sqlite_store.save_dq_issue(
+                    DQIssue(
+                        issue_id=f"DQ-NOT-ASSESSED-{entity_id}-{rule_id}",
+                        entity_id=entity_id,
+                        check_name="rule_not_assessed",
+                        severity="warning",
+                        count=len(missing),
+                        sample_records=sorted(missing),
                         details=(
-                            f"No '{table}' records for this entity. {', '.join(rule_ids)} "
-                            f"{'depends' if len(rule_ids) == 1 else 'depend'} on that table: any finding from "
-                            "them may mean the table was not submitted rather than a SOC defect, and a "
-                            "missing finding does not mean the control works. Confirm what was submitted."
+                            f"{rule_id} was not assessed for this entity: its submission does not include "
+                            f"{', '.join(repr(t) for t in sorted(missing))}. This is neither a finding nor a clean "
+                            "result; request the table to assess this control."
                         ),
                     )
                 )
+        return not_assessed
 
     def run_assessment(
         self,
@@ -128,7 +174,9 @@ class AssessmentRunner:
         all_entity_scores: list[EntityScore] = []
         all_queue_items: list[ReviewQueueItem] = []
 
-        self._report_empty_dependencies([e.entity_id for e in entities])
+        not_assessed = self._report_empty_dependencies(
+            [e.entity_id for e in entities], self.sqlite_store.get_submitted_tables()
+        )
 
         # Evaluate rules per entity
         all_rules = self.registry.get_all_rules()
@@ -139,7 +187,10 @@ class AssessmentRunner:
             ent_findings: list[Finding] = []
             ent_evidences: list[FindingEvidence] = []
 
+            skipped = not_assessed.get(ent_id, {})
             for rule in all_rules:
+                if rule.id in skipped:
+                    continue  # a table it depends on was never submitted: see rule_not_assessed
                 findings, evidences = rule.evaluate(ent_id, self.duckdb_store, peers, run_id)
                 ent_findings.extend(findings)
                 ent_evidences.extend(evidences)
