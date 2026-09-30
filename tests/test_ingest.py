@@ -337,14 +337,14 @@ def test_rule_runs_with_a_warning_when_there_is_no_manifest(tmp_path):
 def test_an_unreadable_file_is_reported_and_kept_out_of_the_manifest(tmp_path, monkeypatch):
     from satsa.ingest import pipeline as pipeline_module
 
-    real_read = pipeline_module.SourceAdapter.read_csv
+    real_read = pipeline_module.SourceAdapter.read_csv_frame
 
     def flaky(path):
         if path.name == "escalation.csv":
             raise ValueError("corrupt file")
         return real_read(path)
 
-    monkeypatch.setattr(pipeline_module.SourceAdapter, "read_csv", staticmethod(flaky))
+    monkeypatch.setattr(pipeline_module.SourceAdapter, "read_csv_frame", staticmethod(flaky))
     ingest, eg03_fired, notes = _assess(
         tmp_path,
         {
