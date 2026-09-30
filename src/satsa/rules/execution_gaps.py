@@ -263,7 +263,12 @@ class EG03CriticalWithoutEscalation(BaseRule):
             return [], []
 
         unesc_ids = df["alert_id"].to_list()
-        score, conf = self.compute_rule_score(len(unesc_ids) / 2.0, len(unesc_ids))
+        examined = self.population(
+            store,
+            "SELECT count(*) FROM alert WHERE entity_id = ? AND severity_final = 'critical' AND disposition = 'true_positive'",
+            [entity_id],
+        )
+        score, conf = self.compute_rule_score(len(unesc_ids) / 2.0, examined)
         f_id = f"FND-EG03-{entity_id}-{run_id}"
 
         rationale = (
@@ -694,7 +699,8 @@ class EG08EscalationWithoutFollowThrough(BaseRule):
         # Tunable: unacknowledged escalations needed before the entity is flagged.
         min_unacknowledged_escalations = int(self.params.get("min_unacknowledged_escalations", 3))
         if unack_count >= min_unacknowledged_escalations:
-            score, conf = self.compute_rule_score(unack_count / 3.0, unack_count)
+            examined = self.population(store, "SELECT count(*) FROM escalation WHERE entity_id = ?", [entity_id])
+            score, conf = self.compute_rule_score(unack_count / 3.0, examined)
             f_id = f"FND-EG08-{entity_id}-{run_id}"
             sample_ids = df["esc_id"].head(5).to_list()
 
@@ -762,7 +768,8 @@ class EG09BacklogAndAging(BaseRule):
 
         stale_count = df.shape[0]
         if stale_count >= min_stale_cases:
-            score, conf = self.compute_rule_score(stale_count / 3.0, stale_count)
+            examined = self.population(store, 'SELECT count(*) FROM "case" WHERE entity_id = ?', [entity_id])
+            score, conf = self.compute_rule_score(stale_count / 3.0, examined)
             f_id = f"FND-EG09-{entity_id}-{run_id}"
             sample_ids = df["case_id"].head(5).to_list()
 
@@ -854,7 +861,13 @@ class EG10KPIRadicalGap(BaseRule):
             # 0.50 is the score-normalisation constant (distance 1.0 at a 50% gap), kept
             # separate from the detection threshold so retuning the threshold doesn't
             # also silently rescale every EG10 score.
-            score, conf = self.compute_rule_score(gap_ratio / 0.50, 100)
+            examined = self.population(
+                store,
+                "SELECT count(*) FROM alert WHERE entity_id = ? AND severity_final IN ('high', 'critical') "
+                "AND closed_at IS NOT NULL",
+                [entity_id],
+            )
+            score, conf = self.compute_rule_score(gap_ratio / 0.50, examined)
             f_id = f"FND-EG10-{entity_id}-{run_id}"
 
             rationale = (
@@ -1044,7 +1057,10 @@ class EG12WorkflowNonConformance(BaseRule):
         # Tunable: critical cases without a 'contain' stage needed before flagging.
         min_skipped_cases = int(self.params.get("min_skipped_cases", 2))
         if len(skipped_cases) >= min_skipped_cases:
-            score, conf = self.compute_rule_score(len(skipped_cases) / 2.0, len(skipped_cases))
+            examined = self.population(
+                store, "SELECT count(*) FROM \"case\" WHERE entity_id = ? AND severity = 'critical'", [entity_id]
+            )
+            score, conf = self.compute_rule_score(len(skipped_cases) / 2.0, examined)
             f_id = f"FND-EG12-{entity_id}-{run_id}"
 
             rationale = (
