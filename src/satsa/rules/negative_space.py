@@ -611,17 +611,16 @@ class NS08SubmissionCompleteness(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        # Count months represented in alert timestamps
-        sql = """
-        SELECT count(DISTINCT date_trunc('month', created_at)) as month_cnt
-        FROM alert
-        WHERE entity_id = ?
-        """
-        df = store.query(sql, [entity_id])
-        if df.is_empty():
+        # Months represented in this entity's alerts, and in the portfolio's (the review period
+        # as actually submitted by everyone), so the missing months can be named.
+        month_sql = "SELECT DISTINCT strftime(created_at, '%Y-%m') AS m FROM alert WHERE {cond} AND created_at IS NOT NULL"
+        own = set(store.query(month_sql.format(cond="entity_id = ?"), [entity_id])["m"].to_list())
+        if not own:
             return [], []
+        portfolio = set(store.query(month_sql.format(cond="1 = 1"))["m"].to_list())
+        missing_labels = sorted(portfolio - own)
 
-        month_cnt = df["month_cnt"][0]
+        month_cnt = len(own)
         if month_cnt < 6:
             missing_months = 6 - month_cnt
             score, conf = self.compute_rule_score(missing_months / 2.0, 10)
@@ -647,7 +646,10 @@ class NS08SubmissionCompleteness(BaseRule):
                 peer_comparison={"active_months": month_cnt},
                 examiner_check=self.examiner_check,
                 benign_explanations=self.benign_explanations,
-                evidence_ids=[f"MISSING-MONTHS-{entity_id}"],
+                # The months other entities submitted and this one did not; when the
+                # portfolio offers no such comparison, the months it did submit.
+                evidence_ids=[f"missing-month:{m}" for m in missing_labels]
+                or [f"submitted-month:{m}" for m in sorted(own)],
             )
             return [finding], []
         return [], []
