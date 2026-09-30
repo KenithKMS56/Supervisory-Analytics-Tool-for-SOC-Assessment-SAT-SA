@@ -331,6 +331,27 @@ class IngestionPipeline:
         return "alert"  # Default fallback
 
     @classmethod
+    def table_for_empty_file(cls, path: Path) -> str | None:
+        """Table a file with no data rows stands for, or None if it cannot be identified.
+
+        A header-only file declares "this table is submitted and empty" (see the submission
+        manifest). resolve_canonical_table defaults to `alert` for anything it does not
+        recognise, which is fine for rows but would record an unrelated empty file as the
+        alert table, so that default is accepted only when the name or headers really say alert.
+        """
+        headers: list[str] = []
+        if path.suffix.lower() == ".csv":
+            first_line = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()[:1]
+            headers = [h.strip().strip('"') for h in first_line[0].split(",")] if first_line else []
+        table = cls.resolve_canonical_table(path.stem, headers)
+        if table != "alert":
+            return table
+        stem = path.stem.lower()
+        named_alert = any(k in stem for k in ("alert", "notable", "event"))
+        alert_headers = {h.lower() for h in headers} & {"alert_id", "notable_id", "alertid"}
+        return "alert" if named_alert or alert_headers else None
+
+    @classmethod
     def normalize_row_columns(cls, row: dict[str, Any], target_table: str) -> dict[str, Any]:
         """Map alternative column names and lowercase keys to canonical fields."""
         norm: dict[str, Any] = {}
@@ -404,7 +425,9 @@ class IngestionPipeline:
                     raw_rows = SourceAdapter.read_json(f)
 
                 if not raw_rows:
-                    declared_tables.add(_store_table(self.resolve_canonical_table(f.stem, [])))
+                    empty_table = self.table_for_empty_file(f)
+                    if empty_table:
+                        declared_tables.add(_store_table(empty_table))
                     continue
 
                 processed_files.append(f)

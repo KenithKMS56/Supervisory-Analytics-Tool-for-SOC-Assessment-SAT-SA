@@ -400,3 +400,52 @@ def test_an_unreadable_file_is_reported_and_kept_out_of_the_manifest(tmp_path, m
     assert ingest["unreadable_files"] == ["escalation.csv"] and "escalation" not in ingest["submitted_tables"]
     assert any("escalation.csv" in d for d in notes["file_unreadable"].values())
     assert not eg03_fired and "DQ-NOT-ASSESSED-DEP-ENT-EG03" in notes["rule_not_assessed"]
+
+
+def test_empty_files_are_identified_by_name_or_header_not_defaulted_to_alert(tmp_path):
+    from satsa.ingest.pipeline import IngestionPipeline
+
+    def empty(name: str, header: str):
+        path = tmp_path / name
+        path.write_text(header + "\n", encoding="utf-8")
+        return IngestionPipeline.table_for_empty_file(path)
+
+    assert empty("escalation.csv", "entity_id,esc_id,ref_id") == "escalation"
+    assert empty("q1_export_7.csv", "entity_id,escalation_id,from_tier,to_tier") == "escalation"
+    assert empty("alerts_2026.csv", "entity_id,alert_id") == "alert"
+    # Unrecognisable: must not be recorded as the alert table.
+    assert empty("notes.csv", "author,text") is None
+
+
+def test_ns08_expects_the_period_the_portfolio_covers(tmp_path):
+    """Two entities that both submitted three months are complete for a three-month period;
+    one that lacks a month the other has is not; an entity alone is held to six months."""
+    from datetime import datetime
+
+    from satsa.rules.registry import RuleRegistry
+    from satsa.store.duckdb import DuckDBStore
+
+    store = DuckDBStore(tmp_path / "ns08")
+
+    def add(entity_id: str, months: list[int]) -> None:
+        for m in months:
+            store.execute(
+                "INSERT INTO alert (entity_id, alert_id, created_at) VALUES (?, ?, ?)",
+                [entity_id, f"{entity_id}-{m}", datetime(2026, m, 10, 9, 0, 0)],
+            )
+
+    rule = RuleRegistry().get_rule("NS08")
+    try:
+        add("SOLO", [1, 2, 3])
+        solo, _ = rule.evaluate("SOLO", store, [], "RUN-X")
+        assert solo and solo[0].peer_comparison["expected_months"] == 6
+
+        add("PEER", [1, 2, 3])
+        assert rule.evaluate("SOLO", store, [], "RUN-X")[0] == []
+
+        add("PEER", [4])
+        short, _ = rule.evaluate("SOLO", store, [], "RUN-X")
+        assert short[0].evidence_ids == ["missing-month:2026-04"]
+        assert short[0].peer_comparison == {"active_months": 3, "expected_months": 4}
+    finally:
+        store.close()

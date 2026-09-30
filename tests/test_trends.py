@@ -92,3 +92,44 @@ def test_seed_historical_periods_empty_store_returns_no_fabrication():
         results = seed_historical_periods(Path(tmpdir) / "no_data", empty_store, n_periods=3)
         empty_store.close()
         assert results == []
+
+
+def test_historical_periods_assess_their_own_window_not_the_full_dataset():
+    """Each seeded period must see only the data up to its cutoff. run_assessment used to
+    reload every table from Parquet, undoing the truncation: all periods were the full run
+    under different labels. CSE-05's critical asset goes silent on 10 March, so NS01 must be
+    absent from the first window (which ends around 1 March) and present in the last."""
+    store = SQLiteStore("data/satsa.db")
+    cur = store.conn.cursor()
+    dq_before = cur.execute("SELECT issue_id, details FROM dq_issues ORDER BY issue_id").fetchall()
+    run_ids: list[str] = []
+    try:
+        results = seed_historical_periods("data", store, n_periods=3, actor="test-suite")
+        run_ids = [r["run_id"] for r in results]
+
+        def rules(run_id: str, entity_id: str) -> set[str]:
+            rows = cur.execute(
+                "SELECT rule_id FROM findings WHERE run_id = ? AND entity_id = ?", (run_id, entity_id)
+            ).fetchall()
+            return {r["rule_id"] for r in rows}
+
+        first, last = run_ids[0], run_ids[-1]
+        assert "NS01" not in rules(first, "CSE-05") and "NS01" in rules(last, "CSE-05")
+        # A partial window is not an incomplete submission: clean entities stay clean.
+        assert rules(first, "CSE-01") == set() and rules(last, "CSE-01") == set()
+        indices = [
+            cur.execute(
+                "SELECT risk_index FROM entity_scores WHERE run_id = ? AND entity_id = 'CSE-02'", (rid,)
+            ).fetchone()["risk_index"]
+            for rid in run_ids
+        ]
+        assert len(set(indices)) > 1, "every period has the same risk index: windows are not applied"
+        # Historical runs must not rewrite the DQ view, which describes the current submission.
+        dq_after = cur.execute("SELECT issue_id, details FROM dq_issues ORDER BY issue_id").fetchall()
+        assert [tuple(r) for r in dq_after] == [tuple(r) for r in dq_before]
+    finally:
+        for rid in run_ids:
+            for table in ("runs", "entity_scores", "domain_scores", "findings", "review_queue"):
+                cur.execute(f"DELETE FROM {table} WHERE run_id = ?", (rid,))
+        store.conn.commit()
+        store.close()
