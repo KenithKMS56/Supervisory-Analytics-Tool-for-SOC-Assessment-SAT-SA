@@ -111,3 +111,36 @@ def test_findings_cite_checkable_evidence_not_placeholders():
         assert ns08[0].evidence_ids == ["missing-month:2026-06"]
     finally:
         store.close()
+
+
+def test_every_finding_carries_evidence_records():
+    """NS03, NS05 and NS08 used to return findings with no FindingEvidence rows at all
+    (EG11 too, until it began citing sample alerts). Every finding on the demo dataset must
+    now carry supporting rows that exist in the stored data."""
+    store = DuckDBStore("data")
+    store.load_all_tables()
+    registry = RuleRegistry("config/rules.yaml")
+    entities = store.query("SELECT entity_id FROM entity ORDER BY entity_id")["entity_id"].to_list()
+    alert_ids = set(store.query("SELECT alert_id FROM alert")["alert_id"].to_list())
+    rule_ids = set(store.query("SELECT rule_id FROM detection_rule")["rule_id"].to_list())
+    checked = 0
+    try:
+        for rule in registry.get_all_rules():
+            for entity_id in entities:
+                findings, evidences = rule.evaluate(entity_id, store, [], "RUN-X")
+                for finding in findings:
+                    own = [e for e in evidences if e.finding_id == finding.finding_id]
+                    assert own, f"{rule.id} on {entity_id} has no evidence records"
+                    checked += 1
+                    for e in own:
+                        if e.record_type == "alert":
+                            assert e.record_id in alert_ids, (rule.id, e.record_id)
+                        if e.record_type == "detection_rule":
+                            assert e.record_id in rule_ids, (rule.id, e.record_id)
+        ns03, ns03_ev = registry.get_rule("NS03").evaluate("CSE-10", store, [], "RUN-X")
+        assert ns03 and {e.details["reason"] for e in ns03_ev} == {"Last alert recorded that day"}
+        ns08, ns08_ev = registry.get_rule("NS08").evaluate("CSE-10", store, [], "RUN-X")
+        assert ns08 and [e.details["reason"] for e in ns08_ev] == ["Last alert before the gap in 2026-06"]
+    finally:
+        store.close()
+    assert checked >= 19
