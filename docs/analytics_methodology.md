@@ -192,7 +192,7 @@ $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
 
 #### NS08: Submission Completeness & Data Quality Deficits
 - **Purpose:** Detect data withholding, incomplete log submissions, or corrupt data drops.
-- **Logic:** The entity's alerts cover fewer than the 6 months of the review period. Null rates are reported by the ingest data-quality checks and volume drops by NS03; neither is part of this rule.
+- **Logic:** The entity's alerts cover fewer months than the review period: the months the portfolio's submissions cover, capped at 6 (an entity alone in the portfolio is held to 6). The missing months are named in the finding. Null rates are reported by the ingest data-quality checks and volume drops by NS03; neither is part of this rule.
 - **Benign Explanations:** SIEM migration occurred during the reporting period.
 - **Examiner Checks:** Request migration documentation and revised ingestion extracts.
 

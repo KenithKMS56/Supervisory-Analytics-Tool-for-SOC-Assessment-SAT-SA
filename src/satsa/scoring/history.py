@@ -103,6 +103,17 @@ def seed_historical_periods(
         window_store.conn.execute("DELETE FROM alert WHERE created_at > ?", [cutoff])
         window_store.conn.execute('DELETE FROM "case" WHERE opened_at IS NOT NULL AND opened_at > ?', [cutoff])
         window_store.conn.execute("DELETE FROM log_source_daily WHERE date > ?", [cutoff.date()])
+        # Tables that rules read directly (not only through a join to alert/case) carry
+        # their own timestamps and are cut at the same point.
+        for table, ts_col in (
+            ("escalation", "escalated_at"),
+            ("workflow_event", "ts"),
+            ("remediation", "created_at"),
+            ("external_report", "reported_at"),
+        ):
+            window_store.conn.execute(
+                f"DELETE FROM {table} WHERE {ts_col} IS NOT NULL AND {ts_col} > ?", [cutoff]
+            )
 
         base_label = period_label_for(cutoff)
         # A short dataset window can put two chronologically-distinct cutoffs
@@ -117,7 +128,11 @@ def seed_historical_periods(
             used_labels[base_label] = 1
             period_label = base_label
         runner = AssessmentRunner(window_store, sqlite_store)
-        res = runner.run_assessment(period=period_label, actor=actor)
+        # refresh_tables=False: run_assessment must assess THIS window. Its default reload
+        # from Parquet would restore the full dataset and make every period identical.
+        res = runner.run_assessment(
+            period=period_label, actor=actor, refresh_tables=False, record_data_gaps=False
+        )
         window_store.close()
         res["period"] = period_label
         results.append(res)

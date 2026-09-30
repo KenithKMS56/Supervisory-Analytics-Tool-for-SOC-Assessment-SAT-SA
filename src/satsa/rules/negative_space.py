@@ -6,6 +6,9 @@ from satsa.models.outputs import Finding, FindingEvidence
 from satsa.rules.base import BaseRule
 from satsa.store.duckdb import DuckDBStore
 
+# Length of the supervisory review period NS08 expects a submission to cover.
+REVIEW_PERIOD_MONTHS = 6
+
 
 class NS01SilentCriticalAssets(BaseRule):
     """NS01: Silent critical assets (>= min_silent_days zero-event days on critical monitored assets)."""
@@ -593,7 +596,11 @@ class NS07AbsentExternalReporting(BaseRule):
 
 
 class NS08SubmissionCompleteness(BaseRule):
-    """NS08: Submission completeness (batch row count deviation or high null rate)."""
+    """NS08: Submission completeness (alerts missing for months of the review period).
+
+    The review period is the months the portfolio's submissions cover, up to
+    REVIEW_PERIOD_MONTHS; an entity alone in the portfolio is held to the full period.
+    """
 
     id = "NS08"
     name = "Submission Completeness"
@@ -621,14 +628,21 @@ class NS08SubmissionCompleteness(BaseRule):
         missing_labels = sorted(portfolio - own)
 
         month_cnt = len(own)
-        if month_cnt < 6:
-            missing_months = 6 - month_cnt
+        # Months the entity is expected to cover: what the portfolio as a whole submitted,
+        # capped at the review period. Judging a short or partly-elapsed period against a
+        # fixed six months would flag every entity.
+        others = self.population(
+            store, "SELECT count(DISTINCT entity_id) FROM alert WHERE entity_id != ?", [entity_id]
+        )
+        expected = min(REVIEW_PERIOD_MONTHS, len(portfolio)) if others else REVIEW_PERIOD_MONTHS
+        if month_cnt < expected:
+            missing_months = expected - month_cnt
             score, conf = self.compute_rule_score(missing_months / 2.0, 10)
             f_id = f"FND-NS08-{entity_id}-{run_id}"
 
             rationale = (
                 f"Incomplete submission: Entity provided alerts covering only {month_cnt} months "
-                f"of the required 6-month supervisory review period."
+                f"of the {expected}-month supervisory review period."
             )
             finding = Finding(
                 finding_id=f_id,
@@ -643,7 +657,7 @@ class NS08SubmissionCompleteness(BaseRule):
                 severity="high",
                 title=f"{self.name}: Missing {missing_months} months in period",
                 rationale=rationale,
-                peer_comparison={"active_months": month_cnt},
+                peer_comparison={"active_months": month_cnt, "expected_months": expected},
                 examiner_check=self.examiner_check,
                 benign_explanations=self.benign_explanations,
                 # The months other entities submitted and this one did not; when the

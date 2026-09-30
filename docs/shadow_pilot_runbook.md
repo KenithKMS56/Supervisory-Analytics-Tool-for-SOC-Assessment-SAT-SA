@@ -40,12 +40,18 @@ satsa run --period 2026-H1
 Note the run ID. Check the DQ view (`/dq`) first: a submission with broken timestamps or missing
 tables will produce findings that reflect the data, not the SOC. In particular:
 
-- `rule_dependency_empty` — the entity has no rows in a table some rules depend on (listed in the
-  warning). Rules are not skipped, so a finding from them may only mean the table was not
-  submitted. Confirm with the entity what it sent before counting such a finding either way.
+- `rule_not_assessed` — the entity's submission did not include a table the rule needs, so the rule
+  was not run for it. This is neither a finding nor a clean result: ask for the table (a
+  header-only file if it is genuinely empty) and re-run, or exclude that rule for that entity from
+  the pilot's recall and precision.
+- `rule_dependency_empty` — the table was submitted but has no rows for the entity, so the rules ran
+  and treat the absence as real. Confirm with the entity that the empty table is complete. (If the
+  text says there is "no record of what it submitted", the data predates the manifest: re-ingest
+  it.)
 - `orphan_foreign_keys` — closures, workflow events, escalations or case links whose alert is not in
   the submission. They distort EG02/EG03/NS04 and can indicate withheld alerts.
-- `table_write_failed` — a table could not be stored; re-ingest before assessing.
+- `table_write_failed` / `file_unreadable` — a table could not be stored or a file could not be
+  read; fix and re-ingest before assessing.
 
 ## Step 3 — Turn the workpapers into a CSV
 
