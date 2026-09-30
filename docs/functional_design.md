@@ -74,10 +74,10 @@ and `tests/test_auth.py`.
 
 ## 3. Statutory Authority & Legal Mandate (Section 70A IT Act, 2000)
 
-SAT-SA operates under the statutory authority of **Section 70A of the Information Technology Act, 2000 (read with Information Technology Rules, 2013)**, designating NCIIPC as the national nodal agency for all measures taken to protect Critical Information Infrastructure (CII). 
+NCIIPC is the agency designated under **Section 70A of the Information Technology Act, 2000** as the national nodal agency for Critical Information Infrastructure protection, and the problem statement describes NCIIPC reviewing SOC records. SAT-SA supports that review. It claims no statutory force for its output: the problem statement cites no law, and what Section 70A and the rules under it empower is a question for legal review (`docs/legal_traceability.md`).
 
-All system interfaces, outputs, and exports display the statutory supervisory notice:
-> *"Indicators requiring supervisory review; not a compliance determination. Issued pursuant to regulatory advisory oversight under Section 70A, IT Act, 2000."*
+All system interfaces, outputs, and exports display the supervisory notice:
+> *"Indicators requiring supervisory review; not a compliance determination."*
 
 ---
 
@@ -100,7 +100,7 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
 
 ### 3. Blinded Supervisory Review Studio (`/blind-review`)
 - **Cognitive Bias Mitigation:** Examiners review raw objective metrics (median MTTA, median MTTR, SOAR automation share, false positive rate, sample comment hashes, silent assets) without seeing algorithmic scores or rule flags.
-- **Independent Examiner Inquest Form:** Captures human examiner concern rating (Low/Moderate/Elevated/Critical), recommended audit priority, and statutory recommendation under Sec 70A.
+- **Independent Examiner Inquest Form:** Captures human examiner concern rating (Low/Moderate/Elevated/Critical), recommended audit priority, and the examiner's recommendation.
 - **Inter-Rater Concordance Matrix:** Side-by-side comparison revealing the examiner's verdict vs. SAT-SA's mathematical risk band, calculating algorithmic concordance percentage ($0\text{--}100\%$) and logging to the tamper-evident audit trail.
 
 ### 4. Periodic Submission & Ingestion Wizard (`/upload`)
@@ -162,5 +162,5 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
   - Tier 1 is for non-technical readers: an ESCALATE / MONITOR / NOTE badge (from severity critical / high / other) and a one-sentence headline. The headline is filled only from the finding's stored values (`src/satsa/report/plain_language.py`).
   - Tier 2 is a shaded Technical Detail box: the rule and version, the unchanged rationale, the measured values and the evidence record IDs from `finding_evidences`.
 - **Offline rendering:** All PDFs are rendered with ReportLab (`reportlab.graphics.charts`) on A4, with no network access. Charts carry band text labels and patterns, so they still read correctly in grayscale.
-- **Statutory Footer Notice:** Mandatory on every generated report and UI footer:
+- **Supervisory Notice:** on every page of the web app, every page of every PDF, the HTML reports, and as a `supervisory_notice` field/column in the JSON and CSV exports (`tests/test_supervisory_notice.py`):
   > *"Indicators requiring supervisory review; not a compliance determination."*

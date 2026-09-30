@@ -231,8 +231,8 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 > confirm the code implements its documented logic. A scenario with a borderline threshold, an
 > ambiguous dual-rule case and a noisy clean entity is run via `satsa validate-stress` -- see
 > [`docs/validation.md`](docs/validation.md) Section 2A. Every one of the 20 rules has at least
-> one injected defect (enforced by a test). Every tunable threshold (17 rules) is also moved ±20%
-> to measure margin: no such move now turns a clean entity into a finding. NS03 and EG11 judge
+> one injected defect (enforced by a test). Every tunable threshold (18 rules) is also moved ±20%
+> to measure margin: on the primary seed no such move turns a clean entity into a finding. NS03 and EG11 judge
 > entities by robust z-score against their peer cohort, and EG05's repeat threshold rises to each
 > entity's chance level (Section 4A). Neither scenario is a substitute for the Shadow-Pilot mode
 > (Section 5) against real historical examiner findings, which has not yet been run against real
@@ -250,12 +250,14 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 | **Injected Defect Recall** (primary, unambiguous dataset) | **100.0%** (21/21 defects caught) | $\ge 90.0\%$ | Meets target |
 | **Entity Rank Precision@7** (primary, unambiguous dataset) | **100.0%** (top-7 entities ranked accurately) | $\ge 90.0\%$ | Meets target |
 | **Defect Precision** (primary, unambiguous dataset; every finding counted) | **100.0%** (21 of 21 findings; 0 false positives on any entity) | $\ge 85.0\%$ | Meets target |
-| **Stress Scenario Defect Precision** (borderline/ambiguous/noisy, synthetic) | **100.0%** (3 of 3 findings) | n/a -- reported for transparency | Synthetic; thresholds known when built |
-| **Review-Effort Lift** (primary dataset) | **21.0x** for the top 25 queue alerts, **12.7x** for the top 50, **5.98x** for the whole 119-alert queue, vs random sampling. (Every 1%/2%/5% budget exceeds the queue, so those all equal 5.98x.) *See docs/validation.md Section 3.* | $\ge 5.00x$ | Meets target |
+| **Stress Scenario Defect Precision** (borderline/ambiguous/noisy, synthetic) | **100.0%** (3 of 3 findings) on the published seed | n/a -- reported for transparency | Synthetic; thresholds known when built |
+| **Hard set** (8 other seeds x 3 volumes, and the stress scenario under 20 seeds; `docs/validation_hard_report.md`) | Portfolio: recall **99.6%** (502/504), precision **98.0%** (502/512); EG10 raises a false positive on one entity in 10 of 24 runs. Stress: recall 60/60, precision **93.8%** (60/64); the noisy clean entity trips EG05 in 4 of 20 seeds. | n/a -- reported for transparency | Synthetic. Shows what one seed hides; see `docs/validation_summary.md` |
+| **Review-Effort Lift** (primary dataset) | **19.5x** for the top 25 queue alerts, **12.0x** for the top 50, **5.52x** for the whole 129-alert queue, vs random sampling. (Every 1%/2%/5% budget exceeds the queue, so those all equal 5.52x.) *See docs/validation_report.md Section 4.* | $\ge 5.00x$ | Meets target |
 | **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations) | $\ge 0.8500$ | Meets target |
-| **Rule Threshold Sensitivity** (primary dataset) | **3 of 64** single-threshold ±20% moves change an outcome, all injected defects built just over their threshold (EG05 pairs, EG07, NS05). None creates a false alarm on a clean entity. (EG05's and EG11's fixed thresholds did, before the chance floor and the peer robust z-score.) | n/a -- reported for transparency | Margins are synthetic; real calibration needs the pilot |
-| **DuckDB Scan Throughput** | **10,623,549 rows/second** | $\ge 1,000,000$ | Measured, exceeds target |
-| **Automated Test Suite** | **740 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), from freshly generated data on Python 3.13 (Windows); the suite as of Step 29 also passed on 3.11; CI runs both on Linux | 100% passing | Verified locally |
+| **Rule Threshold Sensitivity** (primary dataset) | **4 of 66** single-threshold ±20% moves change an outcome, all injected defects built just over their threshold (EG05 pairs, EG07, NS05, NS08's review period). None creates a false alarm on a clean entity on this seed; across the hard set, lowering EG05's pair threshold does. | n/a -- reported for transparency | Margins are synthetic; real calibration needs the pilot |
+| **DuckDB Scan Throughput** | **10,623,549 rows/second** (single aggregation query, in memory) | $\ge 1,000,000$ | Measured, exceeds target |
+| **Scale, end to end** (`docs/benchmarks.md`) | 5,000,000 alerts (50 entities, 21.4M rows): ingest **603 s** (13.2 GB peak), assessment **310 s** (3.3 GB peak); repeat page loads under 0.7 s | n/a | Measured on a 4-core / 24 GB laptop, uniform synthetic data |
+| **Automated Test Suite** | **866 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), from freshly generated data on Python 3.13 (Windows). Statement-and-branch coverage **89%** overall; rules 94-100%, scoring 83-100%, audit-chain store 91%. Not re-run on Python 3.11 or Linux in this pass. | 100% passing | Verified locally |
 
 ---
 
@@ -403,10 +405,13 @@ Usage: satsa [OPTIONS] COMMAND [ARGS]...
 
 Commands:
   generate-data   Generate a synthetic periodic SOC submission with ground-truth defects.
-  ingest          Ingest CSVs, apply HMAC masking, and build Parquet stores.
+  ingest          Ingest CSVs, apply HMAC masking, and build Parquet stores
+                  (--source splunk|servicenow|thehive --entity <id> for a product export).
   run             Execute the supervisory assessment across all entities.
   seed-history    Seed genuine multi-period historical runs for the trend chart.
-  serve           Launch the air-gapped web dashboard and REST API.
+  serve           Launch the air-gapped web dashboard and REST API (loopback; optional TLS).
+  admin           Launch the NCIIPC Administration Portal.
+  tls-cert        Create a self-signed TLS certificate offline.
   report          Export supervisory dossiers (HTML, ReportLab PDF, and CSV).
   validate        Run the detector-implementation correctness harness (primary dataset).
   validate-stress Run the harder stress-scenario validation (borderline/ambiguous/noisy).
@@ -476,7 +481,7 @@ satsa/
 │   └── ui/                      # Server-rendered Jinja2 templates & static assets
 │       ├── static/              # SAT-SA CSS stylesheets and vendored echarts.min.js
 │       └── templates/           # Clean, responsive HTML templates for all 10 tabs
-├── tests/                       # Complete pytest test suite (596 passing tests)
+├── tests/                       # pytest suite (866 passing tests)
 │   ├── test_admin_portal.py     # NCIIPC Admin Portal routes & CRUD verification
 │   ├── test_admin_satsa_integration.py # E2E Admin-to-SATSA provisioning & scoping
 │   ├── test_admin_activity_feed.py # Admin activity feed (operator session monitor) verification
@@ -493,7 +498,7 @@ satsa/
 
 ## Regulatory Compliance & Statutory Boundary
 
-1. **Supervisory Framework:** SAT-SA is designed in alignment with supervisory responsibilities under Section 70A of the Information Technology Act, 2000 (National Critical Information Infrastructure Protection Centre).
+1. **Supervisory Framework:** SAT-SA supports NCIIPC's review of SOC records. NCIIPC is the agency designated under Section 70A of the Information Technology Act, 2000; the problem statement itself cites no law, and SAT-SA claims no statutory force for its output. What the Act and its rules empower is marked for legal review in [`docs/legal_traceability.md`](docs/legal_traceability.md).
 2. **Review Priority Support:** Outputs represent empirical indicators requiring human review; they are not automated compliance determinations or final legal adjudications.
 3. **Data Integrity Boundary:** Mathematical reconciliation identifies internal discrepancies across independent logs. Deliberately falsified timestamps across all logging tiers require physical forensic inspection.
 4. **Air-Gap Assurance:** Designed to operate without internet access. Local host security and operating system hardening remain the responsibility of the supervisory examiner.
@@ -504,7 +509,7 @@ satsa/
 
 1. **Supervisory Scope:** SAT-SA identifies anomalies and evidentiary gaps in periodic submissions; it does not replace on-site forensic inspection or legal examination.
 2. **Data Truthfulness:** If an entity falsifies all raw event timestamps consistently across independent systems before submission, mathematical reconciliation will reflect the falsified data.
-3. **Third-Party MSSP Visibility:** If an entity outsources Tier-1 triage to an external MSSP that does not share workflow event logs, rules dependent on `workflow_event` may be skipped or flagged under NS08.
+3. **Third-Party MSSP Visibility:** If an entity outsources Tier-1 triage to an external MSSP that does not share workflow event logs, rules dependent on `workflow_event` are not assessed for that entity, and the DQ view and the ingest report say so (`rule_not_assessed`).
 4. **Offline Assumption:** SAT-SA assumes local host security. The air-gap boundary protects against remote exfiltration, but physical and operating-system security of the supervisory host remains the examiner's responsibility.
 
 ---
@@ -516,11 +521,17 @@ satsa/
 - [`docs/shadow_pilot_runbook.md`](docs/shadow_pilot_runbook.md): Step-by-step procedure for measuring real-world accuracy against historical examiner workpapers.
 - [`docs/analytics_methodology.md`](file:///docs/analytics_methodology.md): Mathematical specifications for all 20 rules plus the cross-entity systemic correlation detector, robust statistics, and SPC.
 - [`docs/data_requirements.md`](file:///docs/data_requirements.md): Canonical schemas, ingestion sources (CSV/JSON/DB/API), and per-rule data dependency matrix.
-- [`docs/infrastructure.md`](file:///docs/infrastructure.md): Hardware sizing, measured benchmarks, and 5M alerts scaling analysis.
+- [`docs/infrastructure.md`](file:///docs/infrastructure.md): Hardware sizing and storage estimates (scale figures are measured in `docs/benchmarks.md`).
 - [`docs/validation.md`](file:///docs/validation.md): Detector-implementation correctness methodology, the harder "stress scenario," and shadow pilot adapter -- and what each does and does not prove.
 - [`docs/deployment_ops.md`](file:///docs/deployment_ops.md): Air-gapped deployment, signed rule-pack updates, and backup procedures.
 - [`docs/ps_traceability.md`](file:///docs/ps_traceability.md): PS SIH26157 functional-requirement-to-component traceability matrix.
 - [`docs/slides_outline.md`](file:///docs/slides_outline.md): 5-slide executive presentation outline.
 - [`docs/demo_script.md`](file:///docs/demo_script.md): 2-minute live examiner demonstration script.
+- [`EVIDENCE.md`](EVIDENCE.md): What was changed and measured in the feasibility pass, with commands, results, open items and ratings.
+- [`docs/validation_summary.md`](docs/validation_summary.md): What was tested, that it is all synthetic, what the numbers do and do not prove.
+- [`docs/validation_hard_report.md`](docs/validation_hard_report.md): Hard set: other seeds, lower volumes, stress under 20 seeds (`python scripts/validate_hard.py`).
+- [`docs/benchmarks.md`](docs/benchmarks.md): Measured ingest, assessment, page-load times and peak memory up to 5,000,000 alerts.
+- [`docs/connectors.md`](docs/connectors.md): Splunk ES, ServiceNow SIR and TheHive 5 exports: what maps, what does not, which rules each supports.
+- [`docs/legal_traceability.md`](docs/legal_traceability.md): Problem-statement requirements to component and test; statutory context and what needs legal review.
 - [`docs/validation_report.md`](file:///docs/validation_report.md): Output of the detector-implementation correctness run (`satsa validate`).
 - [`docs/validation_stress_report.md`](file:///docs/validation_stress_report.md): Output of the harder stress-scenario run (`satsa validate-stress`).
