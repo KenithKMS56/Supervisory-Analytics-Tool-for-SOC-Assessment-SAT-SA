@@ -53,7 +53,7 @@ from satsa.security import (
     safe_archive_member,
     safe_join,
 )
-from satsa.store.duckdb import DuckDBStore
+from satsa.store.duckdb import DuckDBStore, analytics_cache
 from satsa.store.sqlite import SQLiteStore
 from satsa.synth.generator import SyntheticDataGenerator
 
@@ -184,11 +184,29 @@ def session_cookie_secure() -> bool:
     return os.environ.get("SATSA_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
 
 
+def get_sqlite_store() -> SQLiteStore:
+    """State store only, for the many requests that never touch the analytics tables."""
+    return SQLiteStore("data/satsa.db")
+
+
 def get_stores() -> tuple[DuckDBStore, SQLiteStore]:
+    """Stores for a request that only reads.
+
+    The analytics store is a view on the process-wide cache (satsa.store.duckdb.AnalyticsCache):
+    the Parquet tables are loaded once and reused until a new assessment run completes or the
+    stored data changes, instead of being re-read on every request.
+    """
+    sqlite_store = SQLiteStore("data/satsa.db")
+    row = sqlite_store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    return analytics_cache.view("data", row["run_id"] if row else None), sqlite_store
+
+
+def get_write_stores() -> tuple[DuckDBStore, SQLiteStore]:
+    """Stores for a request that ingests, deletes or re-assesses: a private analytics store,
+    loaded fresh. What it writes changes the Parquet fingerprint, which retires the read cache."""
     duckdb_store = DuckDBStore("data")
     duckdb_store.load_all_tables()
-    sqlite_store = SQLiteStore("data/satsa.db")
-    return duckdb_store, sqlite_store
+    return duckdb_store, SQLiteStore("data/satsa.db")
 
 
 def _build_real_trend_series(
@@ -306,7 +324,7 @@ async def handle_login(
         status_code=303,
     )
 
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     actor = uname or "unknown"
     if sqlite_store.count_recent_login_failures(actor, LOGIN_LOCKOUT_MINUTES) >= LOGIN_MAX_FAILURES:
         # Rejected even if the passphrase is correct; not counted as a new failure,
@@ -423,7 +441,7 @@ async def handle_change_password(
             status_code=400,
         )
 
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     try:
         username = identity.username
         if sqlite_store.count_recent_login_failures(username, LOGIN_LOCKOUT_MINUTES) >= LOGIN_MAX_FAILURES:
@@ -454,7 +472,7 @@ async def handle_change_password(
 async def handle_logout(request: Request) -> Response:
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
-        _, sqlite_store = get_stores()
+        sqlite_store = get_sqlite_store()
         session = sqlite_store.get_session(token)
         sqlite_store.delete_session(token)
         if session:
@@ -479,7 +497,7 @@ async def api_session_status(request: Request) -> JSONResponse:
     if not token:
         return JSONResponse({"authenticated": False, "revoked": False})
 
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     try:
         session = sqlite_store.get_session(token)
         if not session:
@@ -881,7 +899,7 @@ def _kpi_reconciliation(duckdb_store: DuckDBStore, entity_id: str) -> list[dict[
 
 @app.get("/finding/{finding_id}", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_finding_detail(request: Request, finding_id: str) -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT * FROM findings WHERE finding_id = ?", (finding_id,))
     f_row = cur.fetchone()
@@ -950,7 +968,7 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
 
 @app.get("/queue", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_review_queue(request: Request) -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("""
         SELECT queue_id, run_id, entity_id, record_type, record_id, severity, score, selection_reason, is_random, examiner_status
@@ -970,7 +988,7 @@ async def view_review_queue(request: Request) -> Response:
 
 @app.get("/dq", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_dq_coverage(request: Request) -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT * FROM dq_issues ORDER BY count DESC")
     dq_issues = [
@@ -1007,7 +1025,7 @@ async def view_dq_coverage(request: Request) -> Response:
 @app.get("/audit", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 @app.get("/runs", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_runs_audit(request: Request) -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT * FROM runs ORDER BY created_at DESC")
     runs = [dict(r) for r in cur.fetchall()]
@@ -1040,7 +1058,7 @@ SHADOW_MAX_BYTES = 5 * 1024 * 1024
 
 @app.get("/shadow-pilot", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_shadow_pilot(request: Request, message: str = "") -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     row = sqlite_store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
     history = sqlite_store.list_shadow_results(limit=20)
     sqlite_store.close()
@@ -1083,7 +1101,7 @@ def handle_shadow_pilot(
         return done(f"Error: workpaper is missing column(s): {', '.join(sorted(missing))}.")
 
     source_name = Path((workpaper.filename or "workpaper.csv").replace("\\", "/")).name
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     try:
         row = sqlite_store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
         if row is None:
@@ -1127,7 +1145,7 @@ def _pct_or_na(value: float | None) -> str:
 
 @app.get("/api/v1/runs", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_list_runs() -> list[dict[str, Any]]:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT * FROM runs ORDER BY created_at DESC")
     rows = [dict(r) for r in cur.fetchall()]
@@ -1168,7 +1186,7 @@ async def api_list_entities() -> list[dict[str, Any]]:
 
 @app.get("/api/v1/findings", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_list_findings(entity_id: str | None = None) -> list[dict[str, Any]]:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     if entity_id:
         cur.execute("SELECT * FROM findings WHERE entity_id = ? ORDER BY score DESC", (entity_id,))
@@ -1181,7 +1199,7 @@ async def api_list_findings(entity_id: str | None = None) -> list[dict[str, Any]
 
 @app.get("/api/v1/queue", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_get_queue(entity_id: str | None = None) -> list[dict[str, Any]]:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     if entity_id:
         cur.execute(
@@ -1201,7 +1219,7 @@ async def api_submit_feedback(
     notes: Annotated[str, Form()] = "",
     identity: Identity = Depends(require_role(*REVIEW_ROLES)),
 ) -> RedirectResponse:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     import hashlib
 
     examiner_id = identity.username
@@ -1222,7 +1240,7 @@ async def api_submit_feedback(
 
 @app.get("/api/v1/audit/verify", dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def api_verify_audit() -> dict[str, Any]:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     ok, msg = sqlite_store.verify_audit_chain()
     sqlite_store.close()
     return {"verified": ok, "message": msg}
@@ -1230,7 +1248,7 @@ async def api_verify_audit() -> dict[str, Any]:
 
 @app.get("/api/v1/export/queue.csv", dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def api_export_queue_csv() -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT * FROM review_queue ORDER BY score DESC")
     rows = cur.fetchall()
@@ -1416,7 +1434,7 @@ def handle_add_entity(
     elif not resolved_sector:
         resolved_sector = "General Infrastructure"
 
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
 
     # 1. Insert into entity table and parquet
     ent_df = pl.DataFrame(
@@ -1503,7 +1521,7 @@ async def handle_delete_entity(
 ) -> Response:
     """Permanently delete an entity, its data partitions, and recalculate portfolio."""
     clean_id = require_valid_entity_id(entity_id.strip().upper())
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
 
     # 1. Delete from SQLite
     cur = sqlite_store.conn.cursor()
@@ -1630,7 +1648,7 @@ def handle_upload(
         return RedirectResponse(
             url="/upload?message=Error:+invalid+target+entity+ID", status_code=303
         )
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
     pipeline = IngestionPipeline(duckdb_store, sqlite_store)
 
     try:
@@ -1725,7 +1743,7 @@ def handle_trigger_demo(
     chart has real, non-fabricated historical data to plot immediately
     after the demo re-seed.
     """
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
     sqlite_store.record_live_event(
         "ASSESSMENT_STARTED",
         actor=identity.username,
@@ -1875,7 +1893,7 @@ async def handle_blind_review_submit(
     identity: Identity = Depends(require_role(*REVIEW_ROLES)),
 ) -> Response:
     require_valid_entity_id(entity_id)
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1")
     run_row = cur.fetchone()
@@ -2129,7 +2147,7 @@ def _tunable_param_rows(rules_cfg: dict[str, Any]) -> list[dict[str, Any]]:
 @app.get("/tuning", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_tuning(request: Request, message: str = "") -> Response:
     rules_cfg = _load_rules_config()
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     selected_period = _latest_period(sqlite_store)
     sqlite_store.close()
     config_hash = (
@@ -2172,7 +2190,7 @@ async def handle_tuning_save(
         _write_rules_config(cfg)
 
     # Re-evaluate with the (possibly) updated thresholds, for the selected period
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
     period = _selected_period(form, sqlite_store)
     runner = AssessmentRunner(duckdb_store, sqlite_store)
     res = runner.run_assessment(period=period, actor=identity.username)
@@ -2206,7 +2224,7 @@ async def handle_tuning_preview(
     current_cfg = _load_rules_config()
     proposed_cfg, changes = _apply_tuning_form(form, copy.deepcopy(current_cfg))
 
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
     try:
         period = _selected_period(form, sqlite_store)
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -2342,7 +2360,7 @@ def handle_import_pack(
         signer = RulePackSigner()
     except RulePackKeyError:
         raise HTTPException(status_code=503, detail=RULEPACK_DISABLED_DETAIL) from None
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tmp:
         shutil.copyfileobj(pack_file.file, tmp)
         tmp_path = Path(tmp.name)
@@ -2621,7 +2639,7 @@ async def api_batch_submission(
             if row_eid and not is_valid_entity_id(str(row_eid)):
                 raise HTTPException(status_code=400, detail="Invalid entity_id in submitted rows.")
 
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
     try:
         # Claim the (entity, period) slot first: it is unique, so a concurrent or
         # repeated submission fails here before any data is written.
