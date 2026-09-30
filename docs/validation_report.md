@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-**Run ID:** `RUN-20260930113505344639-37a89505` | **Validation Engine:** Fully Deterministic (No AI/ML)
+**Run ID:** `RUN-20260930155254441026-bb4d8b54` | **Validation Engine:** Fully Deterministic (No AI/ML)
 
 ## 1. Executive Summary & Verification Criteria
 This report documents whether each detection rule's code correctly implements its own specified logic, measured against a synthetic ground-truth dataset across 10 Critical Sector Entities (CSEs) whose injected defects are deliberately built to clearly exceed each rule's threshold. High scores here demonstrate implementation correctness on an unambiguous dataset, not real-world detection accuracy -- see docs/validation.md Section 0 for the harder, more realistic 'stress scenario' (`satsa validate-stress`) and Section 5 for the Shadow-Pilot mode against real historical findings.
@@ -58,23 +58,23 @@ Precision counts every finding whose (entity, rule) pair is not an injected defe
 | `NS08` | 1 | 0 | 0 |
 
 ## 4. Review-Effort Lift Analysis
-Review-effort lift compares the share of defect-affected alerts among the review queue's top alert items with the share among all alerts (what random sampling would find), at budgets of 1%, 2% and 5% of total alerts. Both sides count alert records only. The queue holds 119 alert items (147 items in total); where a budget exceeds that, only the items that exist are counted as examined.
+Review-effort lift compares the share of defect-affected alerts among the review queue's top alert items with the share among all alerts (what random sampling would find), at budgets of 1%, 2% and 5% of total alerts. Both sides count alert records only. The queue holds 129 alert items (167 items in total); where a budget exceeds that, only the items that exist are counted as examined.
 
 | Audit Budget (% of Alerts) | Budget (alerts) | Queue Alerts Examined | Affected Alerts Found | Queue Hit Rate | Random Sampling Rate | Lift Factor |
 |---|---|---|---|---|---|---|
-| **1%** | 162 | 119 (queue exhausted) | 19 | 16.0% | 2.67% | **5.98x** |
-| **2%** | 325 | 119 (queue exhausted) | 19 | 16.0% | 2.67% | **5.98x** |
-| **5%** | 812 | 119 (queue exhausted) | 19 | 16.0% | 2.67% | **5.98x** |
+| **1%** | 162 | 129 (queue exhausted) | 19 | 14.7% | 2.67% | **5.52x** |
+| **2%** | 325 | 129 (queue exhausted) | 19 | 14.7% | 2.67% | **5.52x** |
+| **5%** | 812 | 129 (queue exhausted) | 19 | 14.7% | 2.67% | **5.52x** |
 
 Lift by queue depth (alert items in score order; these depths always fit inside the queue):
 
 | Top queue alerts examined | Affected Alerts Found | Hit Rate | Lift Factor |
 |---|---|---|---|
 | 10 | 4 | 40.0% | **14.98x** |
-| 25 | 14 | 56.0% | **20.97x** |
-| 50 | 17 | 34.0% | **12.73x** |
-| 100 | 19 | 19.0% | **7.12x** |
-| 119 | 19 | 16.0% | **5.98x** |
+| 25 | 13 | 52.0% | **19.47x** |
+| 50 | 16 | 32.0% | **11.98x** |
+| 100 | 18 | 18.0% | **6.74x** |
+| 129 | 19 | 14.7% | **5.52x** |
 
 ## 5. Shadow-Pilot Integration Method
 The `ShadowPilotAdapter` class allows regulatory examiners to validate SAT-SA against historical manual examination findings.
@@ -84,18 +84,18 @@ Examiners provide historical CSV logs with schema `(entity_id, record_id, rule_i
 3. **Workpaper precision**: Of the SAT-SA findings the workpaper adjudicates, the share examiners confirmed. Findings the workpaper does not mention are listed as unadjudicated, not counted as false positives.
 
 ### Shadow-Pilot Results
-Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-30T11:35:26.717497+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
+Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-30T15:53:17.752262+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
 
 | Measure | Value |
 |---|---|
 | Workpaper rows | 122 (47 confirmed) |
 | Historical finding recall | 100.0% (47/47) |
-| Queue record recall | 57.5% (27/47) |
+| Queue record recall | 59.6% (28/47) |
 | Workpaper precision | 100.0% (21/21 adjudicated findings) (95% CI 85–100%) |
 | Findings not adjudicated by the workpaper | 0 |
 | Cleared records still in the review queue | 0/15 |
 
-Per rule, at (entity, rule) level, over 10 assessed entities (rule config hash `d05e7086d1cfafe6`):
+Per rule, at (entity, rule) level, over 10 assessed entities (rule config hash `d647f16de51d3b49`):
 
 | Rule | Recall (reproduced / confirmed) | Precision (confirmed / adjudicated) | Not adjudicated | Fires on |
 |---|---|---|---|---|
@@ -129,7 +129,7 @@ Per rule, at (entity, rule) level, over 10 assessed entities (rule config hash `
 ## 7. Rule Threshold Sensitivity
 Each tunable rule threshold is moved by -20% and +20% on its own, and that rule is re-run on every entity and scored against the ground truth. A changed outcome means an injected defect or a clean entity sits within 20% of that threshold. The synthetic defects were built with the thresholds in hand, so this measures their margin, not real-world robustness.
 
-3 of 64 single-threshold perturbations (±20%) changed that rule's outcome.
+4 of 66 single-threshold perturbations (±20%) changed that rule's outcome.
 
 | Rule | Threshold | Baseline | Tested | Outcome at baseline | Outcome when tested |
 |---|---|---|---|---|---|
@@ -197,5 +197,7 @@ Each tunable rule threshold is moved by -20% and +20% on its own, and that rule 
 | `NS05` | `min_dormant_rules` | 5 | 6 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `NS06` | `min_ghost_assets` | 2 | 1 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `NS06` | `min_ghost_assets` | 2 | 3 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `NS08` | `review_period_months` | 6 | 5 (-20%) | TP 1 / FN 0 / FP 0 | TP 0 / FN 1 / FP 0 (missed CSE-10) **changed** |
+| `NS08` | `review_period_months` | 6 | 7 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 
-Not covered: EG03, NS07, NS08 have no tunable threshold (no `params` in `config/rules.yaml`): EG03 and NS07 are zero-tolerance and NS08 checks the fixed 6-month review period. A rule showing TP 0 / FN 0 has no injected defect in this dataset.
+Not covered: EG03, NS07 have no tunable threshold (no `params` in `config/rules.yaml`): they are zero-tolerance, one unescalated critical true positive or one unreported critical incident is a finding. A rule showing TP 0 / FN 0 has no injected defect in this dataset.

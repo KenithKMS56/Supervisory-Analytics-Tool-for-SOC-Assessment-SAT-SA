@@ -46,14 +46,12 @@ All figures below reflect **actual, reproducible measurements** recorded using S
 
 ## 3. Scaling to 5 Million Alerts
 
-The supervisory requirement specifies completing a full 6-month assessment across 10 CSEs with **5,000,000 alerts in under 10 minutes** on an 8-core / 32 GB RAM server.
+The problem statement asks for "analysis of large datasets spanning multiple entities and time periods" and gives no figure. 5,000,000 alerts is this project's own target. It has now been **measured**, not extrapolated: see `docs/benchmarks.md`.
 
 ### 3.1 Scaling Analysis & Linear Columnar Complexity
 1. **Partition Pruning:** Alerts are partitioned physically by `entity_id` and indexed by timestamp. Each rule query scans only relevant column projections (e.g. `[entity_id, alert_id, severity_final, created_at, closed_at]`), reducing I/O bandwidth by >85% compared to full-row scans.
 2. **Columnar Vectorization:** As proven in the 1M alert benchmark, DuckDB executes multi-threaded SIMD vectorized scans at over **10.6 million rows/second**.
-3. **Measured Assessment Time:** At an end-to-end throughput of 8,231 alerts/sec, 5,000,000 alerts execute in:
-   $$\text{Runtime} = \frac{5,000,000}{8,231} \approx 607 \text{ seconds} \approx \mathbf{10.1 \text{ minutes}}$$
-   *On an 8-core host with multi-threaded DuckDB threads enabled (`SET threads=8`), columnar execution scales sub-linearly, comfortably completing full evaluation in under 6 to 8 minutes.*
+3. **Measured at 5,000,000 alerts** (50 entities x 100,000 alerts, 21.4M rows across all tables; 4-core / 8-thread laptop CPU, 23.7 GB RAM; `docs/benchmarks.md`): ingest 603 s with a 13.2 GB peak, assessment 310 s with a 3.3 GB peak, about 15 minutes end to end. An earlier version of this section divided 5,000,000 by the throughput of a 5,650-alert run and promised 10.1 minutes, "comfortably" 6 to 8 on 8 cores. That was an extrapolation and it was optimistic: assessment time grows faster than linearly with volume (16 s at 0.5M alerts, 105 s at 2.5M, 310 s at 5M), and DuckDB is pinned to one thread for reproducibility, so more cores do not shorten it.
 
 ---
 

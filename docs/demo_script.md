@@ -73,4 +73,4 @@ Open your browser to `http://127.0.0.1:8000`.
    ```
 2. **Presenter Script:**
    > *"Finally, supervisory rules are fully calibratable and signed. In the Rule Studio, supervisors can adjust thresholds and export signed, versioned rule packs with HMAC-SHA256 integrity.
-   > Running 'satsa audit verify' confirms the entire supervisory audit chain is intact and untampered. Fully offline, zero AI/ML, and strictly grounded under Section 70A of the IT Act, 2000."*
+   > Running 'satsa audit verify' confirms the entire supervisory audit chain is intact and untampered. Fully offline, zero AI/ML, and every output is an indicator for a human examiner, not a compliance determination."*
