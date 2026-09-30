@@ -1,11 +1,15 @@
 """Container entrypoint for SAT-SA + NCIIPC Administration Platform.
 
 Coordinates concurrent startup of:
-- NCIIPC Administration Portal (http://0.0.0.0:8000)
-- SAT-SA Supervisory Tool (http://0.0.0.0:8001)
+- NCIIPC Administration Portal (port 8000)
+- SAT-SA Supervisory Tool (port 8001)
 
 Both portals share the exact same underlying SQLite database (in WAL mode),
 DuckDB Parquet storage, and the admin activity feed.
+
+Bind address and TLS come from the environment (see satsa.serving): SATSA_HOST
+(default 127.0.0.1) and SATSA_TLS_CERT + SATSA_TLS_KEY (default: plain HTTP).
+`python entrypoint.py --healthcheck` probes both portals with the same settings.
 """
 
 from __future__ import annotations
@@ -18,7 +22,45 @@ import time
 from pathlib import Path
 
 
+ADMIN_PORT = 8000
+SATSA_PORT = 8001
+
+
+def healthcheck() -> int:
+    """Exit status 0 when both portals answer /splash, over whichever scheme is configured."""
+    import ssl
+    import urllib.request
+
+    from satsa.serving import serving_config
+
+    config = serving_config()
+    # The probe runs inside the container against its own loopback; the self-signed
+    # certificate is not what is being checked here, only that the portal answers.
+    context = ssl._create_unverified_context() if config.tls else None
+    try:
+        for port in (ADMIN_PORT, SATSA_PORT):
+            url = f"{config.scheme}://127.0.0.1:{port}/splash"
+            with urllib.request.urlopen(url, timeout=3, context=context) as resp:
+                if resp.status != 200:
+                    return 1
+    except OSError as exc:
+        print(f"[!] Healthcheck failed: {exc}")
+        return 1
+    return 0
+
+
 def main() -> None:
+    from satsa.serving import ServingConfigError, exposure_warning, serving_config
+
+    if "--healthcheck" in sys.argv[1:]:
+        sys.exit(healthcheck())
+
+    try:
+        config = serving_config()
+    except ServingConfigError as exc:
+        print(f"[!] Refusing to start: {exc}")
+        sys.exit(2)
+
     print("============================================================")
     print("      SAT-SA SUPERVISORY & NCIIPC ADMINISTRATION PLATFORM   ")
     print("============================================================")
@@ -35,6 +77,9 @@ def main() -> None:
         store = SQLiteStore("data/satsa.db")
         store.seed_default_organisations_and_cses()
         store.seed_default_admin()
+        for username in store.flag_unrotated_default_accounts():
+            print(f"[!] Account '{username}' still uses its published default passphrase: "
+                  "a new one must be set at first login.")
 
         # Check if database has baseline assessment runs; if completely empty, run baseline seed
         cur = store.conn.cursor()
@@ -70,38 +115,23 @@ def main() -> None:
     except Exception as exc:
         print(f"[!] Storage initialization warning: {exc}")
 
-    # 2. Launch NCIIPC Administration Portal on 0.0.0.0:8000
-    print("[+] Launching NCIIPC Admin Portal on http://0.0.0.0:8000...")
+    warning = exposure_warning(config)
+    if warning:
+        print(f"[!] {warning}")
+    child_env = config.child_env(os.environ)
+
+    # 2. Launch NCIIPC Administration Portal
+    print(f"[+] Launching NCIIPC Admin Portal on {config.scheme}://{config.host}:{ADMIN_PORT}...")
     admin_proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "satsa.admin.app:app",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "8000",
-            "--log-level",
-            "info",
-        ]
+        [sys.executable, "-m", "uvicorn", *config.uvicorn_args("satsa.admin.app:app", ADMIN_PORT)],
+        env=child_env,
     )
 
-    # 3. Launch SAT-SA Supervisory Tool on 0.0.0.0:8001
-    print("[+] Launching SAT-SA Supervisory Tool on http://0.0.0.0:8001...")
+    # 3. Launch SAT-SA Supervisory Tool
+    print(f"[+] Launching SAT-SA Supervisory Tool on {config.scheme}://{config.host}:{SATSA_PORT}...")
     satsa_proc = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "satsa.api:app",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "8001",
-            "--log-level",
-            "info",
-        ]
+        [sys.executable, "-m", "uvicorn", *config.uvicorn_args("satsa.api:app", SATSA_PORT)],
+        env=child_env,
     )
 
     def handle_shutdown(signum, frame):

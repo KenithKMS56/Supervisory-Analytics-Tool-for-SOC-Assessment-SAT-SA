@@ -5,19 +5,28 @@ services:
       dockerfile: Dockerfile
     image: satsa-platform:latest
     container_name: satsa-platform
+    # Published on this machine's loopback only. To accept connections from other machines,
+    # opt in explicitly: SATSA_BIND_ADDRESS=0.0.0.0 (or one specific interface address), and
+    # turn TLS on (below) before you do.
     ports:
-      - "8000:8000"
-      - "8001:8001"
+      - "${SATSA_BIND_ADDRESS:-127.0.0.1}:8000:8000"
+      - "${SATSA_BIND_ADDRESS:-127.0.0.1}:8001:8001"
     volumes:
       - ./data:/app/data
       - ./reports:/app/reports
+      # Certificate and key for optional TLS (python scripts/generate_selfsigned_cert.py).
+      - ./certs:/app/certs:ro
     environment:
+      # Optional TLS: set both, e.g. /app/certs/satsa-cert.pem and /app/certs/satsa-key.pem.
+      # Unset, the portals serve plain HTTP; one without the other refuses to start.
+      SATSA_TLS_CERT: ${SATSA_TLS_CERT:-}
+      SATSA_TLS_KEY: ${SATSA_TLS_KEY:-}
       # Rule-pack signing key (>= 32 chars). Passed through from the host; left unset,
       # rule-pack export/import are disabled (HTTP 503) -- there is no built-in key.
       SATSA_RULEPACK_SECRET: ${SATSA_RULEPACK_SECRET:-}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/splash'); urllib.request.urlopen('http://127.0.0.1:8001/splash')"]
+      test: ["CMD", "python", "/app/entrypoint.py", "--healthcheck"]
       interval: 5s
       timeout: 3s
       retries: 5
