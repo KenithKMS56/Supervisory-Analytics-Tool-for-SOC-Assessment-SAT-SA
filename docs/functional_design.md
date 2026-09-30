@@ -132,7 +132,7 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
   - **Known Limitations:** Data assumptions and boundaries of the detection heuristic.
 
 ### 8. Review Queue (`/queue`)
-- **Stratified Queue Composition:** 70% top-risk items (highest accumulated rule severity) combined with 30% stratified random control samples (partitioned by entity and severity).
+- **Queue Composition:** per entity, records cited by findings (highest accumulated rule score first, up to 70% of the queue size) plus random control samples stratified by severity. Entities with few cited records get a shorter, mostly random queue.
 - **Examiner Feedback Capture:** Examiners can mark each record as `Confirmed Issue`, `Not an Issue / Benign Context`, or `Needs More Data`, alongside explanatory notes.
 - **CSV Export:** One-click download of the complete review queue for field examiners.
 

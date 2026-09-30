@@ -133,3 +133,63 @@ def test_determinism():
         finally:
             sqlite_store.close()
             duckdb_store.close()
+
+
+def _f(rule_id: str, severity: str, score: float, confidence: float = 1.0, domain: str = "Threat Detection") -> Finding:
+    return Finding(
+        finding_id=f"f-{rule_id}", run_id="r", entity_id="E", rule_id=rule_id, rule_version="1.0",
+        domain=domain, level="entity", score=score, confidence=confidence, severity=severity,
+        title="T", rationale="R", examiner_check="C",
+    )
+
+
+def test_band_floor_stops_a_critical_finding_being_labelled_low():
+    """One maximum-score finding in one domain gives an index of ~14: 'Low' on the index
+    alone. The floor lifts the band; the index (and so the ranking) is unchanged."""
+    scorer = ScoringEngine("config/scoring.yaml")
+    findings = [_f("NS01", "critical", 95.0)]
+    score = scorer.compute_entity_score("E", "r", scorer.compute_domain_scores("E", "r", findings), findings)
+    assert score.risk_index < 25 and scorer.classify_risk_band(score.risk_index) == "Low Supervisory Concern"
+    assert score.risk_band == "High Supervisory Concern"
+
+    high = [_f("NS03", "high", 85.0)]
+    assert scorer.compute_entity_score("E", "r", scorer.compute_domain_scores("E", "r", high), high).risk_band == (
+        "Moderate Supervisory Concern"
+    )
+
+
+def test_band_floor_ignores_low_confidence_and_never_lowers_a_band():
+    scorer = ScoringEngine("config/scoring.yaml")
+    weak = [_f("EG12", "critical", 10.0, confidence=0.2)]
+    assert scorer.compute_entity_score("E", "r", scorer.compute_domain_scores("E", "r", weak), weak).risk_band == (
+        "Low Supervisory Concern"
+    )
+    assert scorer.apply_band_floor("Critical Supervisory Concern", [_f("NS03", "high", 85.0)]) == (
+        "Critical Supervisory Concern"
+    )
+    assert scorer.apply_band_floor("Low Supervisory Concern", []) == "Low Supervisory Concern"
+
+
+def test_band_tier_maps_every_configured_band():
+    from satsa.scoring.scorer import band_tier
+
+    scorer = ScoringEngine("config/scoring.yaml")
+    tiers = {info["label"]: band_tier(info["label"]) for info in scorer.risk_bands.values()}
+    assert tiers == {
+        "Low Supervisory Concern": "low",
+        "Moderate Supervisory Concern": "moderate",
+        "High Supervisory Concern": "critical",
+        "Critical Supervisory Concern": "critical",
+    }
+
+
+def test_review_queue_settings_come_from_config(tmp_path):
+    """review_queue in scoring.yaml used to be read by nothing (the runner hardcoded 30)."""
+    import yaml
+
+    cfg = yaml.safe_load(Path("config/scoring.yaml").read_text(encoding="utf-8"))
+    cfg["review_queue"] = {"top_risk_ratio": 0.5, "queue_size_per_entity": 12, "random_seed": 7}
+    path = tmp_path / "scoring.yaml"
+    path.write_text(yaml.dump(cfg), encoding="utf-8")
+    runner = AssessmentRunner(DuckDBStore(tmp_path / "d"), SQLiteStore(tmp_path / "s.db"), scoring_config_path=path)
+    assert (runner.prioritiser.top_ratio, runner.prioritiser.seed, runner.queue_size_per_entity) == (0.5, 7, 12)
