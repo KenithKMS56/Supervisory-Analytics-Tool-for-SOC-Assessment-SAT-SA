@@ -34,7 +34,7 @@ All figures below reflect **actual, reproducible measurements** recorded using S
 | **1,000,000 alerts** | **0.0941 seconds** | **10,623,549 rows / sec** |
 
 ### 2.2 End-to-End Supervisory Assessment Runtime
-*Workload (measured on an earlier, smaller 5,650-alert version of the synthetic dataset; the current default generator produces ~16,200 alerts, so re-run `satsa benchmark` for current timings): Ingested canonical dataset across 10 CSEs (5,650 alerts, 1,000 assets, 6 months daily telemetry), executing all 20 rules, computing robust statistics, SPC, probabilistic Noisy-OR domain scoring, generating finding cards, and ranking review queues:*
+*Workload (measured on an earlier, smaller 5,650-alert version of the synthetic dataset; the current default generator produces ~16,200 alerts, so re-run `satsa benchmark` for current timings): Ingested canonical dataset across 10 CSEs (5,650 alerts, 1,000 assets, 6 months daily telemetry), executing all 20 rules, probabilistic Noisy-OR domain scoring, generating finding cards, and ranking review queues:*
 
 - **Dataset Alert Count:** 5,650 alerts
 - **Total Execution Elapsed Time:** **0.686 seconds**

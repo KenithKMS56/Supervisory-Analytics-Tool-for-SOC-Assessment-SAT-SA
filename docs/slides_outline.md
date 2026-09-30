@@ -32,14 +32,14 @@
 ---
 
 ## Slide 4: Explainability, Scoring & Validation Results
-- **Calibrated Scoring:** Classical robust statistics (Median, MAD, IQR, CUSUM/EWMA) benchmark entities against sector peers. Probabilistic Noisy-OR aggregates scores into 8 capability domains.
+- **Scoring:** 20 deterministic rules with configurable thresholds; EG01, EG11, NS02 and NS03 compare each entity with its peer cohort (sector/size, with fallback); NS03 and EG11 flag robust z-score outliers (median/MAD) against that cohort. Probabilistic Noisy-OR aggregates scores into 8 capability domains. (CUSUM/EWMA are implemented but not used by any rule.)
 - **Review Queue Prioritisation:** 70% top-risk alerts + 30% stratified random controls to measure lift and catch blindspots.
 - **Synthetic Ground-Truth Correctness Check** (not a real-world accuracy benchmark; see docs/validation.md §0):
   - **Entity Rank Precision@7:** **100.0%** (all 7 injected entities ranked in top 7; clean entities at bottom).
   - **Injected Defect Recall / Precision:** **100.0%** (21/21 defects found; 21 of 21 findings correct, every finding counted).
-  - **Review-Effort Lift:** **5.5x** the defect-affected alert rate of random sampling across the whole 109-alert review queue, on the synthetic dataset.
+  - **Review-Effort Lift:** the top 25 queue alerts are **19x** as likely to be defect-affected as random alerts (5.5x across the whole 109-alert queue), on the synthetic dataset.
   - **Ranking Stability:** Spearman $\rho = \mathbf{1.0000}$ under $\pm 20\%$ domain-weight perturbations.
-  - **Threshold Sensitivity:** every tunable threshold moved ±20%; EG05 and EG11 sit close to normal background and need calibration on real data.
+  - **Threshold Sensitivity:** every tunable threshold moved ±20%; no move creates a false alarm on a clean entity.
   - **Limits:** all synthetic; real accuracy needs a shadow pilot on historical examiner workpapers.
 
 ---

@@ -58,10 +58,14 @@ rules:
     min_sample: 10
     severity_weight: 70
     description: At least min_unaddressed_pairs (asset, rule) pairs that each fired >= min_repeat_count
-      times, were always closed false-positive/benign, and have no linked remediation ticket.
+      times, were always closed false-positive/benign, and have no linked remediation ticket. The repeat
+      threshold is raised to the entity's chance level when that is higher (the count that fewer than
+      max_chance_pairs pairs would reach by coincidence given its alert volume and asset x rule space),
+      up to twice min_repeat_count.
     params:
       min_repeat_count: 8
       min_unaddressed_pairs: 2
+      max_chance_pairs: 0.5
   EG06:
     name: Metric Gaming
     version: 1.0.0
@@ -128,10 +132,14 @@ rules:
     level: entity
     min_sample: 200
     severity_weight: 80
-    description: 'Abnormal disposition distribution: with at least min_alert_volume alerts, a false-positive/benign
-      rate above max_fp_rate or zero true positives.'
+    description: 'Abnormal disposition distribution, given at least min_alert_volume alerts: zero true positives,
+      or a false-positive/benign rate with a robust z-score of at least max_robust_z against the peer cohort
+      (spread floored at min_spread). With fewer than 3 comparable peers, the rate is compared with max_fp_rate
+      instead.'
     params:
       min_alert_volume: 200
+      max_robust_z: 3.5
+      min_spread: 0.01
       max_fp_rate: 0.98
   EG12:
     name: Workflow Non-Conformance
@@ -163,10 +171,10 @@ rules:
     level: entity
     min_sample: 30
     severity_weight: 85
-    description: Alert categories reported by at least min_peer_entity_count entities in the portfolio
-      are completely absent for this entity.
+    description: Alert categories reported by at least min_peer_share of the entity's peer cohort (config/peers.yaml;
+      every other entity when no cohort is resolved) are completely absent for this entity.
     params:
-      min_peer_entity_count: 6
+      min_peer_share: 0.6
   NS03:
     name: Unexpectedly Low or Flat Activity
     version: 1.0.0
@@ -174,11 +182,15 @@ rules:
     level: entity
     min_sample: 30
     severity_weight: 85
-    description: Night-time (20:00-08:00) share of alerts below max_night_share, given at least min_alert_volume
-      alerts, indicating possible monitoring blackouts outside business hours.
+    description: Given at least min_alert_volume alerts, a night-time (20:00-08:00) share of alerts with a robust
+      z-score of at most -max_robust_z against the peer cohort (spread floored at min_spread), indicating
+      possible monitoring blackouts outside business hours. With fewer than 3 comparable peers, the share is
+      compared with the absolute max_night_share instead.
     params:
       max_night_share: 0.03
       min_alert_volume: 100
+      max_robust_z: 3.5
+      min_spread: 0.02
   NS04:
     name: Missing Records
     version: 1.0.0

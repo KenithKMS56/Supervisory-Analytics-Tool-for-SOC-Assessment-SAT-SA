@@ -52,30 +52,32 @@ SAT-SA evaluates each periodic CSE submission against **12 Execution Gaps** (mal
 ### Execution Gaps (EG01–EG12)
 | ID | Rule Name | Operational Defect Identified | Severity |
 | :--- | :--- | :--- | :--- |
-| **EG01** | Fast Closures Without Investigation | Human analyst closes alert in $<120$s without viewing logs or running triage. | Critical |
-| **EG02** | Triage Without Action | Alert acknowledged but untouched past contractual/supervisory SLA limit. | High |
-| **EG03** | Missing Escalations | Critical/High True Positive alert resolved without opening a formal case. | Critical |
-| **EG04** | Template / Low-Effort Closures | $>40\%$ identical closure comment hashes or remarks $<15$ characters. | Medium |
-| **EG05** | Repeat Alerts Without Root Cause | $\ge 5$ identical alerts within 30 days without detection engineering tuning. | Medium |
-| **EG06** | Metric Gaming & SLA Hugging | Closures unnaturally clustered in the final 5% of SLA window or at shift handoffs. | High |
-| **EG07** | Analyst Implausibility | Analyst exceeds physiological limit ($>25$ complex investigations/hour). | High |
-| **EG08** | Escalation Without Follow-Through| Formal escalation tickets left unacknowledged or uninvestigated by tier-2. | High |
-| **EG09** | Backlog & Aging Accumulation | Open cases aging past $3\times$ target SLA or dormant for $\ge 14$ consecutive days. | Medium |
-| **EG10** | KPI Reconciliation Gap | $>10\%$ discrepancy between self-declared KPI reports and raw audit timestamps. | Critical |
-| **EG11** | Disposition Extremes | Pathological outcomes ($>98\%$ false positive rate or 0 true positives over 6 months). | High |
-| **EG12** | Workflow Non-Conformance | Skipped triage stages or reversed status timestamps (resolved before open). | High |
+| **EG01** | Fast Closures Without Investigation | $>15\%$ of human High/Critical closures faster than the peer cohort's 5th-percentile close time with $\le 1$ workflow event. | Critical |
+| **EG02** | Acknowledged Without Investigation | $>15\%$ of human closures with no investigation event and a closure comment $<25$ characters. | High |
+| **EG03** | Missing Escalations | Any Critical True Positive alert with no escalation record (zero tolerance). | Critical |
+| **EG04** | Template / Low-Effort Closures | $>25\%$ of human closures in a comment-hash group repeated $\ge 10$ times. | Medium |
+| **EG05** | Repeat Alerts Without Root Cause | $\ge 2$ (asset, rule) pairs firing $\ge 8$ times (more where the entity's volume makes 8 repeats likely by chance), always closed benign, with no remediation ticket. | Medium |
+| **EG06** | Metric Gaming & SLA Hugging | $\ge 8$ closures by one analyst in one minute, or $>25\%$ of closures in the last 10% of the SLA window. | High |
+| **EG07** | Analyst Implausibility | One analyst closing $\ge 30$ alerts in a single hour. | High |
+| **EG08** | Escalation Without Follow-Through| $\ge 3$ escalations never acknowledged by Tier-2. | High |
+| **EG09** | Backlog & Aging Accumulation | $\ge 3$ cases still open more than 14 days after opening. | Medium |
+| **EG10** | KPI Reconciliation Gap | Empirical High/Critical MTTR $>60\%$ above the declared MTTR for the same severities. | Critical |
+| **EG11** | Disposition Extremes | 0 true positives, or a false positive/benign rate $\ge 3.5$ robust standard deviations above the peer cohort (fixed $>98\%$ if under 3 comparable peers), given $\ge 200$ alerts. | High |
+| **EG12** | Workflow Non-Conformance | $\ge 2$ Critical cases with no containment stage. | High |
 
 ### Negative Space Inferences (NS01–NS08)
 | ID | Rule Name | Operational Defect Identified | Severity |
 | :--- | :--- | :--- | :--- |
-| **NS01** | Silent Critical Assets | Crown-jewel production servers with $\ge 3$ consecutive days of zero alert activity. | Critical |
-| **NS02** | Missing Alert Categories | Sector-prevalent MITRE ATT&CK tactics completely absent from the entity's submitted alerts. | High |
-| **NS03** | Unexpectedly Low / Flat Activity| CUSUM volume collapse or total absence of weekend/off-hours alert generation. | High |
-| **NS04** | Missing Sequence Gaps | Non-contiguous alert/case ID numbers indicating withheld or purged records. | High |
-| **NS05** | Inactive Rule Coverage | Mandated detection signatures enabled in SIEM that have never triggered in 180 days. | Medium |
-| **NS06** | Inventory Reconciliation Gap | Discrepancy between declared asset registers and the assets that actually emit log events or alerts. | High |
-| **NS07** | Absent Regulatory Reporting | Critical True Positive incidents resolved without statutory regulatory notification. | Critical |
-| **NS08** | Submission Completeness Deficit | High null-rates ($>5\%$) or unparseable timestamps indicating compromised evidence. | High |
+| **NS01** | Silent Critical Assets | Monitored assets of criticality $\ge 3$ with $\ge 3$ days (not necessarily consecutive) of zero log events. | Critical |
+| **NS02** | Missing Alert Categories | Alert categories reported by $\ge 60\%$ of the peer cohort but completely absent from the entity's alerts. | High |
+| **NS03** | Unexpectedly Low / Flat Activity| Night-time (20:00–08:00) share of alerts $\ge 3.5$ robust standard deviations below the peer cohort (fixed $<3\%$ if under 3 comparable peers), given $\ge 100$ alerts. | High |
+| **NS04** | Missing Records | $\ge 3$ High/Critical True Positive alerts with no linked case. (ID sequence gaps are an ingest data-quality check.) | High |
+| **NS05** | Inactive Rule Coverage | $>40\%$ (and $\ge 5$) of enabled detection rules never fired in the period. | Medium |
+| **NS06** | Inventory Reconciliation Gap | $\ge 2$ inventory assets with no log events and no alerts (ghost assets). | High |
+| **NS07** | Absent Regulatory Reporting | Any Critical case with no external (NCIIPC/CERT-In) report record; presence only, timeliness not checked. | Critical |
+| **NS08** | Submission Completeness Deficit | Alerts cover fewer than the 6 months of the review period. | High |
+
+All thresholds except EG03, NS07 and NS08 are configurable in `config/rules.yaml` and on the Tuning page; the values above are the defaults. Full logic: [`docs/analytics_methodology.md`](docs/analytics_methodology.md) Section 3.
 
 ### Cross-Entity Systemic Correlation (beyond the 20 per-entity rules)
 Unlike EG01-EG12 and NS01-NS08, which each evaluate one entity in isolation, `satsa.rules.systemic`
@@ -230,8 +232,9 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 > ambiguous dual-rule case and a noisy clean entity is run via `satsa validate-stress` -- see
 > [`docs/validation.md`](docs/validation.md) Section 2A. Every one of the 20 rules has at least
 > one injected defect (enforced by a test). Every tunable threshold (17 rules) is also moved ±20%
-> to measure margin: EG05 and EG11 turn clean entities into findings under a modest move and are
-> the first calibration candidates for real data (Section 4A). Neither scenario is a substitute for the Shadow-Pilot mode
+> to measure margin: no such move now turns a clean entity into a finding. NS03 and EG11 judge
+> entities by robust z-score against their peer cohort, and EG05's repeat threshold rises to each
+> entity's chance level (Section 4A). Neither scenario is a substitute for the Shadow-Pilot mode
 > (Section 5) against real historical examiner findings, which has not yet been run against real
 > NCIIPC/CSE data.
 >
@@ -248,11 +251,11 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 | **Entity Rank Precision@7** (primary, unambiguous dataset) | **100.0%** (top-7 entities ranked accurately) | $\ge 90.0\%$ | Meets target |
 | **Defect Precision** (primary, unambiguous dataset; every finding counted) | **100.0%** (21 of 21 findings; 0 false positives on any entity) | $\ge 85.0\%$ | Meets target |
 | **Stress Scenario Defect Precision** (borderline/ambiguous/noisy, synthetic) | **100.0%** (3 of 3 findings) | n/a -- reported for transparency | Synthetic; thresholds known when built |
-| **Review-Effort Lift** (primary dataset) | **5.50x** (the whole 109-alert queue vs random; every budget exceeds the queue, so 1%, 2% and 5% are identical). *Recomputed on a like-for-like alert basis -- see docs/validation.md Section 3.* | $\ge 5.00x$ | Meets target; not a budget curve |
+| **Review-Effort Lift** (primary dataset) | **19.5x** for the top 25 queue alerts, **10.5x** for the top 50, **5.50x** for the whole 109-alert queue, vs random sampling. (Every 1%/2%/5% budget exceeds the queue, so those all equal 5.50x.) *See docs/validation.md Section 3.* | $\ge 5.00x$ | Meets target |
 | **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations) | $\ge 0.8500$ | Meets target |
-| **Rule Threshold Sensitivity** (primary dataset) | **5 of 54** single-threshold ±20% moves change an outcome: EG05 and EG11 raise false alarms on clean entities; EG05, EG07 and NS05 lose an injected defect built just over its threshold | n/a -- reported for transparency | EG05/EG11 need calibration on real data |
+| **Rule Threshold Sensitivity** (primary dataset) | **3 of 64** single-threshold ±20% moves change an outcome, all injected defects built just over their threshold (EG05 pairs, EG07, NS05). None creates a false alarm on a clean entity. (EG05's and EG11's fixed thresholds did, before the chance floor and the peer robust z-score.) | n/a -- reported for transparency | Margins are synthetic; real calibration needs the pilot |
 | **DuckDB Scan Throughput** | **10,623,549 rows/second** | $\ge 1,000,000$ | Measured, exceeds target |
-| **Automated Test Suite** | **716 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.13 from freshly generated data; CI runs 3.11 and 3.13 | 100% passing | Verified locally on 3.13 |
+| **Automated Test Suite** | **724 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.13 from freshly generated data; CI runs 3.11 and 3.13 | 100% passing | Verified locally on 3.13 |
 
 ---
 
@@ -508,6 +511,7 @@ satsa/
 
 - [`docs/architecture.md`](file:///docs/architecture.md): 2-page system architecture with Mermaid diagrams, data flow, and security model.
 - [`docs/functional_design.md`](file:///docs/functional_design.md): Functional design, RBAC user roles, and examiner workflows.
+- [`docs/shadow_pilot_runbook.md`](docs/shadow_pilot_runbook.md): Step-by-step procedure for measuring real-world accuracy against historical examiner workpapers.
 - [`docs/analytics_methodology.md`](file:///docs/analytics_methodology.md): Mathematical specifications for all 20 rules plus the cross-entity systemic correlation detector, robust statistics, and SPC.
 - [`docs/data_requirements.md`](file:///docs/data_requirements.md): Canonical schemas, ingestion sources (CSV/JSON/DB/API), and per-rule data dependency matrix.
 - [`docs/infrastructure.md`](file:///docs/infrastructure.md): Hardware sizing, measured benchmarks, and 5M alerts scaling analysis.

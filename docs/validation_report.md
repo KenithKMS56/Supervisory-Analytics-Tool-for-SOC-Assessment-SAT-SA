@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-**Run ID:** `RUN-20260929190127377530-7e1661fd` | **Validation Engine:** Fully Deterministic (No AI/ML)
+**Run ID:** `RUN-20260930053754723196-a9786774` | **Validation Engine:** Fully Deterministic (No AI/ML)
 
 ## 1. Executive Summary & Verification Criteria
 This report documents whether each detection rule's code correctly implements its own specified logic, measured against a synthetic ground-truth dataset across 10 Critical Sector Entities (CSEs) whose injected defects are deliberately built to clearly exceed each rule's threshold. High scores here demonstrate implementation correctness on an unambiguous dataset, not real-world detection accuracy -- see docs/validation.md Section 0 for the harder, more realistic 'stress scenario' (`satsa validate-stress`) and Section 5 for the Shadow-Pilot mode against real historical findings.
@@ -17,7 +17,7 @@ Precision counts every finding whose (entity, rule) pair is not an injected defe
 | **Overall Defect Precision** | 100.0% (21/21) | ≥ 85% | PASS |
 | **Overall Defect F1 Score** | 1.0000 | ≥ 0.85 | PASS |
 | **Ranking Stability (±20% domain weights)** | Spearman ρ = 1.0000 / 1.0000 | ≥ 0.85 | PASS |
-| **Cryptographic Audit Log Integrity** | Audit chain verified successfully (106 entries intact). | intact | PASS |
+| **Cryptographic Audit Log Integrity** | Audit chain verified successfully (2 entries intact). | intact | PASS |
 
 ## 2. Entity-Level Ranking & Confounder Discrimination
 - **Top-k Ranked Entities (k = injected entity count):** CSE-02, CSE-03, CSE-07, CSE-09, CSE-08, CSE-05, CSE-10
@@ -66,6 +66,16 @@ Review-effort lift compares the share of defect-affected alerts among the review
 | **2%** | 325 | 109 (queue exhausted) | 16 | 14.7% | 2.67% | **5.50x** |
 | **5%** | 812 | 109 (queue exhausted) | 16 | 14.7% | 2.67% | **5.50x** |
 
+Lift by queue depth (alert items in score order; these depths always fit inside the queue):
+
+| Top queue alerts examined | Affected Alerts Found | Hit Rate | Lift Factor |
+|---|---|---|---|
+| 10 | 4 | 40.0% | **14.98x** |
+| 25 | 13 | 52.0% | **19.47x** |
+| 50 | 14 | 28.0% | **10.49x** |
+| 100 | 16 | 16.0% | **5.99x** |
+| 109 | 16 | 14.7% | **5.50x** |
+
 ## 5. Shadow-Pilot Integration Method
 The `ShadowPilotAdapter` class allows regulatory examiners to validate SAT-SA against historical manual examination findings.
 Examiners provide historical CSV logs with schema `(entity_id, record_id, rule_id, label)`. The harness calculates:
@@ -74,16 +84,41 @@ Examiners provide historical CSV logs with schema `(entity_id, record_id, rule_i
 3. **Workpaper precision**: Of the SAT-SA findings the workpaper adjudicates, the share examiners confirmed. Findings the workpaper does not mention are listed as unadjudicated, not counted as false positives.
 
 ### Shadow-Pilot Results
-Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-29T19:01:38.794878+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
+Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-30T05:38:14.008405+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
 
 | Measure | Value |
 |---|---|
 | Workpaper rows | 122 (47 confirmed) |
 | Historical finding recall | 100.0% (47/47) |
-| Queue record recall | 53.2% (25/47) |
-| Workpaper precision | 100.0% (21/21 adjudicated findings) |
+| Queue record recall | 55.3% (26/47) |
+| Workpaper precision | 100.0% (21/21 adjudicated findings) (95% CI 85–100%) |
 | Findings not adjudicated by the workpaper | 0 |
 | Cleared records still in the review queue | 0/15 |
+
+Per rule, at (entity, rule) level, over 10 assessed entities (rule config hash `d05e7086d1cfafe6`):
+
+| Rule | Recall (reproduced / confirmed) | Precision (confirmed / adjudicated) | Not adjudicated | Fires on |
+|---|---|---|---|---|
+| `EG01` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `EG02` | n/a (0/0) | n/a (0/0) | 0 | 0.0% of entities |
+| `EG03` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `EG04` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `EG05` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `EG06` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `EG07` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `EG08` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `EG09` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `EG10` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `EG11` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `EG12` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `NS01` | 100.0% (3/3) (95% CI 44–100%) | 100.0% (3/3) (95% CI 44–100%) | 0 | 30.0% of entities |
+| `NS02` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `NS03` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `NS04` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `NS05` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `NS06` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `NS07` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
+| `NS08` | 100.0% (1/1) (95% CI 21–100%) | 100.0% (1/1) (95% CI 21–100%) | 0 | 10.0% of entities |
 
 ## 6. Sensitivity & Robustness Analysis
 - Evaluated with **±20%** perturbation of the scoring **domain weights** only.
@@ -94,7 +129,7 @@ Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-29T19:01:38.794878+00:00
 ## 7. Rule Threshold Sensitivity
 Each tunable rule threshold is moved by -20% and +20% on its own, and that rule is re-run on every entity and scored against the ground truth. A changed outcome means an injected defect or a clean entity sits within 20% of that threshold. The synthetic defects were built with the thresholds in hand, so this measures their margin, not real-world robustness.
 
-5 of 54 single-threshold perturbations (±20%) changed that rule's outcome.
+3 of 64 single-threshold perturbations (±20%) changed that rule's outcome.
 
 | Rule | Threshold | Baseline | Tested | Outcome at baseline | Outcome when tested |
 |---|---|---|---|---|---|
@@ -110,10 +145,12 @@ Each tunable rule threshold is moved by -20% and +20% on its own, and that rule 
 | `EG04` | `max_comment_hash_share` | 0.25 | 0.3 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG04` | `min_hash_group_size` | 10 | 8 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG04` | `min_hash_group_size` | 10 | 12 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
-| `EG05` | `min_repeat_count` | 8 | 6 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 6 (false alarm CSE-01, CSE-02, CSE-03, CSE-04, CSE-06, CSE-07) **changed** |
+| `EG05` | `min_repeat_count` | 8 | 6 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG05` | `min_repeat_count` | 8 | 10 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG05` | `min_unaddressed_pairs` | 2 | 1 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG05` | `min_unaddressed_pairs` | 2 | 3 (+20%) | TP 1 / FN 0 / FP 0 | TP 0 / FN 1 / FP 0 (missed CSE-09) **changed** |
+| `EG05` | `max_chance_pairs` | 0.5 | 0.4 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `EG05` | `max_chance_pairs` | 0.5 | 0.6 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG06` | `min_bulk_closures_per_minute` | 8 | 6 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG06` | `min_bulk_closures_per_minute` | 8 | 10 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG06` | `max_deadline_hugging_share` | 0.25 | 0.2 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
@@ -130,7 +167,11 @@ Each tunable rule threshold is moved by -20% and +20% on its own, and that rule 
 | `EG10` | `mttr_gap_ratio_threshold` | 0.6 | 0.72 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG11` | `min_alert_volume` | 200 | 160 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG11` | `min_alert_volume` | 200 | 240 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
-| `EG11` | `max_fp_rate` | 0.98 | 0.784 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 8 (false alarm CSE-01, CSE-02, CSE-03, CSE-04, CSE-05, CSE-06, CSE-08, CSE-09) **changed** |
+| `EG11` | `max_robust_z` | 3.5 | 2.8 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `EG11` | `max_robust_z` | 3.5 | 4.2 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `EG11` | `min_spread` | 0.01 | 0.008 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `EG11` | `min_spread` | 0.01 | 0.012 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `EG11` | `max_fp_rate` | 0.98 | 0.784 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG11` | `max_fp_rate` | 0.98 | 1.0 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG12` | `min_skipped_cases` | 2 | 1 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `EG12` | `min_skipped_cases` | 2 | 3 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
@@ -138,12 +179,16 @@ Each tunable rule threshold is moved by -20% and +20% on its own, and that rule 
 | `NS01` | `min_silent_days` | 3 | 4 (+20%) | TP 3 / FN 0 / FP 0 | TP 3 / FN 0 / FP 0 |
 | `NS01` | `min_asset_criticality` | 3 | 2 (-20%) | TP 3 / FN 0 / FP 0 | TP 3 / FN 0 / FP 0 |
 | `NS01` | `min_asset_criticality` | 3 | 4 (+20%) | TP 3 / FN 0 / FP 0 | TP 3 / FN 0 / FP 0 |
-| `NS02` | `min_peer_entity_count` | 6 | 5 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
-| `NS02` | `min_peer_entity_count` | 6 | 7 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `NS02` | `min_peer_share` | 0.6 | 0.48 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `NS02` | `min_peer_share` | 0.6 | 0.72 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `NS03` | `max_night_share` | 0.03 | 0.024 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `NS03` | `max_night_share` | 0.03 | 0.036 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `NS03` | `min_alert_volume` | 100 | 80 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `NS03` | `min_alert_volume` | 100 | 120 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `NS03` | `max_robust_z` | 3.5 | 2.8 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `NS03` | `max_robust_z` | 3.5 | 4.2 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `NS03` | `min_spread` | 0.02 | 0.016 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
+| `NS03` | `min_spread` | 0.02 | 0.024 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `NS04` | `min_tp_without_case` | 3 | 2 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `NS04` | `min_tp_without_case` | 3 | 4 (+20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
 | `NS05` | `max_dormant_share` | 0.4 | 0.32 (-20%) | TP 1 / FN 0 / FP 0 | TP 1 / FN 0 / FP 0 |
