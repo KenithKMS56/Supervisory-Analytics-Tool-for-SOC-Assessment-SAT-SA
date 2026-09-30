@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-**Run ID:** `RUN-20260930083424990902-51a9c31c` | **Validation Engine:** Fully Deterministic (No AI/ML)
+**Run ID:** `RUN-20260930113505344639-37a89505` | **Validation Engine:** Fully Deterministic (No AI/ML)
 
 ## 1. Executive Summary & Verification Criteria
 This report documents whether each detection rule's code correctly implements its own specified logic, measured against a synthetic ground-truth dataset across 10 Critical Sector Entities (CSEs) whose injected defects are deliberately built to clearly exceed each rule's threshold. High scores here demonstrate implementation correctness on an unambiguous dataset, not real-world detection accuracy -- see docs/validation.md Section 0 for the harder, more realistic 'stress scenario' (`satsa validate-stress`) and Section 5 for the Shadow-Pilot mode against real historical findings.
@@ -84,7 +84,7 @@ Examiners provide historical CSV logs with schema `(entity_id, record_id, rule_i
 3. **Workpaper precision**: Of the SAT-SA findings the workpaper adjudicates, the share examiners confirmed. Findings the workpaper does not mention are listed as unadjudicated, not counted as false positives.
 
 ### Shadow-Pilot Results
-Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-30T08:34:40.159669+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
+Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-30T11:35:26.717497+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
 
 | Measure | Value |
 |---|---|

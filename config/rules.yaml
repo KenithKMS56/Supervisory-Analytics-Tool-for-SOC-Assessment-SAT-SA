@@ -242,5 +242,6 @@ rules:
     level: entity
     min_sample: 1
     severity_weight: 90
-    description: Alerts cover fewer than the 6 months of the review period (a missing monthly batch).
+    description: Alerts cover fewer months than the review period, i.e. the months the portfolio's submissions
+      cover, up to 6 (a missing monthly batch). An entity alone in the portfolio is held to 6 months.
       (Volume drops are NS03's concern; null rates are reported by the ingest data-quality checks.)

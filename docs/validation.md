@@ -115,7 +115,7 @@ Added in September 2026 so that every rule has a positive case (each sized to cr
 ## 2. Detector-Implementation Correctness Results (Primary Dataset)
 
 `satsa validate` against the ground truth in Section 1, with every finding counted (see
-Section 0.1). Figures from run `RUN-20260930083424990902-51a9c31c`; regenerate with
+Section 0.1). Figures from run `RUN-20260930113505344639-37a89505`; regenerate with
 `satsa validate`, and see `docs/validation_report.md` for the per-rule table.
 
 | Evaluation Metric | Measured Result | Benchmark Target | Verdict |
@@ -339,7 +339,7 @@ These are not historical examiner findings. They are also deliberately **not** t
 SAT-SA's own findings: labels copied from the tool's output would make recall and precision 100%
 by construction.
 
-**Result** (primary dataset, run `RUN-20260930083424990902-51a9c31c`):
+**Result** (primary dataset, run `RUN-20260930113505344639-37a89505`):
 
 | Measure | Value | What it means |
 |---|---|---|

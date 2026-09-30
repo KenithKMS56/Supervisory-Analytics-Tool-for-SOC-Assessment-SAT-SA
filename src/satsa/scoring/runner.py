@@ -52,7 +52,7 @@ class AssessmentRunner:
         self.systemic_detector = SystemicCorrelationDetector(systemic_config_path)
 
     def _report_empty_dependencies(
-        self, entity_ids: list[str], submitted: dict[str, set[str]]
+        self, entity_ids: list[str], submitted: dict[str, set[str]], record: bool = True
     ) -> dict[str, dict[str, list[str]]]:
         """Decide, per entity, which rules cannot be assessed, and report data gaps on the DQ view.
 
@@ -66,12 +66,14 @@ class AssessmentRunner:
         - entity with **no manifest at all** (data stored before manifests existed): the rule
           runs and `rule_dependency_empty` warns that the finding may be an artifact.
 
-        Returns entity_id -> {rule_id: [missing tables]} for the rules to skip.
+        Returns entity_id -> {rule_id: [missing tables]} for the rules to skip. With
+        `record=False` the DQ view is left untouched (used for historical-window runs).
         """
-        with self.sqlite_store.conn:
-            self.sqlite_store.conn.execute(
-                "DELETE FROM dq_issues WHERE check_name IN ('rule_dependency_empty', 'rule_not_assessed')"
-            )
+        if record:
+            with self.sqlite_store.conn:
+                self.sqlite_store.conn.execute(
+                    "DELETE FROM dq_issues WHERE check_name IN ('rule_dependency_empty', 'rule_not_assessed')"
+                )
         rules_by_table: dict[str, list[str]] = {}
         for rule_id, tables in sorted(RULE_DEPENDENCIES.items()):
             for table in tables:
@@ -88,6 +90,8 @@ class AssessmentRunner:
                 if manifest is not None and table not in manifest:
                     for rule_id in rule_ids:
                         not_assessed.setdefault(entity_id, {}).setdefault(rule_id, []).append(table)
+                    continue
+                if not record:
                     continue
                 verb = "depends" if len(rule_ids) == 1 else "depend"
                 if manifest is None:
@@ -115,7 +119,7 @@ class AssessmentRunner:
                     )
                 )
 
-        for entity_id, rules in sorted(not_assessed.items()):
+        for entity_id, rules in sorted(not_assessed.items()) if record else []:
             for rule_id, missing in sorted(rules.items()):
                 self.sqlite_store.save_dq_issue(
                     DQIssue(
@@ -139,10 +143,19 @@ class AssessmentRunner:
         period: str = "2026-Q1",
         code_version: str = "0.1.0",
         actor: str = "system",
+        refresh_tables: bool = True,
+        record_data_gaps: bool = True,
     ) -> dict[str, Any]:
-        """Run full evaluation pipeline."""
-        # Refresh DuckDB tables from Parquet
-        self.duckdb_store.load_all_tables()
+        """Run full evaluation pipeline.
+
+        `refresh_tables=False` assesses the store exactly as the caller prepared it instead
+        of reloading every table from Parquet. satsa.scoring.history relies on this: it
+        truncates the tables to a past window first, and a reload would silently restore the
+        full dataset. `record_data_gaps=False` keeps such a run from rewriting the DQ view's
+        missing-table entries, which describe the current submission.
+        """
+        if refresh_tables:
+            self.duckdb_store.load_all_tables()
 
         # Query all entities
         df_entities = self.duckdb_store.query("SELECT * FROM entity")
@@ -175,7 +188,7 @@ class AssessmentRunner:
         all_queue_items: list[ReviewQueueItem] = []
 
         not_assessed = self._report_empty_dependencies(
-            [e.entity_id for e in entities], self.sqlite_store.get_submitted_tables()
+            [e.entity_id for e in entities], self.sqlite_store.get_submitted_tables(), record=record_data_gaps
         )
 
         # Evaluate rules per entity
