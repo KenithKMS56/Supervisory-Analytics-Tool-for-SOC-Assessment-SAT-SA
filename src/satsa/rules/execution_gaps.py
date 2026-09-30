@@ -756,13 +756,18 @@ class EG09BacklogAndAging(BaseRule):
         # Tunable: age after which an open case is stale, and how many stale cases flag.
         stale_case_days = int(self.params.get("stale_case_days", 14))
         min_stale_cases = int(self.params.get("min_stale_cases", 3))
+        # Age is measured to the assessment reference date, not the wall clock, so the same
+        # submission gives the same result whenever it is assessed.
+        as_of = self.assessment_reference_date(store)
+        if as_of is None:
+            return [], []
         sql = """
         SELECT case_id, severity, opened_at
         FROM "case"
         WHERE entity_id = ? AND status = 'open'
-          AND epoch(now()) - epoch(opened_at) > ? * 86400
+          AND epoch(CAST(? AS TIMESTAMP)) - epoch(opened_at) > ? * 86400
         """
-        df = store.query(sql, [entity_id, stale_case_days])
+        df = store.query(sql, [entity_id, as_of, stale_case_days])
         if df.is_empty():
             return [], []
 
@@ -773,7 +778,10 @@ class EG09BacklogAndAging(BaseRule):
             f_id = f"FND-EG09-{entity_id}-{run_id}"
             sample_ids = df["case_id"].head(5).to_list()
 
-            rationale = f"Detected {stale_count} open cases aged beyond {stale_case_days} days without resolution."
+            rationale = (
+                f"Detected {stale_count} open cases aged beyond {stale_case_days} days without resolution "
+                f"as of {as_of.date().isoformat()}."
+            )
             finding = Finding(
                 finding_id=f_id,
                 run_id=run_id,

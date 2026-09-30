@@ -17,6 +17,7 @@ from satsa.models.outputs import (
     Run,
 )
 from satsa.peers.grouping import PeerResolver
+from satsa.rules.base import data_reference_date
 from satsa.rules.registry import RULE_DEPENDENCIES, RuleRegistry
 from satsa.rules.systemic import SystemicCorrelationDetector
 from satsa.scoring.prioritiser import ReviewPrioritiser
@@ -146,8 +147,13 @@ class AssessmentRunner:
         refresh_tables: bool = True,
         record_data_gaps: bool = True,
         dry_run: bool = False,
+        reference_date: datetime | None = None,
     ) -> dict[str, Any]:
         """Run full evaluation pipeline.
+
+        `reference_date` is the date the assessment is "as of" for time-dependent rules
+        (EG09's case age). It defaults to the latest timestamp in the submitted data, never
+        the wall clock, and is recorded in the run manifest.
 
         `dry_run=True` evaluates and scores exactly as a real run would but persists nothing:
         no run row, findings, scores, queue, audit entry or DQ changes. The result carries
@@ -200,6 +206,9 @@ class AssessmentRunner:
 
         # Evaluate rules per entity
         all_rules = self.registry.get_all_rules()
+        as_of = reference_date or data_reference_date(self.duckdb_store)
+        for rule in all_rules:
+            rule.reference_date = as_of
         for entity in entities:
             ent_id = entity.entity_id
             peers, _cohort_label, _is_weak = self.peer_resolver.resolve_peers(entity, entities)
@@ -242,6 +251,7 @@ class AssessmentRunner:
             "timestamp": now.isoformat(),
             "config_hash": config_hash,
             "code_version": code_version,
+            "reference_date": as_of.isoformat() if as_of else None,
             "entities_evaluated": [e.entity_id for e in entities],
             "entities_skipped_invalid_id": skipped_entity_ids,
             "total_findings": len(all_findings),
@@ -266,6 +276,7 @@ class AssessmentRunner:
             "run_id": run_id,
             "period": period,
             "config_hash": config_hash,
+            "reference_date": as_of.isoformat() if as_of else None,
             "entities_count": len(entities),
             "findings_count": len(all_findings),
             "queue_count": len(all_queue_items),
