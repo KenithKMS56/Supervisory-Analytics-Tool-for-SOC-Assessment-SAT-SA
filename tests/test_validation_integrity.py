@@ -412,3 +412,34 @@ def test_clean_stress_entity_does_not_contain_eg05s_defect_pattern():
     assert len(repeat_all_benign) == 2
     assert len(repeat_all_benign - remediated) == 1
     assert len({a.asset_id for a in alerts}) > 1
+
+
+# ------------------------------------------------------------------ confidence = population examined
+
+
+def test_confidence_reflects_population_examined_not_offender_count(tmp_path):
+    """EG12: 3 critical cases without containment. Among 20 critical cases that is a
+    well-evidenced finding (full confidence); if the entity only has those 3, it is not.
+    Before, confidence was offenders / min_sample = 3/15 = 0.2 in both situations."""
+    store = DuckDBStore(tmp_path / "conf")
+    opened = datetime(2026, 3, 1, 9, 0, 0)
+    for ent, n_cases in (("MANY", 20), ("FEW", 3)):
+        for i in range(n_cases):
+            case_id = f"{ent}-C{i}"
+            store.execute(
+                'INSERT INTO "case" (entity_id, case_id, severity, status, opened_at) VALUES (?, ?, \'critical\', \'closed\', ?)',
+                [ent, case_id, opened],
+            )
+            if i >= 3:  # the first three skip containment
+                store.execute(
+                    "INSERT INTO workflow_event (entity_id, ref_type, ref_id, ts, action) VALUES (?, 'case', ?, ?, 'contain')",
+                    [ent, case_id, opened],
+                )
+    rule = RuleRegistry().get_rule("EG12")
+    try:
+        many, _ = rule.evaluate("MANY", store, [], "RUN-X")
+        few, _ = rule.evaluate("FEW", store, [], "RUN-X")
+    finally:
+        store.close()
+    assert many[0].confidence == 1.0 and many[0].score == 60.0
+    assert few[0].confidence == 0.2 and few[0].score < many[0].score

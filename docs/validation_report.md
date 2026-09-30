@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-**Run ID:** `RUN-20260930060740856186-dc501387` | **Validation Engine:** Fully Deterministic (No AI/ML)
+**Run ID:** `RUN-20260930063308360511-73288831` | **Validation Engine:** Fully Deterministic (No AI/ML)
 
 ## 1. Executive Summary & Verification Criteria
 This report documents whether each detection rule's code correctly implements its own specified logic, measured against a synthetic ground-truth dataset across 10 Critical Sector Entities (CSEs) whose injected defects are deliberately built to clearly exceed each rule's threshold. High scores here demonstrate implementation correctness on an unambiguous dataset, not real-world detection accuracy -- see docs/validation.md Section 0 for the harder, more realistic 'stress scenario' (`satsa validate-stress`) and Section 5 for the Shadow-Pilot mode against real historical findings.
@@ -20,7 +20,7 @@ Precision counts every finding whose (entity, rule) pair is not an injected defe
 | **Cryptographic Audit Log Integrity** | Audit chain verified successfully (2 entries intact). | intact | PASS |
 
 ## 2. Entity-Level Ranking & Confounder Discrimination
-- **Top-k Ranked Entities (k = injected entity count):** CSE-02, CSE-03, CSE-07, CSE-08, CSE-09, CSE-05, CSE-10
+- **Top-k Ranked Entities (k = injected entity count):** CSE-02, CSE-08, CSE-03, CSE-05, CSE-07, CSE-09, CSE-10
 - **Remaining Entities:** CSE-01, CSE-04, CSE-06
 - **Clean Entities Ranked in Top-k:** none
 - **Confounder Checks (measured from this run's findings):**
@@ -84,7 +84,7 @@ Examiners provide historical CSV logs with schema `(entity_id, record_id, rule_i
 3. **Workpaper precision**: Of the SAT-SA findings the workpaper adjudicates, the share examiners confirmed. Findings the workpaper does not mention are listed as unadjudicated, not counted as false positives.
 
 ### Shadow-Pilot Results
-Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-30T06:08:01.226367+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
+Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-30T06:34:00.992146+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
 
 | Measure | Value |
 |---|---|
