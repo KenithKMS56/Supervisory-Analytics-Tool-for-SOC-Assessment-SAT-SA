@@ -40,7 +40,7 @@ from satsa.peers.grouping import PeerResolver
 from satsa.report.generator import ReportGenerator, ReportNotFoundError
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
-from satsa.scoring.scorer import ScoringEngine, band_tier
+from satsa.scoring.scorer import ScoringEngine, band_tier, blind_review_concordance
 from satsa.security import (
     is_valid_entity_id,
     is_valid_finding_id,
@@ -1786,23 +1786,11 @@ async def handle_blind_review_submit(
     sys_index = score_row["risk_index"] if score_row else 0.0
     sys_band = score_row["risk_band"] if score_row else "Low Supervisory Concern"
 
-    # Compute concordance score (0-100%)
-    concern_levels = {"Low": 1, "Moderate": 2, "Elevated": 3, "Critical": 4}
-    band_levels = {
-        "Low Supervisory Concern": 1,
-        "Moderate Supervisory Concern": 2,
-        "Elevated Concern": 3,
-        "High Concern": 4,
-    }
-    examiner_num = concern_levels.get(examiner_concern, 2)
-    sys_num = 1
-    for k, v in band_levels.items():
-        if k.lower() in sys_band.lower():
-            sys_num = v
-            break
-
-    diff = abs(examiner_num - sys_num)
-    concordance = max(0.0, round(100.0 - (diff * 25.0), 1))
+    try:
+        concordance = blind_review_concordance(examiner_concern, sys_band)
+    except ValueError as exc:
+        sqlite_store.close()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     rev_id = f"BLIND-{hashlib.sha256(f'{entity_id}:{run_id}:{examiner_concern}'.encode()).hexdigest()[:12]}"
     sqlite_store.save_blind_review(
