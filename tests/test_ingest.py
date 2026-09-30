@@ -208,3 +208,128 @@ def test_api_ticketing_mapping_config():
     assert mapped["severity"] == "critical"
     assert mapped["status"] == "closed"
     assert mapped["disposition"] == "true_positive"
+
+
+def _write_csv(path, header, rows):
+    path.write_text("\n".join([header, *rows]) + "\n", encoding="utf-8")
+
+
+def test_orphaned_child_records_are_reported(tmp_path):
+    """A closure or escalation pointing at an alert that is not in the submission makes rules read
+    'no closure / no escalation' for the wrong reason; ingest must say so on the DQ view."""
+    from satsa.ingest.pipeline import IngestionPipeline
+    from satsa.store.duckdb import DuckDBStore
+    from satsa.store.sqlite import SQLiteStore
+
+    src = tmp_path / "in"
+    src.mkdir()
+    _write_csv(
+        src / "alert.csv",
+        "entity_id,alert_id,created_at,severity_final",
+        ["DQ-ENT,A-1,2026-01-05T09:00:00,high", "DQ-ENT,A-2,2026-01-06T09:00:00,high"],
+    )
+    _write_csv(src / "closure.csv", "entity_id,ref_id,comment_len", ["DQ-ENT,A-1,40", "DQ-ENT,A-999,40"])
+    _write_csv(
+        src / "escalation.csv",
+        "entity_id,esc_id,ref_id,escalated_at",
+        ["DQ-ENT,E-1,A-2,2026-01-06T09:05:00", "DQ-ENT,E-2,A-777,2026-01-06T09:05:00"],
+    )
+    sqlite_store = SQLiteStore(tmp_path / "s.db")
+    duck = DuckDBStore(tmp_path / "d")
+    res = IngestionPipeline(duck, sqlite_store).ingest_directory(src)
+    rows = sqlite_store.conn.execute(
+        "SELECT issue_id, count FROM dq_issues WHERE check_name = 'orphan_foreign_keys' ORDER BY issue_id"
+    ).fetchall()
+    duck.close()
+    sqlite_store.close()
+    assert res["status"] == "success" and res["failed_tables"] == []
+    assert [(r["issue_id"], r["count"]) for r in rows] == [
+        ("DQ-ORPHAN-DQ-ENT-closure-alert", 1),
+        ("DQ-ORPHAN-DQ-ENT-escalation-alert", 1),
+    ]
+
+
+def test_a_table_that_fails_to_store_is_reported_not_swallowed(tmp_path, monkeypatch):
+    from satsa.ingest.pipeline import IngestionPipeline
+    from satsa.store.duckdb import DuckDBStore
+    from satsa.store.sqlite import SQLiteStore
+
+    src = tmp_path / "in"
+    src.mkdir()
+    _write_csv(src / "alert.csv", "entity_id,alert_id,created_at,severity_final", ["DQ-ENT,A-1,2026-01-05T09:00:00,high"])
+    _write_csv(src / "escalation.csv", "entity_id,esc_id,ref_id,escalated_at", ["DQ-ENT,E-1,A-1,2026-01-05T09:05:00"])
+    sqlite_store = SQLiteStore(tmp_path / "s.db")
+    duck = DuckDBStore(tmp_path / "d")
+    real_write = duck.write_partitioned_parquet
+
+    def flaky(table, df):
+        if table == "escalation":
+            raise OSError("disk full")
+        return real_write(table, df)
+
+    monkeypatch.setattr(duck, "write_partitioned_parquet", flaky)
+    res = IngestionPipeline(duck, sqlite_store).ingest_directory(src)
+    issue = sqlite_store.conn.execute(
+        "SELECT severity, details FROM dq_issues WHERE check_name = 'table_write_failed'"
+    ).fetchone()
+    duck.close()
+    sqlite_store.close()
+    assert res["status"] == "partial" and res["failed_tables"] == ["escalation"]
+    assert issue["severity"] == "error" and "escalation" in issue["details"]
+
+
+def test_rule_dependencies_name_real_rules_and_tables(tmp_path):
+    from satsa.rules.registry import RULE_DEPENDENCIES, RuleRegistry
+    from satsa.store.duckdb import DuckDBStore
+
+    rule_ids = {cls.id for cls in RuleRegistry.RULE_CLASSES}
+    assert set(RULE_DEPENDENCIES) <= rule_ids
+    store = DuckDBStore(tmp_path / "d")
+    try:
+        for table in {t for tables in RULE_DEPENDENCIES.values() for t in tables}:
+            store.query(f'SELECT entity_id FROM "{table}" LIMIT 0')  # raises if the table is unknown
+    finally:
+        store.close()
+
+
+def test_assessment_warns_when_a_rule_depends_on_a_table_with_no_rows(tmp_path):
+    """An alerts-only submission has no escalation table, so EG03 would read every critical
+    true positive as unescalated. The run must say so on the DQ view, and stop saying so once
+    the table is supplied."""
+    from satsa.ingest.pipeline import IngestionPipeline
+    from satsa.scoring.runner import AssessmentRunner
+    from satsa.store.duckdb import DuckDBStore
+    from satsa.store.sqlite import SQLiteStore
+
+    src = tmp_path / "in"
+    src.mkdir()
+    _write_csv(
+        src / "alert.csv",
+        "entity_id,alert_id,created_at,severity_final,disposition",
+        ["DEP-ENT,A-1,2026-01-05T09:00:00,critical,true_positive"],
+    )
+    sqlite_store = SQLiteStore(tmp_path / "s.db")
+    duck = DuckDBStore(tmp_path / "d")
+    pipeline = IngestionPipeline(duck, sqlite_store)
+    pipeline.ingest_directory(src)
+    runner = AssessmentRunner(duck, sqlite_store)
+    runner.run_assessment(period="T", actor="test")
+
+    def warned_tables():
+        rows = sqlite_store.conn.execute(
+            "SELECT issue_id, sample_records_json FROM dq_issues WHERE check_name = 'rule_dependency_empty'"
+        ).fetchall()
+        return {r["issue_id"].removeprefix("DQ-DEPENDENCY-DEP-ENT-"): r["sample_records_json"] for r in rows}
+
+    first = warned_tables()
+    assert "EG03" in first["escalation"] and "NS07" in first["external_report"]
+
+    more = tmp_path / "more"
+    more.mkdir()
+    _write_csv(more / "escalation.csv", "entity_id,esc_id,ref_id,escalated_at", ["DEP-ENT,E-1,A-1,2026-01-05T09:05:00"])
+    pipeline.ingest_directory(more)
+    runner.run_assessment(period="T", actor="test")
+    second = warned_tables()
+    duck.close()
+    sqlite_store.close()
+    assert "escalation" not in second and "external_report" in second

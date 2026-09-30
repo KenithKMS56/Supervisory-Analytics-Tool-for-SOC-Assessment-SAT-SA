@@ -31,6 +31,28 @@ from satsa.rules.negative_space import (
     NS08SubmissionCompleteness,
 )
 
+# Tables (beyond `alert`) each rule's conclusion rests on. When an entity has no rows at all
+# in one of them, the rule cannot tell "the SOC did not do this" from "this table was not
+# submitted": EG03 reads a missing escalation table as "no critical alert was ever escalated".
+# The assessment runner reports these cases on the DQ view; it does not skip the rules.
+RULE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "EG01": ("workflow_event",),
+    "EG02": ("workflow_event", "closure"),
+    "EG03": ("escalation",),
+    "EG04": ("closure",),
+    "EG05": ("remediation",),
+    "EG06": ("sla_policy",),
+    "EG08": ("escalation",),
+    "EG09": ("case",),
+    "EG10": ("declared_kpi",),
+    "EG12": ("case", "workflow_event"),
+    "NS01": ("asset", "log_source_daily"),
+    "NS04": ("case_alert_link",),
+    "NS05": ("detection_rule",),
+    "NS06": ("asset", "log_source_daily"),
+    "NS07": ("case", "external_report"),
+}
+
 
 class RuleRegistry:
     """Registry maintaining active rule classes and config overrides."""

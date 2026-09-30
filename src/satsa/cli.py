@@ -68,6 +68,13 @@ def ingest_cmd(
     duckdb_store.close()
     sqlite_store.close()
 
+    if result.get("status") == "partial":
+        console.print(
+            "[bold red][!] Ingestion incomplete:[/bold red] these tables could not be stored: "
+            f"{', '.join(result.get('failed_tables', []))}. Findings that depend on them are unreliable; "
+            "fix the data and re-ingest before running an assessment."
+        )
+        raise typer.Exit(code=1)
     if result.get("status") == "success":
         console.print("[bold green][+] Ingestion completed successfully:[/bold green]")
         console.print(f"  * Batch ID: [cyan]{result.get('batch_id')}[/cyan]")
