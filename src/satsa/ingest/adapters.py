@@ -69,14 +69,14 @@ class SourceAdapter:
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         # Identifiers can't be bound as parameters, so only read a table that
-        # actually exists in the export, and quote it with ']' escaped.
+        # actually exists in the export, quoted as an identifier ('"' doubled).
         cursor.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)
         )
         if cursor.fetchone() is None:
             conn.close()
             return []
-        quoted = "[" + table_name.replace("]", "]]") + "]"
+        quoted = '"' + table_name.replace('"', '""') + '"'
         cursor.execute(f"SELECT * FROM {quoted}")
         rows = [dict(r) for r in cursor.fetchall()]
         conn.close()

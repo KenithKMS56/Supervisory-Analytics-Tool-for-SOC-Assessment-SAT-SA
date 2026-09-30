@@ -526,3 +526,26 @@ def test_entity_without_an_alert_table_is_not_assessed_on_alert_rules(tmp_path):
     finally:
         duck.close()
         sqlite_store.close()
+
+
+def test_read_sqlite_export(tmp_path):
+    """A table from a SQLite database export (PS: "database exports"); identifiers are never interpolated raw."""
+    import sqlite3
+
+    db = tmp_path / "export.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE alerts (alert_id TEXT, severity TEXT)")
+    conn.execute('CREATE TABLE "odd]name" (x INTEGER)')
+    conn.executemany("INSERT INTO alerts VALUES (?, ?)", [("A-1", "high"), ("A-2", "low")])
+    conn.execute('INSERT INTO "odd]name" VALUES (7)')
+    conn.commit()
+    conn.close()
+    assert SourceAdapter.read_sqlite(db, "alerts") == [
+        {"alert_id": "A-1", "severity": "high"},
+        {"alert_id": "A-2", "severity": "low"},
+    ]
+    assert SourceAdapter.read_sqlite(db, "odd]name") == [{"x": 7}]
+    assert SourceAdapter.read_sqlite(db, "alerts; DROP TABLE alerts") == []
+    assert SourceAdapter.read_sqlite(db, "missing") == []
+    assert SourceAdapter.read_sqlite(tmp_path / "nope.db", "alerts") == []
+    assert len(SourceAdapter.read_sqlite(db, "alerts")) == 2  # still there

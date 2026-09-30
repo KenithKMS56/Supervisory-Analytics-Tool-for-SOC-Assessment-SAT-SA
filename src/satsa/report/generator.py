@@ -306,13 +306,6 @@ class ReportGenerator:
             return {}
         return df.to_dicts()[0] if not df.is_empty() else {}
 
-    def _entity_names(self) -> dict[str, str]:
-        try:
-            df = self.duckdb_store.query("SELECT entity_id, name FROM entity")
-        except duckdb.Error:
-            return {}
-        return {r["entity_id"]: r["name"] for r in df.to_dicts() if r.get("name")}
-
     @staticmethod
     def _ordered_domains(scores: dict[str, float]) -> list[str]:
         known = [d for d in DOMAIN_ORDER if d in scores]
