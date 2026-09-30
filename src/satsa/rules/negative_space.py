@@ -294,7 +294,39 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
                 benign_explanations=self.benign_explanations,
                 evidence_ids=[f"FLATLINE-{entity_id}"],
             )
-            return [finding], []
+            # An absence has no row of its own, so the supporting rows are the ones around
+            # it: any night-time alerts that do exist, and the last alert of each recent day
+            # (where activity stops until the next morning).
+            night_df = store.query(
+                "SELECT alert_id, created_at FROM alert WHERE entity_id = ? "
+                "AND (extract(hour from created_at) < 8 OR extract(hour from created_at) >= 20) "
+                "ORDER BY created_at DESC, alert_id LIMIT 5",
+                [entity_id],
+            )
+            last_df = store.query(
+                """
+                SELECT alert_id, created_at FROM (
+                    SELECT alert_id, created_at,
+                           row_number() OVER (PARTITION BY CAST(created_at AS DATE) ORDER BY created_at DESC, alert_id) AS rn
+                    FROM alert WHERE entity_id = ? AND created_at IS NOT NULL
+                ) WHERE rn = 1 ORDER BY created_at DESC, alert_id LIMIT 10
+                """,
+                [entity_id],
+            )
+            evidences = [
+                FindingEvidence(
+                    finding_id=f_id,
+                    record_type="alert",
+                    record_id=str(row["alert_id"]),
+                    details={"reason": reason, "created_at": str(row["created_at"])},
+                )
+                for df_ev, reason in (
+                    (night_df, "Night-time alert (20:00-08:00)"),
+                    (last_df, "Last alert recorded that day"),
+                )
+                for row in df_ev.iter_rows(named=True)
+            ]
+            return [finding], evidences
         return [], []
 
 
@@ -445,7 +477,16 @@ class NS05RuleCoverageGaps(BaseRule):
                 benign_explanations=self.benign_explanations,
                 evidence_ids=dormant_rules[:10],
             )
-            return [finding], []
+            evidences = [
+                FindingEvidence(
+                    finding_id=f_id,
+                    record_type="detection_rule",
+                    record_id=str(rule_id),
+                    details={"reason": "Enabled detection rule with no alert in the period"},
+                )
+                for rule_id in dormant_rules[:10]
+            ]
+            return [finding], evidences
         return [], []
 
 
@@ -665,5 +706,35 @@ class NS08SubmissionCompleteness(BaseRule):
                 evidence_ids=[f"missing-month:{m}" for m in missing_labels]
                 or [f"submitted-month:{m}" for m in sorted(own)],
             )
-            return [finding], []
+            # The real alerts on either side of each gap (or, with no named gap, the first and
+            # last alerts of the submission), so an examiner can see where the data stops.
+            edges: list[tuple[str, str]] = []
+            for m in missing_labels:
+                edges.append((f"Last alert before the gap in {m}", f"strftime(created_at, '%Y-%m') < '{m}' ORDER BY created_at DESC"))
+                edges.append((f"First alert after the gap in {m}", f"strftime(created_at, '%Y-%m') > '{m}' ORDER BY created_at ASC"))
+            if not missing_labels:
+                edges = [
+                    ("First alert in the submission", "1 = 1 ORDER BY created_at ASC"),
+                    ("Last alert in the submission", "1 = 1 ORDER BY created_at DESC"),
+                ]
+            evidences = []
+            seen: set[str] = set()
+            for reason, clause in edges:
+                edge_df = store.query(
+                    f"SELECT alert_id, created_at FROM alert WHERE entity_id = ? AND created_at IS NOT NULL AND {clause}, alert_id LIMIT 1",
+                    [entity_id],
+                )
+                for row in edge_df.iter_rows(named=True):
+                    if str(row["alert_id"]) in seen:
+                        continue
+                    seen.add(str(row["alert_id"]))
+                    evidences.append(
+                        FindingEvidence(
+                            finding_id=f_id,
+                            record_type="alert",
+                            record_id=str(row["alert_id"]),
+                            details={"reason": reason, "created_at": str(row["created_at"])},
+                        )
+                    )
+            return [finding], evidences
         return [], []
