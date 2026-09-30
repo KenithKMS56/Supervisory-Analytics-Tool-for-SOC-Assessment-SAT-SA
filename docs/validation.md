@@ -10,7 +10,7 @@ kind of evidence each result actually is.
 > **Current figures (30 September 2026).** The shortest accurate account is `docs/validation_summary.md`.
 > Since the sections below were written, NS03, NS05 and NS08 findings gained evidence records (a larger review
 > queue) and NS08's review period became a tunable threshold. Primary set now: 21/21 detected, 0 false positives,
-> sweep 4 of 66, lift 19.47x in the top 25 queue alerts and 5.52x over the 129-alert queue; stress 3/3, sweep 3 of 66.
+> sweep 4 of 66, lift 19.47x in the top 25 queue alerts and 5.19x over the 130-alert queue; stress 3/3, sweep 3 of 66.
 > Where a figure below differs, the generated reports (`docs/validation_report.md`,
 > `docs/validation_stress_report.md`, `docs/validation_hard_report.md`) are the record.
 
@@ -189,11 +189,11 @@ items and non-alert ground-truth IDs are excluded from both.
 
 | Audit Budget (% of Alerts) | Budget | Queue Alerts Examined | Affected Alerts Found | Queue Hit Rate | Random Sampling Rate | Lift Factor |
 |---|---|---|---|---|---|---|
-| **1%** | 162 | 129 (queue exhausted) | 19 | **14.7%** | 2.67% | **5.52x** |
-| **2%** | 325 | 129 (queue exhausted) | 19 | **14.7%** | 2.67% | **5.52x** |
-| **5%** | 812 | 129 (queue exhausted) | 19 | **14.7%** | 2.67% | **5.52x** |
+| **1%** | 162 | 130 (queue exhausted) | 18 | **13.9%** | 2.67% | **5.19x** |
+| **2%** | 325 | 130 (queue exhausted) | 18 | **13.9%** | 2.67% | **5.19x** |
+| **5%** | 812 | 130 (queue exhausted) | 18 | **13.9%** | 2.67% | **5.19x** |
 
-*Reading this table:* the queue holds only 129 alert items (167 items in total), fewer than even
+*Reading this table:* the queue holds only 130 alert items (168 items in total), fewer than even
 the 1% budget, so every budget examines the whole queue and reports the same figure: "the whole
 queue vs. random". The curve is in the queue-depth table:
 
@@ -202,10 +202,10 @@ queue vs. random". The curve is in the queue-depth table:
 | 10 | 4 | 40.0% | **14.98x** |
 | 25 | 13 | 52.0% | **19.47x** |
 | 50 | 16 | 32.0% | **11.98x** |
-| 100 | 19 | 19.0% | **7.12x** |
-| 129 (whole queue) | 19 | 14.7% | **5.52x** |
+| 100 | 18 | 18.0% | **6.74x** |
+| 130 (whole queue) | 18 | 13.9% | **5.19x** |
 
-Affected alerts are concentrated at the top: 14 of the 19 found are in the first 25 items, and the
+Affected alerts are concentrated at the top: 13 of the 18 found are in the first 25 items, and the
 30% stratified-random part of the queue further down adds little. The figure moves with the ground
 truth: adding the EG11 defect (about 200 CSE-07 alerts relabelled, all counted as affected) raised
 the random baseline from 1.20% to 2.67% and cut whole-queue lift from 10.69x to 5.50x without any

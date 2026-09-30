@@ -2,7 +2,8 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-Branch `feat/feasibility-evidence`, 17 commits on top of `main` (69028c6), 30 September 2026.
+Branch `feat/feasibility-evidence`, 17 commits on top of `main` (69028c6), then
+`fix/validation-root-causes` on top of it (Phase 8), 30 September 2026.
 Every number below was produced by a command that was run in this pass; the command is given
 with it. Nothing is estimated. Where something could not be run or verified, it says so and is
 repeated under **Open items**.
@@ -31,7 +32,8 @@ python -m coverage run --branch --source=src/satsa -m pytest tests -q
 | Phase 2 | 809 | 33 | 0 | 21/21, 0 FP | 3/3, 0 FP |
 | Phase 3 | 847 | 33 | 0 | 21/21, 0 FP | 3/3, 0 FP |
 | Phase 4 | 847 | 33 | 0 | 21/21, 0 FP | 3/3, 0 FP |
-| Phases 5-7 (final) | **866** | 33 | **0** | 21/21, 0 FP | 3/3, 0 FP |
+| Phases 5-7 | 866 | 33 | 0 | 21/21, 0 FP | 3/3, 0 FP |
+| Phase 8 (final) | **871** | 33 | **0** | 21/21, 0 FP | 3/3, 0 FP |
 
 The 33 skips are public routes in the RBAC matrix, exercised once anonymously instead of once
 per role. The primary and stress sets are single-seed synthetic sets built around the rules'
@@ -166,6 +168,9 @@ scenario (borderline EG04, ambiguous EG02/EG04, noisy clean entity) under 20 see
 Per rule (24 portfolio runs; every rule not listed: 24 of 24 detected, 0 false positives; the
 per-volume tables with intervals are in the report):
 
+These are the Phase 5 figures. Phase 8 traced every failure below to its records and fixed
+the cause; the current figures are in Phase 8.
+
 | Rule | Detected | False positives | Note |
 |---|---|---:|---|
 | EG10 | 24/24 | 10 | precision 70.6% (24/34); always CSE-07, which has no KPI-gap defect |
@@ -180,7 +185,7 @@ A rule with 8 of 8 detected at one volume has a 95% interval of 67.6% to 100%.
 5 of 24 portfolio runs and 16 of 20 stress runs); EG07 `min_closures_per_analyst_hour`, NS05
 `max_dormant_share`, NS08 `review_period_months` (defect lost in 24 of 24); EG04
 `max_comment_hash_share` and `min_hash_group_size` (lost in 20 of 20 stress runs); EG09
-`min_stale_cases` (4 of 24); EG12 `min_skipped_cases`, NS03 `max_robust_z`, EG05
+`min_stale_cases` (4 of 24 in Phase 5, none after Phase 8); EG12 `min_skipped_cases`, NS03 `max_robust_z`, EG05
 `min_repeat_count` (1 of 24 each).
 
 **No threshold was changed in this pass.** The false positives and misses above are reported,
@@ -250,16 +255,61 @@ python -m coverage report
   CLI reference, index), `docs/infrastructure.md`, `docs/ps_traceability.md`,
   `docs/functional_design.md`, `docs/validation.md`; validation reports regenerated.
 
+## Phase 8: Root causes of the hard-set failures
+
+Each Phase 5 failure was traced to the records behind it before anything was changed.
+
+```bash
+python <scratch>/eg10_probe.py     # CSE-07 closure times per severity, 9 seeds x 2 volumes
+python <scratch>/miss_probe.py     # records each EG03/EG09 injection actually changed
+python <scratch>/eg05_probe.py     # repeat pairs on the noisy stress entity, 21 seeds
+```
+
+| Failure | What the records showed | Cause | Fix |
+|---|---|---|---|
+| EG10 false positive on CSE-07, 10 of 24 runs | 1-7 high/critical alerts per run closed up to 130,000 minutes **before** creation or months after; without them CSE-07's high-severity mean was 83-102 minutes against a declared 96 (critical 41-57 against 51) | Generator: the bulk-closure injection stamped the first 15 alerts closed on 31 March regardless of creation date | Bulk closure now sweeps the 15 low/medium alerts raised most recently before it |
+| (same) | CSE-09 repeat alerts closed before they were created in all 3 seeds checked (16 at seed 42) | Generator: creation and closure hours drawn independently | One hour per alert; the random stream is unchanged |
+| EG09 missed @ 808 | two of the four "stale" cases opened 1 and 7 days before period end; 2 stale, threshold 3 | Generator: cases picked by id, not age | The four opened earliest |
+| EG03 missed @ 808, 600 alerts | the injection changed 0 records | Ground truth recorded a defect that was not injected | Recorded only when something was injected |
+| EG05 on the noisy stress entity, 4 of 20 seeds | a random pair reaches exactly 8 benign, untuned repeats beside the built-in 9-repeat pair | The rule working as specified at the edge of its chance model | **Not changed**: it would need a threshold change judged on the data it is tuned to |
+
+Rule change: **EG01 and EG10 (and the KPI reconciliation view and metrics engine) ignore
+alerts closed before they were created.** These records are already reported by the
+`close_before_create` data-quality check; real exports with clock skew contain them, and a
+negative duration moved EG10's mean by weeks. No threshold was changed.
+
+Results after the fixes (`python scripts/validate_hard.py`, 10 minutes; the primary and stress
+sets and the test suite as at the top of this file):
+
+| Set | Runs | Recall (95% CI) | Precision (95% CI) | Clean entities flagged |
+|---|---:|---|---|---|
+| Portfolio, 1,500 | 8 | 100% (168/168; 97.8-100%) | 100% (168/168; 97.8-100%) | 0 of 24 |
+| Portfolio, 600 | 8 | 100% (167/167; 97.8-100%) | 100% (167/167; 97.8-100%) | 0 of 24 |
+| Portfolio, 300 | 8 | 100% (168/168; 97.8-100%) | 100% (168/168; 97.8-100%) | 0 of 24 |
+| **Portfolio, all** | **24** | **100% (503/503)** | **100% (503/503)** | **0 of 72** |
+| Stress | 20 | 100% (60/60; 94.0-100%) | 93.8% (60/64; 85.0-97.5%) | 4 of 20 (EG05) |
+| Primary (seed 42) | 1 | 21/21 | 21/21 | 0 of 3 |
+
+What moved the other way: on the primary set the review queue grew from 129 to 130 alert
+items and holds 18 defect-affected alerts instead of 19, so whole-queue lift fell from 5.52x
+to 5.19x; top-25 lift is unchanged at 19.47x. The threshold sweep is unchanged (4 of 66
+primary, 3 of 66 stress). Tests: 871 passed, 33 skipped, 0 failed; coverage 89%; ruff and
+mypy clean.
+
+What this does and does not change: the synthetic evidence is now clean on the portfolio
+generator, and the four-for-four finding is that **the failures were in the test data, not the
+rules**. It is still synthetic data built by people who knew the thresholds.
+
 ---
 
 ## Open items
 
 1. **No real data.** No real SOC submission and no real examiner finding has been run through
    SAT-SA. Accuracy on real data is unknown.
-2. **EG10 false positives**: 10 of 24 hard-set runs, always CSE-07. Cause not investigated.
+2. ~~EG10 false positives~~: resolved in Phase 8 (generator fault).
 3. **EG05 false positives on a noisy clean entity**: 4 of 20 stress seeds; its
    `min_unaddressed_pairs` threshold is fragile in both directions.
-4. **EG09 and EG03 each missed once** (seed 808). Cause not investigated.
+4. ~~EG09 and EG03 each missed once~~: resolved in Phase 8 (generator faults).
 5. **Connectors unverified against live systems.** Samples are hand-built; TheHive's rule
    identifier is approximated by the alert title; ServiceNow SIR has no field for external
    reporting. The web upload page accepts the canonical layout only.
@@ -289,9 +339,25 @@ Based only on the evidence in this file.
 
 | Dimension | Rating | Justification |
 |---|---|---|
-| Technical | **High** | 866 tests pass with 89% coverage, lint and type checks are clean, and results are reproducible with the reference date recorded. |
+| Technical | **High** | 871 tests pass with 89% coverage, lint and type checks are clean, and results are reproducible with the reference date recorded. |
 | Operational | **Medium-High** | First-login rotation, loopback default and TLS are enforced and tested, and 5M alerts run in about 15 minutes on a laptop; Docker was not run and the first page after a run takes 27 s at that size. |
 | Legal | **Medium** | The notice is now on every output and unsupported legal wording is removed, but the statutory basis rests on unread Rules and unverified text, all marked for legal review. |
 | Economic | **Medium-High** | Runs offline on one commodity machine with open-source components and no licences or cloud cost; staffing and integration cost were not measured. |
 | Data | **Medium** | Three product exports ingest end to end with gaps reported per rule, but on hand-built samples only, and none supports more than 10 of 20 rules alone. |
-| Accuracy | **Low-Medium** | On synthetic data recall is 99.6% and precision 98.0% across 24 seeded runs, with known false positives (EG10, EG05); no real or realistic non-synthetic data has been used, so this cannot be rated higher. |
+| Accuracy | **Medium** (synthetic ceiling) | On synthetic data recall and precision are 100% (503/503) across 24 seeded portfolio runs and 93.8% precision on the stress set (EG05); every hard-set failure was traced to its cause. Your rule caps Accuracy at Medium without real or realistic non-synthetic data, and none has been used. |
+
+### In the requested table format
+
+| Dimension | Rating | Evidence |
+|---|---|---|
+| Technical | **High** | 20 rules; 871 tests pass, 89% coverage (statements and branches) |
+| Operational | **High** for speed; Medium-High overall | Assesses 50 entities (5,000,000 alerts) in 310 seconds, plus 603 s ingest; Docker not run |
+| Legal | **Medium** | Mapped to the problem statement in `docs/legal_traceability.md`; **reviewed by: nobody yet** |
+| Accuracy | **Medium** | Precision 100%, recall 100% on the synthetic hard set (24 runs, 503 defects); 93.8% precision on the stress set |
+| Footer note | | **synthetic** |
+| Scale row | **High** | Benchmarked to 50 entities, 100,000 alerts each |
+
+Two cells cannot be filled truthfully from here. **Reviewed by [name]** needs a person with
+legal standing who has read `docs/legal_traceability.md` and agrees to be named. **Accuracy:
+High** needs results on real or realistic non-synthetic data, which also changes the footer
+from "synthetic" to "realistic".

@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-**Run ID:** `RUN-20260930155254441026-bb4d8b54` | **Validation Engine:** Fully Deterministic (No AI/ML)
+**Run ID:** `RUN-20260930170705713026-1aa2a777` | **Validation Engine:** Fully Deterministic (No AI/ML)
 
 ## 1. Executive Summary & Verification Criteria
 This report documents whether each detection rule's code correctly implements its own specified logic, measured against a synthetic ground-truth dataset across 10 Critical Sector Entities (CSEs) whose injected defects are deliberately built to clearly exceed each rule's threshold. High scores here demonstrate implementation correctness on an unambiguous dataset, not real-world detection accuracy -- see docs/validation.md Section 0 for the harder, more realistic 'stress scenario' (`satsa validate-stress`) and Section 5 for the Shadow-Pilot mode against real historical findings.
@@ -58,13 +58,13 @@ Precision counts every finding whose (entity, rule) pair is not an injected defe
 | `NS08` | 1 | 0 | 0 |
 
 ## 4. Review-Effort Lift Analysis
-Review-effort lift compares the share of defect-affected alerts among the review queue's top alert items with the share among all alerts (what random sampling would find), at budgets of 1%, 2% and 5% of total alerts. Both sides count alert records only. The queue holds 129 alert items (167 items in total); where a budget exceeds that, only the items that exist are counted as examined.
+Review-effort lift compares the share of defect-affected alerts among the review queue's top alert items with the share among all alerts (what random sampling would find), at budgets of 1%, 2% and 5% of total alerts. Both sides count alert records only. The queue holds 130 alert items (168 items in total); where a budget exceeds that, only the items that exist are counted as examined.
 
 | Audit Budget (% of Alerts) | Budget (alerts) | Queue Alerts Examined | Affected Alerts Found | Queue Hit Rate | Random Sampling Rate | Lift Factor |
 |---|---|---|---|---|---|---|
-| **1%** | 162 | 129 (queue exhausted) | 19 | 14.7% | 2.67% | **5.52x** |
-| **2%** | 325 | 129 (queue exhausted) | 19 | 14.7% | 2.67% | **5.52x** |
-| **5%** | 812 | 129 (queue exhausted) | 19 | 14.7% | 2.67% | **5.52x** |
+| **1%** | 162 | 130 (queue exhausted) | 18 | 13.9% | 2.67% | **5.19x** |
+| **2%** | 325 | 130 (queue exhausted) | 18 | 13.9% | 2.67% | **5.19x** |
+| **5%** | 812 | 130 (queue exhausted) | 18 | 13.9% | 2.67% | **5.19x** |
 
 Lift by queue depth (alert items in score order; these depths always fit inside the queue):
 
@@ -74,7 +74,7 @@ Lift by queue depth (alert items in score order; these depths always fit inside 
 | 25 | 13 | 52.0% | **19.47x** |
 | 50 | 16 | 32.0% | **11.98x** |
 | 100 | 18 | 18.0% | **6.74x** |
-| 129 | 19 | 14.7% | **5.52x** |
+| 130 | 18 | 13.9% | **5.19x** |
 
 ## 5. Shadow-Pilot Integration Method
 The `ShadowPilotAdapter` class allows regulatory examiners to validate SAT-SA against historical manual examination findings.
@@ -84,7 +84,7 @@ Examiners provide historical CSV logs with schema `(entity_id, record_id, rule_i
 3. **Workpaper precision**: Of the SAT-SA findings the workpaper adjudicates, the share examiners confirmed. Findings the workpaper does not mention are listed as unadjudicated, not counted as false positives.
 
 ### Shadow-Pilot Results
-Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-30T15:53:17.752262+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
+Workpaper `shadow_pilot_standin.csv`, evaluated 2026-09-30T17:07:22.298496+00:00 by cli. These figures are only as independent as the workpaper labels supplied: labels taken from real historical examiner findings are evidence; synthetic or stand-in labels only rehearse the pipeline (see docs/validation.md Section 5A).
 
 | Measure | Value |
 |---|---|
