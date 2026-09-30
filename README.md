@@ -251,13 +251,13 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 | **Entity Rank Precision@7** (primary, unambiguous dataset) | **100.0%** (top-7 entities ranked accurately) | $\ge 90.0\%$ | Meets target |
 | **Defect Precision** (primary, unambiguous dataset; every finding counted) | **100.0%** (21 of 21 findings; 0 false positives on any entity) | $\ge 85.0\%$ | Meets target |
 | **Stress Scenario Defect Precision** (borderline/ambiguous/noisy, synthetic) | **100.0%** (3 of 3 findings) on the published seed | n/a -- reported for transparency | Synthetic; thresholds known when built |
-| **Hard set** (8 other seeds x 3 volumes, and the stress scenario under 20 seeds; `docs/validation_hard_report.md`) | Portfolio: recall **99.6%** (502/504), precision **98.0%** (502/512); EG10 raises a false positive on one entity in 10 of 24 runs. Stress: recall 60/60, precision **93.8%** (60/64); the noisy clean entity trips EG05 in 4 of 20 seeds. | n/a -- reported for transparency | Synthetic. Shows what one seed hides; see `docs/validation_summary.md` |
-| **Review-Effort Lift** (primary dataset) | **19.5x** for the top 25 queue alerts, **12.0x** for the top 50, **5.52x** for the whole 129-alert queue, vs random sampling. (Every 1%/2%/5% budget exceeds the queue, so those all equal 5.52x.) *See docs/validation_report.md Section 4.* | $\ge 5.00x$ | Meets target |
+| **Hard set** (8 other seeds x 3 volumes, and the stress scenario under 20 seeds; `docs/validation_hard_report.md`) | Portfolio: recall **100%** (503/503), precision **100%** (503/503), 0 of 72 clean entities flagged (before three generator faults were fixed: 99.6% and 98.0%). Stress: recall 60/60, precision **93.8%** (60/64); the noisy clean entity trips EG05 in 4 of 20 seeds. | n/a -- reported for transparency | Synthetic. Shows what one seed hides; see `docs/validation_summary.md` |
+| **Review-Effort Lift** (primary dataset) | **19.5x** for the top 25 queue alerts, **12.0x** for the top 50, **5.19x** for the whole 130-alert queue, vs random sampling. (Every 1%/2%/5% budget exceeds the queue, so those all equal 5.19x.) *See docs/validation_report.md Section 4.* | $\ge 5.00x$ | Meets target |
 | **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations) | $\ge 0.8500$ | Meets target |
 | **Rule Threshold Sensitivity** (primary dataset) | **4 of 66** single-threshold ±20% moves change an outcome, all injected defects built just over their threshold (EG05 pairs, EG07, NS05, NS08's review period). None creates a false alarm on a clean entity on this seed; across the hard set, lowering EG05's pair threshold does. | n/a -- reported for transparency | Margins are synthetic; real calibration needs the pilot |
 | **DuckDB Scan Throughput** | **10,623,549 rows/second** (single aggregation query, in memory) | $\ge 1,000,000$ | Measured, exceeds target |
 | **Scale, end to end** (`docs/benchmarks.md`) | 5,000,000 alerts (50 entities, 21.4M rows): ingest **603 s** (13.2 GB peak), assessment **310 s** (3.3 GB peak); repeat page loads under 0.7 s | n/a | Measured on a 4-core / 24 GB laptop, uniform synthetic data |
-| **Automated Test Suite** | **866 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), from freshly generated data on Python 3.13 (Windows). Statement-and-branch coverage **89%** overall; rules 94-100%, scoring 83-100%, audit-chain store 91%. Not re-run on Python 3.11 or Linux in this pass. | 100% passing | Verified locally |
+| **Automated Test Suite** | **871 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), from freshly generated data on Python 3.13 (Windows). Statement-and-branch coverage **89%** overall; rules 94-100%, scoring 83-100%, audit-chain store 91%. Not re-run on Python 3.11 or Linux in this pass. | 100% passing | Verified locally |
 
 ---
 
@@ -481,7 +481,7 @@ satsa/
 │   └── ui/                      # Server-rendered Jinja2 templates & static assets
 │       ├── static/              # SAT-SA CSS stylesheets and vendored echarts.min.js
 │       └── templates/           # Clean, responsive HTML templates for all 10 tabs
-├── tests/                       # pytest suite (866 passing tests)
+├── tests/                       # pytest suite (871 passing tests)
 │   ├── test_admin_portal.py     # NCIIPC Admin Portal routes & CRUD verification
 │   ├── test_admin_satsa_integration.py # E2E Admin-to-SATSA provisioning & scoping
 │   ├── test_admin_activity_feed.py # Admin activity feed (operator session monitor) verification
