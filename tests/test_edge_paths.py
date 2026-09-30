@@ -133,3 +133,46 @@ def test_case_rules_below_their_thresholds_stay_silent(tmp_path):
                 rule.reference_date = None
     finally:
         store.close()
+
+
+# ------------------------------------------------------------------ impossible timestamps
+
+
+def test_alerts_closed_before_creation_do_not_move_the_kpi_reconciliation(tmp_path):
+    """Two alerts stamped closed 60 days before they were raised must not decide EG10 either
+    way: they are timestamp faults (DQ check close_before_create), not closure times."""
+    store = DuckDBStore(tmp_path / "pq")
+    try:
+        store.execute(
+            "INSERT INTO declared_kpi (entity_id, period, metric, severity, value) VALUES ('E1', '2026-Q1', 'MTTR', 'high', 100.0)"
+        )
+        rows = [("E1", f"A{i}", datetime(2026, 2, 1 + i % 20, 9), datetime(2026, 2, 1 + i % 20, 12)) for i in range(40)]
+        rows += [("E1", f"BAD{i}", datetime(2026, 5, 1), datetime(2026, 3, 1)) for i in range(2)]
+        for entity_id, alert_id, created, closed in rows:
+            store.execute(
+                "INSERT INTO alert (entity_id, alert_id, severity_final, created_at, closed_at, closed_by_type) "
+                "VALUES (?, ?, 'high', ?, ?, 'human')",
+                [entity_id, alert_id, created, closed],
+            )
+        findings, _ = RuleRegistry().get_rule("EG10").evaluate("E1", store, [], "RUN")
+        # 40 alerts at 180 minutes against a declared 100: an 80% gap. Averaged with the two
+        # inverted records the mean would be about -4,000 minutes and the gap would vanish.
+        assert len(findings) == 1
+        assert findings[0].peer_comparison["empirical_mttr_mins"] == pytest.approx(180.0)
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("seed,volume", [(42, 300), (808, 600), (808, 1500), (303, 300)])
+def test_generated_defects_are_what_their_ground_truth_says(seed, volume):
+    from satsa.synth.generator import SyntheticDataGenerator
+
+    data, truth = SyntheticDataGenerator(seed=seed, base_alerts_per_entity=volume).generate()
+    assert not [a.alert_id for a in data["alert"] if a.closed_at and a.closed_at < a.created_at]
+    period_end = max(a.created_at for a in data["alert"])
+    cases = {c.case_id: c for c in data["case"]}
+    for defect in truth.defects:
+        assert defect.affected_ids, f"{defect.entity_id}:{defect.rule_id} records a defect that touched nothing"
+        if defect.rule_id == "EG09":
+            stale = [cid for cid in defect.affected_ids if (period_end - cases[cid].opened_at).days > 14]
+            assert len(stale) >= 3, "EG09's injected cases must actually be stale"
