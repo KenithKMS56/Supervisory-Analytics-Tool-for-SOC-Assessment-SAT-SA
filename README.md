@@ -75,7 +75,7 @@ SAT-SA evaluates each periodic CSE submission against **12 Execution Gaps** (mal
 | **NS05** | Inactive Rule Coverage | $>40\%$ (and $\ge 5$) of enabled detection rules never fired in the period. | Medium |
 | **NS06** | Inventory Reconciliation Gap | $\ge 2$ inventory assets with no log events and no alerts (ghost assets). | High |
 | **NS07** | Absent Regulatory Reporting | Any Critical case with no external (NCIIPC/CERT-In) report record; presence only, timeliness not checked. | Critical |
-| **NS08** | Submission Completeness Deficit | Alerts cover fewer than the 6 months of the review period. | High |
+| **NS08** | Submission Completeness Deficit | Alerts cover fewer months than the review period (the months the portfolio submitted, up to 6). | High |
 
 All thresholds except EG03, NS07 and NS08 are configurable in `config/rules.yaml` and on the Tuning page; the values above are the defaults. Full logic: [`docs/analytics_methodology.md`](docs/analytics_methodology.md) Section 3.
 
@@ -255,7 +255,7 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 | **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations) | $\ge 0.8500$ | Meets target |
 | **Rule Threshold Sensitivity** (primary dataset) | **3 of 64** single-threshold ±20% moves change an outcome, all injected defects built just over their threshold (EG05 pairs, EG07, NS05). None creates a false alarm on a clean entity. (EG05's and EG11's fixed thresholds did, before the chance floor and the peer robust z-score.) | n/a -- reported for transparency | Margins are synthetic; real calibration needs the pilot |
 | **DuckDB Scan Throughput** | **10,623,549 rows/second** | $\ge 1,000,000$ | Measured, exceeds target |
-| **Automated Test Suite** | **734 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), on Python 3.13 from freshly generated data; CI runs 3.11 and 3.13 | 100% passing | Verified locally on 3.13 |
+| **Automated Test Suite** | **740 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), from freshly generated data on Python 3.13 (Windows); the suite as of Step 29 also passed on 3.11; CI runs both on Linux | 100% passing | Verified locally |
 
 ---
 

@@ -91,7 +91,7 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
 - **8-Domain Supervisory Heatmap:** Matrix visualizing risk scores across all 10 CSEs and 8 capability domains (Threat Detection, Investigation, Escalation, Incident Response, Security Operations, Governance & Oversight, Operational Discipline, Cyber Resilience).
 - **One-Click Dossier Exports:** Direct access to Portfolio HTML reports, Findings CSV, and Review Queue CSV.
 - **Systemic / Cross-Entity Findings:** a distinct section (rendered only when present) surfacing patterns where 3+ entities sharing the same third-party SOC provider all triggered the identical rule in the same run -- see `satsa.rules.systemic` and `docs/analytics_methodology.md` Section 3A.
-- **Multi-Period Risk Trajectory Trend Chart:** plots REAL historical risk_index values from persisted `entity_scores` across past assessment runs (never fabricated); entities with fewer than 2 historical runs are omitted with an "insufficient history" notice rather than padded with synthesized points.
+- **Multi-Period Risk Trajectory Trend Chart:** plots REAL historical risk_index values from persisted `entity_scores` across past assessment runs (never fabricated). `satsa seed-history` builds earlier periods by re-assessing the stored data as it stood at each period's cutoff date; entities with fewer than 2 historical runs are omitted with an "insufficient history" notice rather than padded with synthesized points.
 
 ### 2. National Alert Explorer (`/alerts`)
 - **Cross-Entity Alert Grid:** Searchable multi-entity alert catalog with live filtering by severity, entity ID, and disposition.

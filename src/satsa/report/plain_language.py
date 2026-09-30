@@ -207,10 +207,10 @@ HEADLINES: dict[str, tuple[str, Formatters]] = {
     ),
     "NS08": (
         (
-            "{entity}'s submission covers only {active_months} of the required 6 months of alert "
-            "data."
+            "{entity}'s submission covers only {active_months} of the {expected_months} months of "
+            "alert data in the review period."
         ),
-        {"active_months": _count},
+        {"active_months": _count, "expected_months": _count},
     ),
 }
 

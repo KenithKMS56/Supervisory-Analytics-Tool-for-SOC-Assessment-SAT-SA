@@ -382,3 +382,32 @@ The only differences in the validation report are the run ID and the audit-entry
 - **Rows 11 and 13** corrected (queue composition; roles are NCIIPC Analyst / Examiner, not admin/supervisor/examiner).
 - **Effect.** Detection unchanged (21/21, 0 false positives; sweep 3 of 64). The queue is 147 items (57 cited, 90 random) because EG11 now cites sample alerts; lift is 20.97x (top 25), 12.73x (top 50), 5.98x (all 119 alerts). Three dependency warnings on the synthetic data: CSE-08 `case` and `case_alert_link` (its injected defect) and CSE-10 `external_report`.
 - **Verified.** 734 passed / 0 failed / 33 skipped on Python 3.13 from freshly generated data (4 PDF/bundle tests run from the repo path); `satsa validate`, `satsa validate-stress`, ruff and mypy clean.
+
+## Step 28 — Submission manifest: "never submitted" is no longer read as a SOC defect — done, verified
+
+- **Problem (from Step 27).** Rules that treat absence as the signal could not tell "the SOC never did this" from "this table was not submitted"; Step 27 only warned.
+- **Manifest.** Ingest records, per entity, every table its submissions have included (`submitted_tables` in SQLite; a file or payload section present, even with zero rows). A header-only file now counts: it used to be skipped as if absent.
+- **Assessment.** When an entity has no rows in a table a rule depends on: table **not in its manifest** → the rule is *not assessed* for that entity (`rule_not_assessed`, no finding, no clean result); table **in the manifest but empty** → the rule runs, absence is a real signal (`rule_dependency_empty`, "submitted but holds no records"); **no manifest at all** (data stored before manifests, or written directly) → the rule runs with the Step 27 warning. Withholding a table is therefore visible, not rewarded.
+- **JSON endpoint.** `POST /api/v1/submissions` records the sections it stored, so rules needing tables it cannot carry (escalations, workflow events, ...) are not assessed for entities submitted that way.
+- **Second swallowed failure.** A submission file that failed to parse was dropped by `except Exception: continue`. It is now logged, reported as `file_unreadable`, returned in the ingest result, and kept out of the manifest.
+- **Effect on the synthetic run.** None on detection (21/21, 0 false positives): every table is present in the combined submission, so CSE-08's missing cases remain a finding (submitted table, no rows for it).
+- **Tests.** Three manifest cases and the unreadable-file case in `tests/test_ingest.py`.
+- **Verified.** 737 passed / 0 failed / 33 skipped on Python 3.13 from freshly generated data (4 PDF/bundle tests run from the repo path); `satsa validate`, `satsa validate-stress`, ruff and mypy clean.
+
+## Step 29 — Python 3.11 verification — done
+
+- **Why.** Every step since Step 18 was verified on Python 3.13 only; CI also runs 3.11, and the repository's CI results were not visible from the work session.
+- **What ran on 3.11.16.** The CI sequence: generate, ingest, run, the full test suite, `satsa validate`, `satsa validate-stress`, `satsa audit verify`, ruff, mypy. All 97 source, test and script files also parse under 3.11.
+- **Result.** Identical to 3.13: 737 passed / 0 failed / 33 skipped; detection 21/21 and 3/3 with 0 false positives; threshold sweep 3 of 64; audit chain intact; ruff and mypy clean.
+- **Note for anyone repeating this on Windows.** A virtual environment or working copy under a very long path fails in ways that look like code errors (reportlab cannot import a font module; PDF and bundle tests return 500) because paths exceed 260 characters. Use a short path.
+- **Not verified here.** Linux, which CI uses.
+
+## Step 30 — Historical periods were the full run relabelled; review of Step 27–28 changes — done, verified
+
+- **Trend chart showed one run three times.** `seed_historical_periods` truncates a copy of the data to each period's cutoff and calls `run_assessment`, which began by reloading every table from Parquet, restoring the full dataset. Every "historical period" had identical findings and risk indices ("2026-Q1" already contained June's data). The existing test only checked that three distinct run IDs were produced. `run_assessment(refresh_tables=False)` now assesses the prepared window; escalations, workflow events, remediation tickets and external reports are cut at the same date.
+- **What the periods look like now** (synthetic data): first window 13 findings, then 19, then the current 21; e.g. CSE-05's NS01 (asset silent from 10 March) is absent from the first window and present afterwards.
+- **NS08 in a partial period.** "Fewer than 6 months" flagged every entity in a two-month window. NS08 now expects the months the portfolio's submissions cover, capped at 6 (an entity alone in the portfolio is still held to 6). Unchanged on the full dataset.
+- **Historical runs rewrote the DQ view** (introduced in Steps 27–28): each run deleted and rebuilt the missing-table entries from the truncated window. `record_data_gaps=False` now leaves the DQ view, which describes the current submission, untouched.
+- **Empty files were recorded as the wrong table** (introduced in Step 28): the file-name resolver defaults to `alert`, so any unrecognised empty file entered the manifest as the alert table, and a header-only file with an unfamiliar name was not identified. Empty CSVs are now identified by name or header row and ignored when neither matches.
+- **Tests.** `test_historical_periods_assess_their_own_window_not_the_full_dataset`, `test_ns08_expects_the_period_the_portfolio_covers`, `test_empty_files_are_identified_by_name_or_header_not_defaulted_to_alert`.
+- **Verified.** 740 passed / 0 failed / 33 skipped on Python 3.13 from freshly generated data (4 PDF/bundle tests run from the repo path); detection unchanged (21/21, 0 false positives); `satsa validate`, `satsa validate-stress`, ruff and mypy clean. Not re-run on 3.11 after this step.
