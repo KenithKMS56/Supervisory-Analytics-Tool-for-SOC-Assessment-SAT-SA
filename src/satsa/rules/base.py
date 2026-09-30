@@ -60,6 +60,16 @@ class BaseRule(ABC):
         scale = max(1.4826 * RobustStats.mad(peer_values), min_spread)
         return (value - median) / scale, median
 
+    @staticmethod
+    def population(store: DuckDBStore, sql: str, params: list[Any]) -> int:
+        """Size of the population a rule examined (a `SELECT count(*) ...` query).
+
+        This, not the number of offending records, is the sample size for confidence:
+        how many offenders there are already drives the score through its distance term.
+        """
+        df = store.query(sql, params)
+        return int(df.row(0)[0]) if not df.is_empty() else 0
+
     def compute_rule_score(self, distance: float, n_sample: int) -> tuple[float, float]:
         """
         Calculate rule score (0..100) and confidence (0..1).
