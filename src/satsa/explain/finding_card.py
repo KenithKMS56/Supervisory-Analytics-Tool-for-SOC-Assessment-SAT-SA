@@ -4,6 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from satsa import FINDING_NOTICE
 from satsa.models.outputs import Finding, FindingEvidence
 
 
@@ -30,9 +31,7 @@ class FindingCard(BaseModel):
     benign_explanations: list[str] = Field(default_factory=list)
     examiner_check: str
     evidence_records: list[dict[str, Any]] = Field(default_factory=list)
-    statutory_wording: str = (
-        "Indicator requiring supervisory review; not a compliance determination."
-    )
+    statutory_wording: str = FINDING_NOTICE
 
     @classmethod
     def from_finding_and_evidence(

@@ -32,6 +32,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from satsa import SUPERVISORY_NOTICE
 from satsa.report.pdf_charts import paired_bars
 from satsa.report.plain_language import action_for, headline, paired_comparison
 
@@ -129,11 +130,15 @@ class _NumberedCanvas(rl_canvas.Canvas):
 
 
 def _draw_footer(c: rl_canvas.Canvas, meta: RunMeta) -> None:
-    """A plain rule above the page number; the footer carries no wording."""
+    """A rule, then the supervisory notice on the left of the page number, on every page."""
     y = MARGIN_BOTTOM - 8 * mm
     c.setStrokeColor(RULE)
     c.setLineWidth(0.8)
     c.line(MARGIN_X, y + 10, PAGE_W - MARGIN_X, y + 10)
+    # A page can be printed or passed on alone, so each one says what it is.
+    c.setFont("Helvetica", 7.5)
+    c.setFillColor(MUTED)
+    c.drawString(MARGIN_X, MARGIN_BOTTOM - 14 * mm + 4, SUPERVISORY_NOTICE)
 
 
 def _draw_header(c: rl_canvas.Canvas, report_label: str) -> None:
@@ -157,7 +162,7 @@ def build_pdf(
     """Build `story` into `path` atomically (temp file + os.replace), on A4.
 
     With `cover=True` the first page has no running header (a presentation
-    cover); every page carries the footer, the notice and 'Page X of Y'.
+    cover); every page carries the footer: the supervisory notice and 'Page X of Y'.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")

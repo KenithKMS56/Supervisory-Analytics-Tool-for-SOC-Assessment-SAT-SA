@@ -18,6 +18,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from satsa import FINDING_NOTICE
 from satsa.report.pdf_charts import (
     CRITICAL_THRESHOLD,
     MODERATE_THRESHOLD,
@@ -849,12 +850,14 @@ class ReportGenerator:
         cur.execute("SELECT * FROM findings ORDER BY score DESC")
         rows = cur.fetchall()
 
+        # Every exported row carries the notice: a CSV is read and forwarded without the
+        # page it was downloaded from.
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if rows:
-                writer.writerow(rows[0].keys())
+                writer.writerow([*rows[0].keys(), "supervisory_notice"])
                 for r in rows:
-                    writer.writerow(list(r))
+                    writer.writerow([*r, FINDING_NOTICE])
         return path
 
     def export_queue_csv(self, output_path: Path | str) -> Path:
@@ -868,9 +871,9 @@ class ReportGenerator:
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if rows:
-                writer.writerow(rows[0].keys())
+                writer.writerow([*rows[0].keys(), "supervisory_notice"])
                 for r in rows:
-                    writer.writerow(list(r))
+                    writer.writerow([*r, FINDING_NOTICE])
         return path
 
     def export_metrics_csv(self, output_path: Path | str) -> Path:

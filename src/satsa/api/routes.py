@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from satsa import FINDING_NOTICE, SUPERVISORY_NOTICE
 from satsa.admin.rbac import SATSA_OPERATOR_ROLES, is_analyst, is_examiner
 from satsa.auth.identities import MIN_PASSPHRASE_LENGTH, passphrase_policy_error
 from satsa.auth.session import (
@@ -109,6 +110,7 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["get_identity"] = get_current_identity
 # Role-adaptive views: templates decide what to show from these, never from
 # raw role strings, so every alias of a role (e.g. "NCIIPC Analyst") matches.
+templates.env.globals["supervisory_notice"] = SUPERVISORY_NOTICE
 templates.env.globals["band_tier"] = band_tier
 templates.env.globals["is_analyst"] = is_analyst
 templates.env.globals["is_examiner"] = is_examiner
@@ -1192,7 +1194,8 @@ async def api_list_findings(entity_id: str | None = None) -> list[dict[str, Any]
         cur.execute("SELECT * FROM findings WHERE entity_id = ? ORDER BY score DESC", (entity_id,))
     else:
         cur.execute("SELECT * FROM findings ORDER BY score DESC")
-    rows = [dict(r) for r in cur.fetchall()]
+    # A finding that leaves the tool as data still says what it is.
+    rows = [{**dict(r), "supervisory_notice": FINDING_NOTICE} for r in cur.fetchall()]
     sqlite_store.close()
     return rows
 
@@ -1207,7 +1210,7 @@ async def api_get_queue(entity_id: str | None = None) -> list[dict[str, Any]]:
         )
     else:
         cur.execute("SELECT * FROM review_queue ORDER BY score DESC")
-    rows = [dict(r) for r in cur.fetchall()]
+    rows = [{**dict(r), "supervisory_notice": FINDING_NOTICE} for r in cur.fetchall()]
     sqlite_store.close()
     return rows
 
@@ -1257,9 +1260,9 @@ async def api_export_queue_csv() -> Response:
     output = io.StringIO()
     writer = csv.writer(output)
     if rows:
-        writer.writerow(rows[0].keys())
+        writer.writerow([*rows[0].keys(), "supervisory_notice"])
         for r in rows:
-            writer.writerow(list(r))
+            writer.writerow([*r, FINDING_NOTICE])
 
     return Response(
         content=output.getvalue(),
