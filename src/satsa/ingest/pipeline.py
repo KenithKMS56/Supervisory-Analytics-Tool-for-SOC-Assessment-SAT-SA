@@ -10,10 +10,12 @@ import polars as pl
 from satsa.ingest.adapters import SourceAdapter
 from satsa.ingest.dq_checks import DQValidator
 from satsa.ingest.manifest import ManifestBuilder
+from satsa.ingest.mapper import SourceMapping
 from satsa.ingest.normaliser import TaxonomyNormaliser
 from satsa.ingest.pseudonymise import Pseudonymiser
 from satsa.ingest.redact import Redactor
 from satsa.models.outputs import DQIssue
+from satsa.rules.registry import RULE_ALERT_FIELDS, rule_coverage
 from satsa.security import is_valid_entity_id, require_entity_id
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
@@ -28,6 +30,14 @@ _ALERT_CHILD_TABLES: list[tuple[str, str, Callable[[dict[str, Any]], bool]]] = [
     ("escalation", "ref_id", lambda r: True),
     ("case_alert_link", "alert_id", lambda r: True),
 ]
+
+
+# Values that say "no verdict recorded": a disposition column holding only these is empty.
+_NO_VALUE = frozenset({"", "unknown", "unmapped", "none", "null"})
+
+
+def _usable(value: Any) -> bool:
+    return value is not None and str(value).strip().lower() not in _NO_VALUE
 
 
 def _store_table(canonical_table: str) -> str:
@@ -385,14 +395,32 @@ class IngestionPipeline:
         return norm
 
     def ingest_directory(
-        self, input_dir: Path | str, default_entity_id: str | None = None
+        self,
+        input_dir: Path | str,
+        default_entity_id: str | None = None,
+        mapping: SourceMapping | None = None,
     ) -> dict[str, Any]:
         """Ingest all CSV and JSON tables from directory, validate DQ, and store as Parquet.
 
         Rows whose `entity_id` fails satsa.security.ENTITY_ID_RE are dropped
         (never written, never evaluated) and reported as an `invalid_entity_id`
         DQ issue, so a malformed ID can't reach a query or a partition path.
+
+        With `mapping` (a product export mapping from config/mappings/), files are not in
+        the canonical layout: each is translated by the mapping, every row belongs to
+        `default_entity_id` (else the mapping's own entity), and a file the mapping does
+        not describe is reported instead of being guessed at.
+
+        The result says what the submission lets each rule do (`rule_coverage`) and how
+        complete each stored column is (`field_coverage`).
         """
+        if mapping is not None:
+            default_entity_id = default_entity_id or mapping.entity_id
+            if not default_entity_id:
+                return {
+                    "status": "error",
+                    "message": "A source mapping needs a target entity (--entity, or entity_id in the mapping).",
+                }
         if default_entity_id is not None:
             require_entity_id(default_entity_id)
         dir_path = Path(input_dir)
@@ -416,13 +444,52 @@ class IngestionPipeline:
         # says "we submit this table and it is empty", which is different from not sending it.
         declared_tables: set[str] = set()
         unreadable_files: list[str] = []
+        unmapped_files: list[str] = []
+        unused_source_columns: dict[str, list[str]] = {}
+
+        def read(path: Path) -> list[dict[str, Any]] | None:
+            try:
+                if path.suffix.lower() == ".csv":
+                    return SourceAdapter.read_csv(path)
+                return SourceAdapter.read_json(path)
+            except Exception:
+                # Reported below as a DQ error: a file dropped without trace would make
+                # its table look absent, and rules would read that as a SOC defect.
+                logger.exception("Could not read submission file %s", path.name)
+                unreadable_files.append(path.name)
+                return None
+
+        # A product export is read up front: one file may be needed to translate ids in
+        # another. The canonical layout is read one file at a time, so only one file's raw
+        # rows are in memory at once.
+        preloaded: dict[Path, list[dict[str, Any]] | None] = {}
+        if mapping is not None:
+            preloaded = {f: read(f) for f in raw_files}
+            mapping.build_lookups({f.stem: rows for f, rows in preloaded.items() if rows is not None})
 
         for f in raw_files:
+            raw_rows = preloaded.pop(f) if mapping is not None else read(f)
+            if raw_rows is None:
+                continue
             try:
-                if f.suffix.lower() == ".csv":
-                    raw_rows = SourceAdapter.read_csv(f)
-                else:
-                    raw_rows = SourceAdapter.read_json(f)
+                if mapping is not None:
+                    specs = mapping.specs_for_file(f.stem)
+                    if not specs:
+                        unmapped_files.append(f.name)
+                        continue
+                    assert default_entity_id is not None
+                    if raw_rows:
+                        processed_files.append(f)
+                        used = set().union(*(spec.source_columns() for spec in specs))
+                        unused = sorted(set(raw_rows[0]) - used)
+                        if unused:
+                            unused_source_columns[f.name] = unused
+                    for spec in specs:
+                        declared_tables.add(_store_table(spec.table))
+                        mapped = mapping.map_rows(raw_rows, spec, default_entity_id)
+                        tables_data.setdefault(spec.table, []).extend(mapped.rows)
+                        row_counts[spec.table] = row_counts.get(spec.table, 0) + len(mapped.rows)
+                    continue
 
                 if not raw_rows:
                     empty_table = self.table_for_empty_file(f)
@@ -458,8 +525,6 @@ class IngestionPipeline:
                     normalized_rows
                 )
             except Exception:
-                # Reported below as a DQ error: a file dropped without trace would make
-                # its table look absent, and rules would read that as a SOC defect.
                 logger.exception("Could not read submission file %s", f.name)
                 unreadable_files.append(f.name)
 
@@ -477,7 +542,7 @@ class IngestionPipeline:
 
         # Determine entities involved
         entities_present: set[str] = set()
-        for tbl in ["entity", "alert", "case_record", "asset", "declared_kpi"]:
+        for tbl in ["entity", "alert", "case_record", "case", "asset", "declared_kpi"]:
             if tbl in tables_data:
                 for r in tables_data[tbl]:
                     val = r.get("entity_id")
@@ -492,13 +557,14 @@ class IngestionPipeline:
         # Apply Pseudonymisation, Normalization, and Redaction
         if "alert" in tables_data:
             for r in tables_data["alert"]:
-                if r.get("closed_by_type") == "human" and r.get("closed_by"):
-                    r["closed_by"] = self.pseudonymiser.pseudonymise(
-                        r["closed_by"], prefix="ANALYST"
-                    )
-                # Defaults
+                # The default comes first: a source with no closer-type column is all human,
+                # and its analysts' names must be pseudonymised like any other.
                 if not r.get("closed_by_type"):
                     r["closed_by_type"] = "human"
+                if r.get("closed_by_type") == "human" and r.get("closed_by"):
+                    r["closed_by"] = self.pseudonymiser.pseudonymise(
+                        str(r["closed_by"]), prefix="ANALYST"
+                    )
                 if r.get("severity_orig"):
                     r["severity_orig"] = self.normaliser.normalise_severity(r["severity_orig"])
                 if r.get("severity_final"):
@@ -515,14 +581,21 @@ class IngestionPipeline:
                 if r.get("actor"):
                     r["actor"] = self.pseudonymiser.pseudonymise(r["actor"], prefix="ACTOR")
 
+        # Case owners are people too: pseudonymised like alert closers and workflow actors.
+        for tbl in ("case_record", "case"):
+            for r in tables_data.get(tbl, []):
+                if r.get("owner"):
+                    r["owner"] = self.pseudonymiser.pseudonymise(str(r["owner"]), prefix="OWNER")
+
         if "closure" in tables_data:
             for r in tables_data["closure"]:
-                raw_c = r.get("comment", "")
+                # The free text itself is never stored: only its redacted hash, length and shingles.
+                raw_c = r.pop("comment", "")
                 if raw_c:
                     redacted = self.redactor.redact_text(str(raw_c))
                     r["comment_norm_hash"] = self.redactor.compute_norm_hash(redacted)
                     r["comment_len"] = len(redacted)
-                    shingles = self.redactor.generate_shingles(redacted)
+                    shingles = self.redactor.hash_shingles(self.redactor.generate_shingles(redacted))
                     r["comment_shingles"] = ",".join(shingles[:10])
 
         # Auto-register newly discovered entities into the entity table
@@ -559,6 +632,21 @@ class IngestionPipeline:
                         f"{len(unreadable_files)} submitted file(s) could not be read and were not ingested: "
                         f"{', '.join(sorted(unreadable_files))}. Rules that depend on their tables are unreliable "
                         "until the files are fixed and re-submitted."
+                    ),
+                )
+            )
+        if unmapped_files:
+            all_dq_issues.append(
+                DQIssue(
+                    issue_id=f"DQ-UNMAPPED-FILE-{primary_entity}-{'-'.join(sorted(unmapped_files))[:80]}",
+                    entity_id=primary_entity,
+                    check_name="file_not_mapped",
+                    severity="warning",
+                    count=len(unmapped_files),
+                    sample_records=sorted(unmapped_files)[:5],
+                    details=(
+                        f"{len(unmapped_files)} file(s) are not described by the source mapping and were not "
+                        f"ingested: {', '.join(sorted(unmapped_files))}."
                     ),
                 )
             )
@@ -611,8 +699,11 @@ class IngestionPipeline:
                 )
                 all_dq_issues.extend(dup_issues)
 
-                gap_issues = DQValidator.check_id_sequence_gaps(ent_alerts, "alert_id", ent_id)
-                all_dq_issues.extend(gap_issues)
+                # Only meaningful where alert ids are a running counter; a mapping for a product
+                # whose ids are GUIDs or storage keys says `sequential_ids: false`.
+                if mapping is None or mapping.config.get("sequential_ids", True):
+                    gap_issues = DQValidator.check_id_sequence_gaps(ent_alerts, "alert_id", ent_id)
+                    all_dq_issues.extend(gap_issues)
 
                 null_issues = DQValidator.check_null_rates(
                     ent_alerts, ["rule_id", "asset_id", "closed_by", "disposition"], ent_id, "alert"
@@ -660,13 +751,34 @@ class IngestionPipeline:
                     )
                 )
 
+        # Only the canonical columns are stored. A source column the model does not know
+        # (a free-text note, a user name, an e-mail address) would otherwise sit unredacted
+        # in the Parquet files even though no rule can read it.
+        field_coverage: dict[str, dict[str, Any]] = {}
+        dropped_columns: dict[str, list[str]] = {}
+        for table_name, rows in tables_data.items():
+            canonical_cols = self.duckdb_store.table_columns(_store_table(table_name))
+            if not canonical_cols or not rows:
+                continue
+            allowed = set(canonical_cols)
+            extra = sorted({k for r in rows for k in r} - allowed)
+            if extra:
+                dropped_columns[_store_table(table_name)] = extra
+                tables_data[table_name] = rows = [{k: v for k, v in r.items() if k in allowed} for r in rows]
+            field_coverage[_store_table(table_name)] = {
+                "rows": len(rows),
+                "filled": {
+                    c: sum(1 for r in rows if _usable(r.get(c))) for c in canonical_cols if c != "entity_id"
+                },
+            }
+
         # Write to partitioned Parquet via DuckDBStore. A table that fails to store must
         # not vanish quietly: rules would then read its absence as a SOC defect.
         failed_tables: list[str] = []
         for table_name, rows in tables_data.items():
             if rows:
                 try:
-                    df = pl.DataFrame(rows)
+                    df = pl.DataFrame(rows, infer_schema_length=None)
                     # Canonical table names: map 'case_record' to 'case' if DuckDB DDL requires
                     duck_tbl = "case" if table_name == "case_record" else table_name
                     self.duckdb_store.write_partitioned_parquet(duck_tbl, df)
@@ -689,10 +801,6 @@ class IngestionPipeline:
                         )
                     )
 
-        # Save DQ issues to SQLite
-        for dq in all_dq_issues:
-            self.sqlite_store.save_dq_issue(dq)
-
         # Build manifest and append to audit log
         batch, _manifest_dict = ManifestBuilder.build_manifest(
             entity_id=primary_entity, files=processed_files, row_counts=row_counts
@@ -701,6 +809,44 @@ class IngestionPipeline:
         # file failed to store is not counted, so its rules are not assessed on missing data.
         manifest_tables = declared_tables - {_store_table(t) for t in failed_tables}
         self.sqlite_store.record_submitted_tables(entities_present, manifest_tables, batch.batch_id)
+
+        # What this leaves each rule able to do, per entity: skipped for want of a table, or
+        # running on an alert column the source could not fill.
+        submitted = self.sqlite_store.get_submitted_tables()
+        coverage: dict[str, dict[str, dict[str, list[str]]]] = {}
+        for ent_id in sorted(entities_present):
+            ent_alerts = [a for a in tables_data.get("alert", []) if a.get("entity_id") == ent_id]
+            empty_fields = {
+                column
+                for columns in RULE_ALERT_FIELDS.values()
+                for column in columns
+                if ent_alerts and not any(_usable(a.get(column)) for a in ent_alerts)
+            }
+            coverage[ent_id] = rule_coverage(submitted.get(ent_id, set()), empty_fields)
+            rules_by_column: dict[str, list[str]] = {}
+            for rule_id, columns in coverage[ent_id]["degraded"].items():
+                for column in columns:
+                    rules_by_column.setdefault(column, []).append(rule_id)
+            for column, rule_ids in sorted(rules_by_column.items()):
+                all_dq_issues.append(
+                    DQIssue(
+                        issue_id=f"DQ-RULE-INPUT-{ent_id}-alert-{column}",
+                        entity_id=ent_id,
+                        check_name="rule_input_missing",
+                        severity="warning",
+                        count=len(ent_alerts),
+                        sample_records=sorted(rule_ids),
+                        details=(
+                            f"alert.{column} holds no usable value in any of this entity's {len(ent_alerts)} "
+                            f"submitted alerts. {', '.join(sorted(rule_ids))} read it and cannot fire without "
+                            "it: no finding from them is not evidence that the control works."
+                        ),
+                    )
+                )
+
+        # Save DQ issues to SQLite
+        for dq in all_dq_issues:
+            self.sqlite_store.save_dq_issue(dq)
 
         self.sqlite_store.append_audit(
             action="ingest",
@@ -726,4 +872,10 @@ class IngestionPipeline:
             "submitted_tables": sorted(manifest_tables),
             "dq_issues": len(all_dq_issues),
             "unattributed_rows": unattributed,
+            "rule_coverage": coverage,
+            "field_coverage": field_coverage,
+            "dropped_columns": dropped_columns,
+            "source": mapping.source if mapping is not None else None,
+            "unmapped_files": sorted(unmapped_files),
+            "unused_source_columns": unused_source_columns,
         }

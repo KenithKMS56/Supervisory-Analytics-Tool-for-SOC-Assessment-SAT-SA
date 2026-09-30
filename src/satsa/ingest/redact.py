@@ -46,6 +46,15 @@ class Redactor:
         return ["_".join(words[i : i + k]) for i in range(len(words) - k + 1)]
 
     @staticmethod
+    def hash_shingles(shingles: list[str]) -> list[str]:
+        """Shingles as short hashes: still comparable (Jaccard), no longer readable.
+
+        Regex redaction cannot recognise a person's name in free text, so the words
+        themselves are never stored.
+        """
+        return [hashlib.sha256(s.encode("utf-8")).hexdigest()[:12] for s in shingles]
+
+    @staticmethod
     def jaccard_similarity(shingles_a: list[str], shingles_b: list[str]) -> float:
         """Calculate exact Jaccard similarity between two sets of shingles."""
         set_a = set(shingles_a)

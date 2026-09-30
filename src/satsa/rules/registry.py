@@ -54,6 +54,60 @@ RULE_DEPENDENCIES: dict[str, tuple[str, ...]] = {
 }
 
 
+# Rules that never read the alert table. Every other rule is built on it.
+ALERT_FREE_RULES = frozenset({"EG08", "EG09", "EG12", "NS01", "NS07"})
+
+# Alert columns a rule's conclusion rests on. When a source cannot supply one (every value
+# empty, or every disposition unknown), the rule still runs but can never fire: a clean result
+# from it says nothing about the control. Ingestion reports these as `rule_input_missing`.
+RULE_ALERT_FIELDS: dict[str, tuple[str, ...]] = {
+    "EG01": ("severity_final", "closed_at"),
+    "EG02": ("closed_at",),
+    "EG03": ("severity_final", "disposition"),
+    "EG04": ("closed_at",),
+    "EG05": ("rule_id", "asset_id", "disposition"),
+    "EG06": ("severity_final", "closed_at", "closed_by"),
+    "EG07": ("closed_at", "closed_by"),
+    "EG10": ("severity_final", "closed_at"),
+    "EG11": ("disposition",),
+    "NS02": ("category",),
+    "NS04": ("severity_final", "disposition"),
+    "NS05": ("rule_id",),
+    "NS06": ("asset_id",),
+}
+
+
+def rule_tables(rule_id: str) -> tuple[str, ...]:
+    """Every table a rule reads, `alert` included."""
+    base = () if rule_id in ALERT_FREE_RULES else ("alert",)
+    return base + RULE_DEPENDENCIES.get(rule_id, ())
+
+
+def rule_coverage(
+    submitted_tables: set[str], empty_alert_fields: set[str] | None = None
+) -> dict[str, dict[str, list[str]]]:
+    """What an entity's submission lets each rule do.
+
+    `not_assessed`: rule -> tables it needs that the entity never submitted (the rule is
+    skipped). `degraded`: rule -> alert columns it needs that hold no usable value (the rule
+    runs but cannot fire). `empty_alert_fields=None` means the alert columns were not examined.
+    """
+    not_assessed: dict[str, list[str]] = {}
+    degraded: dict[str, list[str]] = {}
+    for cls in RuleRegistry.RULE_CLASSES:
+        missing = [t for t in rule_tables(cls.id) if t not in submitted_tables]
+        if missing:
+            not_assessed[cls.id] = missing
+            continue
+        unusable = [c for c in RULE_ALERT_FIELDS.get(cls.id, ()) if c in (empty_alert_fields or set())]
+        if unusable:
+            degraded[cls.id] = unusable
+    assessed = [
+        cls.id for cls in RuleRegistry.RULE_CLASSES if cls.id not in not_assessed and cls.id not in degraded
+    ]
+    return {"assessed": {r: [] for r in assessed}, "not_assessed": not_assessed, "degraded": degraded}
+
+
 class RuleRegistry:
     """Registry maintaining active rule classes and config overrides."""
 

@@ -1,5 +1,7 @@
 """CLI for SAT-SA."""
 
+from typing import Any
+
 import typer
 from rich.console import Console
 
@@ -42,6 +44,45 @@ def generate_data_cmd(
     console.print(f"  * Ground Truth: [cyan]{gt_path}[/cyan]")
 
 
+SOURCE_MAPPINGS = {
+    "splunk": "config/mappings/cse_splunk.yaml",
+    "servicenow": "config/mappings/cse_servicenow.yaml",
+    "thehive": "config/mappings/cse_thehive.yaml",
+}
+
+
+def _print_ingest_coverage(result: dict[str, Any]) -> None:
+    """Say plainly what the submission does not contain and which rules that costs."""
+    if result.get("source"):
+        console.print(f"  * Source mapping: [cyan]{result['source']}[/cyan]")
+        for table, info in sorted(result.get("field_coverage", {}).items()):
+            empty = [c for c, n in info["filled"].items() if n == 0]
+            console.print(
+                f"    - {table}: {info['rows']} rows; "
+                + (f"no value for: [yellow]{', '.join(empty)}[/yellow]" if empty else "every column filled")
+            )
+        for name in result.get("unmapped_files", []):
+            console.print(f"    - [yellow]not described by the mapping, not ingested:[/yellow] {name}")
+        for name, columns in sorted(result.get("unused_source_columns", {}).items()):
+            console.print(f"    - {name}: source columns not used: {', '.join(columns)}")
+
+    # Group entities with the same gaps so ten identical CSEs print once.
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for entity_id, cov in sorted(result.get("rule_coverage", {}).items()):
+        skipped = "; ".join(f"{r} (no {', '.join(t)})" for r, t in sorted(cov["not_assessed"].items()))
+        degraded = "; ".join(f"{r} (alert.{', alert.'.join(c)} empty)" for r, c in sorted(cov["degraded"].items()))
+        if skipped or degraded:
+            grouped.setdefault((skipped, degraded), []).append(entity_id)
+    for (skipped, degraded), entity_ids in grouped.items():
+        console.print(f"  * Rule coverage for [cyan]{', '.join(entity_ids)}[/cyan]:")
+        if skipped:
+            console.print(f"    - [yellow]Not assessed[/yellow] (table never submitted): {skipped}")
+        if degraded:
+            console.print(f"    - [yellow]Cannot fire[/yellow] (input column empty): {degraded}")
+    if result.get("rule_coverage") and not grouped:
+        console.print("  * Rule coverage: all 20 rules can be assessed for every entity in this submission.")
+
+
 @app.command("ingest")
 def ingest_cmd(
     data_dir: str = typer.Option(
@@ -53,20 +94,49 @@ def ingest_cmd(
     parquet_dir: str = typer.Option(
         "data", "--parquet-dir", help="Root directory for Parquet storage"
     ),
+    source: str = typer.Option(
+        None, "--source", help=f"Product export to translate: {', '.join(sorted(SOURCE_MAPPINGS))}"
+    ),
+    mapping_path: str = typer.Option(
+        None, "--mapping", help="Source mapping YAML (instead of --source), see config/mappings/"
+    ),
+    entity: str = typer.Option(
+        None, "--entity", "-e", help="Entity the files belong to (required with --source / --mapping)"
+    ),
 ) -> None:
     """Ingest datasets, execute DQ checks, pseudonymise actors, redact PII, and store partitioned Parquet."""
     from pathlib import Path
 
+    from satsa.ingest.mapper import MappingError, SourceMapping
     from satsa.ingest.pipeline import IngestionPipeline
     from satsa.store.duckdb import DuckDBStore
     from satsa.store.sqlite import SQLiteStore
+
+    mapping = None
+    if source and mapping_path:
+        console.print("[bold red][!] Give either --source or --mapping, not both.[/bold red]")
+        raise typer.Exit(code=2)
+    if source or mapping_path:
+        if source and source not in SOURCE_MAPPINGS:
+            console.print(
+                f"[bold red][!] Unknown source '{source}'. Known: {', '.join(sorted(SOURCE_MAPPINGS))}.[/bold red]"
+            )
+            raise typer.Exit(code=2)
+        if not entity:
+            console.print("[bold red][!] --entity is required with --source / --mapping.[/bold red]")
+            raise typer.Exit(code=2)
+        try:
+            mapping = SourceMapping(SOURCE_MAPPINGS[source] if source else mapping_path)
+        except MappingError as exc:
+            console.print(f"[bold red][!] {exc}[/bold red]")
+            raise typer.Exit(code=2) from None
 
     console.print(f"[bold blue]Starting ingestion from:[/bold blue] [cyan]{data_dir}[/cyan]")
     duckdb_store = DuckDBStore(parquet_dir)
     sqlite_store = SQLiteStore(db_path)
     pipeline = IngestionPipeline(duckdb_store, sqlite_store)
 
-    result = pipeline.ingest_directory(Path(data_dir))
+    result = pipeline.ingest_directory(Path(data_dir), default_entity_id=entity, mapping=mapping)
     duckdb_store.close()
     sqlite_store.close()
 
@@ -86,6 +156,7 @@ def ingest_cmd(
         console.print(
             f"  * Data Quality Issues Detected: [yellow]{result.get('dq_issues')}[/yellow]"
         )
+        _print_ingest_coverage(result)
     else:
         console.print(f"[bold red][!] Ingestion failed/empty:[/bold red] {result.get('message')}")
 

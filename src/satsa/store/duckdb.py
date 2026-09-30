@@ -1,5 +1,7 @@
 """DuckDB columnar storage interface for SAT-SA."""
 
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -272,6 +274,14 @@ class DuckDBStore:
         # Refresh DuckDB in-memory table/view
         self.load_table_from_parquet(table_name)
 
+    def table_columns(self, table_name: str) -> list[str]:
+        """Column names of a canonical table, in schema order (empty for an unknown table)."""
+        rows = self.conn.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_name = ? ORDER BY ordinal_position",
+            [table_name],
+        ).fetchall()
+        return [r[0] for r in rows]
+
     def load_table_from_parquet(self, table_name: str) -> None:
         """Load or replace in-memory DuckDB table from partitioned Parquet files."""
         target_dir = self.parquet_dir / table_name
@@ -361,3 +371,83 @@ class DuckDBStore:
     def close(self) -> None:
         """Close DuckDB connection."""
         self.conn.close()
+
+
+class ReadOnlyStoreError(RuntimeError):
+    """A shared read view was asked to change data; mutating handlers use their own store."""
+
+
+class SharedDuckDBView(DuckDBStore):
+    """One request's read-only handle on the process-wide analytics store.
+
+    It has its own DuckDB cursor on the shared in-memory database, so it can be used from any
+    thread, and closing it closes only that cursor.
+    """
+
+    def __init__(self, shared: DuckDBStore):
+        self.data_dir = shared.data_dir
+        self.parquet_dir = shared.parquet_dir
+        self.conn = shared.conn.cursor()
+
+    def write_partitioned_parquet(self, table_name: str, df: pl.DataFrame) -> None:
+        raise ReadOnlyStoreError("write_partitioned_parquet on a shared read view")
+
+    def load_table_from_parquet(self, table_name: str) -> None:
+        raise ReadOnlyStoreError("load_table_from_parquet on a shared read view")
+
+
+def parquet_fingerprint(parquet_dir: Path) -> tuple[int, int, int]:
+    """(file count, total bytes, newest mtime in ns) of the Parquet store: changes when data does."""
+    count = size = newest = 0
+    stack = [str(parquet_dir)]
+    while stack:
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir(follow_symlinks=False):
+                stack.append(entry.path)
+            elif entry.name.endswith(".parquet"):
+                stat = entry.stat()
+                count += 1
+                size += stat.st_size
+                newest = max(newest, stat.st_mtime_ns)
+    return count, size, newest
+
+
+class AnalyticsCache:
+    """Keeps the canonical tables loaded between requests instead of re-reading every Parquet
+    file on each one.
+
+    The loaded store is reused for as long as its key is unchanged. The key is the latest
+    assessment run plus a fingerprint of the Parquet store, so the cache is rebuilt when a new
+    run completes and when data is ingested, removed or changed by any process (this web app,
+    the Admin Portal, or the CLI).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stores: dict[Path, tuple[tuple[Any, ...], DuckDBStore]] = {}
+        self.loads = 0  # how many times the tables were (re)loaded; read by tests and benchmarks
+
+    def view(self, data_dir: Path | str, run_marker: str | None) -> SharedDuckDBView:
+        root = Path(data_dir).resolve()
+        key = (run_marker, *parquet_fingerprint(root / "parquet"))
+        with self._lock:
+            cached = self._stores.get(root)
+            if cached is None or cached[0] != key:
+                store = DuckDBStore(root)
+                store.load_all_tables()
+                self.loads += 1
+                # The previous store is dropped, not closed: a request on another thread may
+                # still hold a cursor on it. DuckDB frees it with its last cursor.
+                self._stores[root] = cached = (key, store)
+            return SharedDuckDBView(cached[1])
+
+    def clear(self) -> None:
+        with self._lock:
+            self._stores.clear()
+
+
+analytics_cache = AnalyticsCache()

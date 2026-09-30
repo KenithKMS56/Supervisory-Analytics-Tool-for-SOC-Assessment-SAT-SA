@@ -64,7 +64,7 @@ flowchart TD
    - Periodic submission batches are read by source adapters (`SplunkAdapter`, `ServiceNowAdapter`, `TheHiveAdapter`).
    - `TaxonomyNormaliser` maps source-specific field names and severity labels into canonical schemas (`Alert`, `Case`, `WorkflowEvent`, `Escalation`, `Closure`, `Asset`).
    - `HMAC-SHA256` pseudonymises human analyst handles using a local 32-byte secret salt.
-   - Deterministic regular expressions redact IPv4, IPv6, email addresses, hostnames, and card-like numbers. Text closures are converted to 4-shingle hashes to detect repetitive templates without preserving sensitive prose.
+   - Deterministic regular expressions redact IPv4, IPv6, email addresses, hostnames, and card-like numbers. Text closures are converted to hashed 3-word shingles to detect repetitive templates without preserving sensitive prose.
    - Batches failing schema validation or timestamp monotonicity are flagged in `dq_issues`.
 
 2. **Columnar Parquet Store (DuckDB):**
