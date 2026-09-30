@@ -84,6 +84,7 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("POST", "/upload/trigger-demo"): (INGEST, False),
     ("POST", "/api/v1/submissions"): (INGEST, False),
     ("POST", "/tuning/save"): (TUNING, False),
+    ("POST", "/tuning/preview"): (TUNING, False),
     ("GET", "/tuning/export-pack"): (RULEPACK, False),
     ("POST", "/tuning/import-pack"): (RULEPACK, False),
 }

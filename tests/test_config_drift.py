@@ -220,3 +220,69 @@ def test_tuning_save_rejects_invalid_values(analyst_client, bad):
     resp = analyst_client.post("/tuning/save", data={"EG04__max_comment_hash_share": bad})
     assert resp.status_code == 422
     assert CONFIG.read_bytes() == before
+
+
+# ---------------------------------------------------------------- (d) preview and period
+
+
+def _state(store_path: str = "data/satsa.db") -> tuple[int, int, int, bytes]:
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(store_path)
+    counts = tuple(
+        store.conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+        for t in ("runs", "findings", "audit_log")
+    )
+    store.close()
+    return (*counts, CONFIG.read_bytes())
+
+
+def test_tuning_preview_shows_the_effect_and_persists_nothing(analyst_client):
+    before = _state()
+    resp = analyst_client.post("/tuning/preview", data={"EG04__max_comment_hash_share": "0.99"})
+    assert resp.status_code == 200
+    html = resp.text
+    assert "Preview only" in html and "CSE-07 / EG04" in html  # the demo EG04 finding would disappear
+    assert 'value="0.99"' in html  # the form keeps the proposed value
+    # No config write, no run, no findings, no audit entry.
+    assert _state() == before
+
+
+def test_tuning_preview_rejects_invalid_values_like_save(analyst_client):
+    before = _state()
+    assert analyst_client.post("/tuning/preview", data={"EG04__max_comment_hash_share": "7"}).status_code == 422
+    assert analyst_client.post("/tuning/preview", data={"period": "next quarter"}).status_code == 422
+    assert _state() == before
+
+
+def test_tuning_save_reruns_the_selected_period_not_a_hardcoded_one(analyst_client):
+    from satsa.store.sqlite import SQLiteStore
+
+    def latest() -> tuple[str, str]:
+        store = SQLiteStore("data/satsa.db")
+        row = store.conn.execute("SELECT run_id, period FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
+        store.close()
+        return row["run_id"], row["period"]
+
+    created: list[str] = []
+    try:
+        resp = analyst_client.post("/tuning/save", data={"period": "2026-H1"}, follow_redirects=False)
+        assert resp.status_code == 303
+        run_id, period = latest()
+        created.append(run_id)
+        assert period == "2026-H1"
+        # With no period given, the latest run's period is kept (it used to snap back to 2026-Q1).
+        resp = analyst_client.post("/tuning/save", data={}, follow_redirects=False)
+        assert resp.status_code == 303
+        run_id, period = latest()
+        created.append(run_id)
+        assert period == "2026-H1"
+    finally:
+        from satsa.store.sqlite import SQLiteStore as _Store
+
+        store = _Store("data/satsa.db")
+        for rid in created:
+            for table in ("runs", "entity_scores", "domain_scores", "findings", "review_queue"):
+                store.conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (rid,))
+        store.conn.commit()
+        store.close()

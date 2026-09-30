@@ -1,11 +1,13 @@
 """FastAPI application providing offline server-rendered UI and REST endpoints."""
 
+import copy
 import csv
 import hashlib
 import io
 import json
 import logging
 import os
+import re
 import shutil
 import statistics
 import tempfile
@@ -1386,7 +1388,7 @@ def handle_add_entity(
 
     # 4. Run assessment to establish baseline
     runner = AssessmentRunner(duckdb_store, sqlite_store)
-    run_res = runner.run_assessment(period="2026-Q1", actor=identity.username)
+    run_res = runner.run_assessment(period=_latest_period(sqlite_store), actor=identity.username)
 
     duckdb_store.close()
     sqlite_store.close()
@@ -1435,7 +1437,7 @@ async def handle_delete_entity(
 
     # 4. Trigger assessment run to re-score remaining entities
     runner = AssessmentRunner(duckdb_store, sqlite_store)
-    runner.run_assessment(period="2026-Q1", actor=identity.username)
+    runner.run_assessment(period=_latest_period(sqlite_store), actor=identity.username)
 
     duckdb_store.close()
     sqlite_store.close()
@@ -1571,22 +1573,23 @@ def handle_upload(
                     "fix the files and upload again."
                 )
             else:
-                # Trigger assessment run
+                # Trigger assessment run, for the period the dashboard is currently on
+                upload_period = _latest_period(sqlite_store)
                 sqlite_store.record_live_event(
                     "ASSESSMENT_STARTED",
                     actor=identity.username,
                     role=identity.role,
                     entity_id=target_clean or "PORTFOLIO",
-                    details={"period": "2026-Q1"},
+                    details={"period": upload_period},
                 )
                 runner = AssessmentRunner(duckdb_store, sqlite_store)
-                run_res = runner.run_assessment(period="2026-Q1", actor=identity.username)
+                run_res = runner.run_assessment(period=upload_period, actor=identity.username)
                 sqlite_store.record_live_event(
                     "ASSESSMENT_COMPLETED",
                     actor=identity.username,
                     role=identity.role,
                     entity_id=target_clean or "PORTFOLIO",
-                    details={"period": "2026-Q1", "findings_count": run_res.get("findings_count", 0)},
+                    details={"period": upload_period, "findings_count": run_res.get("findings_count", 0)},
                 )
 
                 detected = ", ".join(res.get("entities", [])) or target_entity or "Auto"
@@ -2022,6 +2025,9 @@ def _tunable_param_rows(rules_cfg: dict[str, Any]) -> list[dict[str, Any]]:
 @app.get("/tuning", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_tuning(request: Request, message: str = "") -> Response:
     rules_cfg = _load_rules_config()
+    _, sqlite_store = get_stores()
+    selected_period = _latest_period(sqlite_store)
+    sqlite_store.close()
     config_hash = (
         hashlib.sha256(RULES_CONFIG_PATH.read_bytes()).hexdigest()[:16]
         if RULES_CONFIG_PATH.exists()
@@ -2037,6 +2043,8 @@ async def view_tuning(request: Request, message: str = "") -> Response:
             "rules_config": rules_cfg,
             "tunable_params": _tunable_param_rows(rules_cfg),
             "config_hash": config_hash,
+            "preview": None,
+            "selected_period": selected_period,
         },
     )
 
@@ -2054,7 +2062,108 @@ async def handle_tuning_save(
     unchanged; out-of-range or non-numeric values are rejected (HTTP 422).
     """
     form = await request.form()
-    cfg = _load_rules_config()
+    cfg, changes = _apply_tuning_form(form, _load_rules_config())
+
+    if changes:
+        _write_rules_config(cfg)
+
+    # Re-evaluate with the (possibly) updated thresholds, for the selected period
+    duckdb_store, sqlite_store = get_stores()
+    period = _selected_period(form, sqlite_store)
+    runner = AssessmentRunner(duckdb_store, sqlite_store)
+    res = runner.run_assessment(period=period, actor=identity.username)
+    sqlite_store.append_audit(
+        action="tuning_save",
+        actor=identity.username,
+        details={"changes": changes, "run_id": res.get("run_id"), "period": period},
+    )
+    duckdb_store.close()
+    sqlite_store.close()
+
+    msg = (
+        f"Parameters updated and re-calibrated! Period: {period} | New Run ID: {res.get('run_id')} | "
+        f"Findings: {res.get('findings_count')}"
+    )
+    return RedirectResponse(url=f"/tuning?message={msg}", status_code=303)
+
+
+@app.post("/tuning/preview", response_class=HTMLResponse)
+async def handle_tuning_preview(
+    request: Request,
+    identity: Identity = Depends(require_role(*TUNING_ROLES)),
+) -> Response:
+    """Show what the submitted thresholds WOULD change, without saving anything.
+
+    The proposed config is written to a temporary file and assessed with a dry run: no
+    config write, no run row, no findings, no audit entry. The result is compared with
+    the latest stored run for the same period selection.
+    """
+    form = await request.form()
+    current_cfg = _load_rules_config()
+    proposed_cfg, changes = _apply_tuning_form(form, copy.deepcopy(current_cfg))
+
+    duckdb_store, sqlite_store = get_stores()
+    try:
+        period = _selected_period(form, sqlite_store)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / "rules.yaml"
+            cfg_path.write_text(yaml.safe_dump(proposed_cfg, sort_keys=False), encoding="utf-8")
+            runner = AssessmentRunner(duckdb_store, sqlite_store, rules_config_path=cfg_path)
+            res = runner.run_assessment(period=period, actor=identity.username, dry_run=True)
+        if res.get("status") != "success":
+            raise HTTPException(status_code=409, detail=res.get("message", "Nothing to assess."))
+
+        cur = sqlite_store.conn.cursor()
+        cur.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1")
+        run_row = cur.fetchone()
+        baseline_run = run_row["run_id"] if run_row else ""
+        cur.execute("SELECT entity_id, rule_id FROM findings WHERE run_id = ?", (baseline_run,))
+        before = {(r["entity_id"], r["rule_id"]) for r in cur.fetchall()}
+        cur.execute("SELECT entity_id, risk_band FROM entity_scores WHERE run_id = ?", (baseline_run,))
+        bands_before = {r["entity_id"]: r["risk_band"] for r in cur.fetchall()}
+    finally:
+        duckdb_store.close()
+        sqlite_store.close()
+
+    after = {(f["entity_id"], f["rule_id"]) for f in res["findings"]}
+    band_changes = [
+        {"entity_id": eid, "before": bands_before.get(eid, "n/a"), "after": info["risk_band"]}
+        for eid, info in sorted(res["entity_scores"].items())
+        if bands_before.get(eid) != info["risk_band"]
+    ]
+    preview = {
+        "period": period,
+        "baseline_run": baseline_run,
+        "changes": changes,
+        "findings_before": len(before),
+        "findings_after": len(after),
+        "added": [f"{e} / {r}" for e, r in sorted(after - before)],
+        "removed": [f"{e} / {r}" for e, r in sorted(before - after)],
+        "band_changes": band_changes,
+    }
+    return templates.TemplateResponse(
+        request=request,
+        name="tuning.html",
+        context={
+            "active_tab": "tuning",
+            "message": "",
+            "rules_config": proposed_cfg,
+            "tunable_params": _tunable_param_rows(proposed_cfg),
+            "config_hash": hashlib.sha256(RULES_CONFIG_PATH.read_bytes()).hexdigest()[:16]
+            if RULES_CONFIG_PATH.exists()
+            else "N/A",
+            "preview": preview,
+            "selected_period": period,
+        },
+    )
+
+
+def _apply_tuning_form(form: Any, cfg: dict[str, Any]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Apply "<RULE>__<key>" form fields to a rules config; returns (config, changes).
+
+    Validates every value against TUNABLE_PARAMS (HTTP 422 on a non-number or out of range).
+    The config passed in is modified and returned; callers decide whether to persist it.
+    """
     rules = cfg.setdefault("rules", {})
     changes: dict[str, dict[str, Any]] = {}
     for spec in TUNABLE_PARAMS:
@@ -2075,24 +2184,26 @@ async def handle_tuning_save(
         if old != value:
             changes[field] = {"old": old, "new": value}
         params[spec["key"]] = value
+    return cfg, changes
 
-    if changes:
-        _write_rules_config(cfg)
 
-    # Re-evaluate with the (possibly) updated thresholds
-    duckdb_store, sqlite_store = get_stores()
-    runner = AssessmentRunner(duckdb_store, sqlite_store)
-    res = runner.run_assessment(period="2026-Q1", actor=identity.username)
-    sqlite_store.append_audit(
-        action="tuning_save",
-        actor=identity.username,
-        details={"changes": changes, "run_id": res.get("run_id")},
-    )
-    duckdb_store.close()
-    sqlite_store.close()
+DEFAULT_PERIOD = "2026-Q1"
 
-    msg = f"Parameters updated and re-calibrated! New Run ID: {res.get('run_id')} | Findings: {res.get('findings_count')}"
-    return RedirectResponse(url=f"/tuning?message={msg}", status_code=303)
+
+def _latest_period(sqlite_store: SQLiteStore) -> str:
+    """Period of the most recent assessment run (the one the dashboard shows)."""
+    row = sqlite_store.conn.execute("SELECT period FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    return row["period"] if row and row["period"] else DEFAULT_PERIOD
+
+
+def _selected_period(form: Any, sqlite_store: SQLiteStore) -> str:
+    """The period chosen on the form, or the latest run's period when none was given."""
+    raw = str(form.get("period") or "").strip()
+    if not raw:
+        return _latest_period(sqlite_store)
+    if not re.match(PERIOD_RE, raw):
+        raise HTTPException(status_code=422, detail="period must look like 2026-Q1, 2026-H2 or 2026-03.")
+    return raw
 
 
 RULEPACK_DISABLED_DETAIL = (
