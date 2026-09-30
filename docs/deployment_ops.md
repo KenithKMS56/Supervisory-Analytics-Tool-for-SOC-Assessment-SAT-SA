@@ -105,7 +105,11 @@ SATSA_TLS_CERT=/app/certs/satsa-cert.pem SATSA_TLS_KEY=/app/certs/satsa-key.pem 
 When a CSE submits its periodic CSV batch:
 ```bash
 satsa ingest --data-dir /path/to/extracted_csvs --parquet-dir data --db-path data/satsa.db
+
+# A product's own export instead of the canonical CSV layout (see docs/connectors.md):
+satsa ingest --data-dir /path/to/splunk_export --source splunk --entity CSE-07
 ```
+- The command ends with a rule-coverage report: which rules will not be assessed because a table was never submitted, and which cannot fire because an alert column they need is empty. Read it before running the assessment.
 - Ingestion pipeline validates schemas, executes DQ checks, applies HMAC-SHA256 pseudonymisation, redacts PII, and appends a batch entry to the cryptographic audit trail.
 
 ### SOP-02: Executing Quarterly Assessment

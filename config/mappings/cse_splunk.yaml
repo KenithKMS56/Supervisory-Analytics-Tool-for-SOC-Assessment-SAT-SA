@@ -1,41 +1,101 @@
-# Splunk ES Incident / Notable Event Ingestion Mapping
-format: "csv"
+# Splunk Enterprise Security: notable events and their review history.
+#
+# Two CSV exports (field names as Splunk ES produces them):
+#   notable_events*.csv    `notable` macro search / Incident Review export, one row per notable
+#   incident_review*.csv   | inputlookup incident_review_lookup, one row per review action
+#
+# Use:  satsa ingest --data-dir <export dir> --source splunk --entity <CSE id>
+# What this export cannot supply is listed by the ingest report and in docs/connectors.md.
+source: "splunk_es"
 entity_id: "CSE-01"
-timezone: "UTC"
-timestamp_format: "%Y-%m-%dT%H:%M:%SZ"
+# `_time` is exported as ISO 8601 with offset; review times are epoch seconds (see `format`).
+timestamp_format: "%Y-%m-%dT%H:%M:%S.%f%z"
+# Notable event ids are GUIDs, not a running counter: the id-sequence-gap check does not apply.
+sequential_ids: false
 
-column_mappings:
-  alert_id: "notable_id"
-  rule_id: "correlation_search_name"
-  category: "security_domain"
-  severity_orig: "urgency"
-  severity_final: "urgency"
-  asset_id: "dest_host"
-  created_at: "time"
-  acknowledged_at: "review_time"
-  first_touch_at: "first_comment_time"
-  closed_at: "close_time"
-  closed_by: "owner"
-  closed_by_type: "closure_actor_type"
-  playbook_id: "soar_playbook"
-  disposition: "status_label"
-  status: "status_code"
+tables:
+  - table: alert
+    files: ["notable*"]
+    required: [alert_id, created_at]
+    columns:
+      alert_id: event_id
+      rule_id: rule_name
+      category: security_domain
+      severity_orig: severity        # severity assigned by the correlation search
+      severity_final: urgency        # ES urgency = severity x asset/identity priority
+      asset_id: dest
+      created_at: _time
+      # A flat notable export carries only the time of the LATEST review. For a notable whose
+      # status group is Closed, that is the closure.
+      closed_at: {column: review_time, format: epoch_s, when: {status_group: [Closed]}}
+      closed_by: {column: owner, when: {status_group: [Closed]}}
+      closed_by_type: {column: owner, values: owner_type, default: human}
+      disposition: disposition_label
+      status: status_label
+
+  - table: workflow_event
+    files: ["incident_review*"]
+    required: [ref_id, ts]
+    columns:
+      ref_type: {const: alert}
+      ref_id: rule_id                # incident_review names the notable's event_id `rule_id`
+      ts: {column: time, format: epoch_s}
+      actor: user
+      action: {column: status, values: review_action, default: comment}
+      to_status: {column: status, values: review_status}
+      note_len: {column: comment, transform: length}
+
+  - table: closure
+    files: ["incident_review*"]
+    where: {status: ["4", "5"]}      # the review action that resolved or closed the notable
+    required: [ref_id]
+    columns:
+      ref_id: rule_id
+      reason_code: {column: disposition, default: "none"}
+      disposition: {column: disposition, values: review_disposition, default: unknown}
+      comment: comment               # redacted, hashed and dropped by the pipeline
 
 value_mappings:
   severity:
-    "critical": "critical"
-    "high": "high"
-    "medium": "medium"
-    "low": "low"
     "informational": "low"
+    "low": "low"
+    "medium": "medium"
+    "high": "high"
+    "critical": "critical"
   status:
+    "New": "open"
+    "In Progress": "open"
+    "Pending": "open"
+    "Resolved": "closed"
+    "Closed": "closed"
+  disposition:
+    "True Positive - Suspicious Activity": "true_positive"
+    "Benign Positive - Suspicious But Expected": "benign"
+    "False Positive - Incorrect Analytic Logic": "false_positive"
+    "False Positive - Inaccurate Data": "false_positive"
+    "Other": "unknown"
+    "Undetermined": "unknown"
+  # Service accounts that close notables without a person (extend per deployment).
+  owner_type:
+    "splunk-system-user": "automation"
+    "soar_automation": "automation"
+  # incident_review status codes (ES defaults: 1 New, 2 In Progress, 3 Pending, 4 Resolved, 5 Closed).
+  review_action:
+    "1": "triage"
+    "2": "investigate"
+    "3": "comment"
+    "4": "close"
+    "5": "close"
+  review_status:
     "1": "open"
     "2": "open"
-    "3": "escalated"
+    "3": "open"
     "4": "closed"
     "5": "closed"
-  disposition:
-    "True Positive": "true_positive"
-    "False Positive": "false_positive"
-    "Benign Positive": "benign"
-    "Unresolved": "unknown"
+  review_disposition:
+    "disposition:1": "true_positive"
+    "disposition:2": "benign"
+    "disposition:3": "false_positive"
+    "disposition:4": "false_positive"
+    "disposition:5": "unknown"
+    "disposition:6": "unknown"

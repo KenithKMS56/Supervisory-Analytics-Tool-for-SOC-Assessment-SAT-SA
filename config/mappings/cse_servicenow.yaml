@@ -1,21 +1,43 @@
-# ServiceNow SIR (Security Incident Response) Ingestion Mapping
-format: "csv"
+# ServiceNow Security Incident Response (SIR): security incidents and their state history.
+#
+# Two CSV list exports (field names as ServiceNow produces them):
+#   sn_si_incident*.csv   Security Incident list, display values, including `sys_id`
+#   sys_audit*.csv        sys_audit rows for tablename = sn_si_incident (field changes)
+#
+# Use:  satsa ingest --data-dir <export dir> --source servicenow --entity <CSE id>
+# What this export cannot supply is listed by the ingest report and in docs/connectors.md.
+source: "servicenow_sir"
 entity_id: "CSE-02"
-timezone: "Asia/Kolkata"
 timestamp_format: "%Y-%m-%d %H:%M:%S"
+# List exports are written in the exporting user's time zone. A fixed offset keeps the
+# conversion independent of any time-zone database on the air-gapped host.
+utc_offset: "+05:30"
 
-column_mappings:
-  case_id: "number"
-  severity: "priority"
-  status: "state"
-  owner: "assigned_to"
-  opened_at: "sys_created_on"
-  closed_at: "closed_at"
-  alert_id: "source_alert_number"
-  rule_id: "threat_intel_rule"
-  category: "subcategory"
-  asset_id: "configuration_item"
-  disposition: "close_code"
+tables:
+  - table: case_record
+    files: ["sn_si_incident*"]
+    required: [case_id, opened_at]
+    columns:
+      case_id: number
+      severity: priority
+      status: state
+      owner: assigned_to              # pseudonymised by the pipeline
+      opened_at: opened_at
+      closed_at: closed_at
+
+  - table: workflow_event
+    files: ["sys_audit*"]
+    where: {tablename: [sn_si_incident], fieldname: [state]}
+    required: [ref_id, ts]
+    columns:
+      ref_type: {const: case}
+      # sys_audit identifies the record by sys_id; findings should cite the incident number.
+      ref_id: {column: documentkey, lookup: {files: "sn_si_incident*", key: sys_id, value: number}}
+      ts: sys_created_on
+      actor: user
+      action: {column: newvalue, values: sir_state_action, default: comment}
+      from_status: {column: oldvalue, values: sir_state_status}
+      to_status: {column: newvalue, values: sir_state_status}
 
 value_mappings:
   severity:
@@ -23,15 +45,33 @@ value_mappings:
     "2 - High": "high"
     "3 - Moderate": "medium"
     "4 - Low": "low"
+    "5 - Planning": "low"
   status:
     "Draft": "open"
     "Analysis": "open"
     "Contain": "open"
     "Eradicate": "open"
+    "Recover": "open"
     "Review": "open"
     "Closed": "closed"
-  disposition:
-    "Solved (Work Around)": "true_positive"
-    "Solved (Permanently)": "true_positive"
-    "False Positive": "false_positive"
-    "Closed/Resolved by Caller": "benign"
+    "Cancelled": "closed"
+  # sys_audit stores the state's stored value, not its label
+  # (SIR defaults: 10 Draft, 16 Analysis, 18 Contain, 19 Eradicate, 20 Recover, 100 Review, 3 Closed, 7 Cancelled).
+  sir_state_action:
+    "10": "triage"
+    "16": "investigate"
+    "18": "contain"
+    "19": "eradicate"
+    "20": "recover"
+    "100": "review"
+    "3": "close"
+    "7": "close"
+  sir_state_status:
+    "10": "open"
+    "16": "open"
+    "18": "open"
+    "19": "open"
+    "20": "open"
+    "100": "open"
+    "3": "closed"
+    "7": "closed"

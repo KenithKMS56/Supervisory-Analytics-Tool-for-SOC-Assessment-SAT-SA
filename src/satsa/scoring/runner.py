@@ -18,7 +18,7 @@ from satsa.models.outputs import (
 )
 from satsa.peers.grouping import PeerResolver
 from satsa.rules.base import data_reference_date
-from satsa.rules.registry import RULE_DEPENDENCIES, RuleRegistry
+from satsa.rules.registry import RuleRegistry, rule_tables
 from satsa.rules.systemic import SystemicCorrelationDetector
 from satsa.scoring.prioritiser import ReviewPrioritiser
 from satsa.scoring.scorer import ScoringEngine
@@ -76,9 +76,9 @@ class AssessmentRunner:
                     "DELETE FROM dq_issues WHERE check_name IN ('rule_dependency_empty', 'rule_not_assessed')"
                 )
         rules_by_table: dict[str, list[str]] = {}
-        for rule_id, tables in sorted(RULE_DEPENDENCIES.items()):
-            for table in tables:
-                rules_by_table.setdefault(table, []).append(rule_id)
+        for rule in self.registry.get_all_rules():
+            for table in rule_tables(rule.id):
+                rules_by_table.setdefault(table, []).append(rule.id)
 
         not_assessed: dict[str, dict[str, list[str]]] = {}
         for table, rule_ids in sorted(rules_by_table.items()):

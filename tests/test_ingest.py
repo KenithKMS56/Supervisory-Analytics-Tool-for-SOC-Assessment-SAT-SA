@@ -75,51 +75,6 @@ def test_dq_validator():
     assert gap_issues[0].check_name == "id_sequence_gap"
 
 
-def test_example_mappings():
-    # Verify 3 shipped mappings instantiate and map correctly
-    splunk_mapper = CSEMapper("config/mappings/cse_splunk.yaml")
-    splunk_record = {
-        "notable_id": "SPL-101",
-        "urgency": "critical",
-        "dest_host": "srv-db-01",
-        "time": "2026-03-01T12:00:00Z",
-        "status_label": "True Positive",
-        "status_code": "4",
-    }
-    mapped = splunk_mapper.map_record(splunk_record)
-    assert mapped["entity_id"] == "CSE-01"
-    assert mapped["alert_id"] == "SPL-101"
-    assert mapped["severity"] == "critical"
-    assert mapped["disposition"] == "true_positive"
-    assert mapped["status"] == "closed"
-
-    sn_mapper = CSEMapper("config/mappings/cse_servicenow.yaml")
-    sn_record = {
-        "number": "INC0099",
-        "priority": "1 - Critical",
-        "state": "Closed",
-        "close_code": "Solved (Permanently)",
-        "sys_created_on": "2026-03-01 10:00:00",
-    }
-    mapped_sn = sn_mapper.map_record(sn_record)
-    assert mapped_sn["entity_id"] == "CSE-02"
-    assert mapped_sn["severity"] == "critical"
-    assert mapped_sn["status"] == "closed"
-
-    hive_mapper = CSEMapper("config/mappings/cse_thehive.yaml")
-    hive_record = {
-        "_id": "HIVE-888",
-        "severity": 4,
-        "status": "Resolved",
-        "resolutionStatus": "TruePositive",
-        "createdAt": 1772452800000,
-    }
-    mapped_hive = hive_mapper.map_record(hive_record)
-    assert mapped_hive["entity_id"] == "CSE-03"
-    assert mapped_hive["severity"] == "critical"
-    assert mapped_hive["disposition"] == "true_positive"
-
-
 def test_read_api_from_local_fixture(tmp_path):
     """read_api() against a local fixture file (PS requirement #2: API sources) --
     zero network calls, exercises the same records_key extraction as a live call.
@@ -449,3 +404,125 @@ def test_ns08_expects_the_period_the_portfolio_covers(tmp_path):
         assert short[0].peer_comparison == {"active_months": 3, "expected_months": 4}
     finally:
         store.close()
+
+
+# ------------------------------------------------------------------ what ingestion stores
+
+
+def _ingest(tmp_path, files):
+    from satsa.ingest.pipeline import IngestionPipeline
+    from satsa.store.duckdb import DuckDBStore
+    from satsa.store.sqlite import SQLiteStore
+
+    src = tmp_path / "in"
+    src.mkdir()
+    for name, (header, rows) in files.items():
+        _write_csv(src / name, header, rows)
+    sqlite_store = SQLiteStore(tmp_path / "s.db")
+    duck = DuckDBStore(tmp_path / "d")
+    result = IngestionPipeline(duck, sqlite_store, salt_file=tmp_path / "salt").ingest_directory(src)
+    return duck, sqlite_store, result
+
+
+def _parquet_dump(tmp_path) -> str:
+    import polars as pl
+
+    return "\n".join(
+        json.dumps(pl.read_parquet(f).to_dicts(), default=str) for f in (tmp_path / "d").rglob("*.parquet")
+    )
+
+
+def test_analyst_is_pseudonymised_when_the_source_has_no_closer_type_column(tmp_path):
+    """closed_by_type defaults to human. The default used to be applied after the pseudonymisation
+    check, so a source without that column stored its analysts' real names."""
+    duck, sqlite_store, result = _ingest(tmp_path, {
+        "alert.csv": (
+            "entity_id,alert_id,created_at,closed_at,severity_final,closed_by",
+            ["PRIV-1,A-1,2026-01-05T09:00:00,2026-01-05T10:00:00,high,meera.nair"],
+        ),
+    })
+    try:
+        row = duck.query("SELECT closed_by, closed_by_type FROM alert").to_dicts()[0]
+        assert row["closed_by_type"] == "human" and row["closed_by"].startswith("ANALYST_")
+        assert "meera" not in _parquet_dump(tmp_path)
+        assert result["status"] == "success"
+    finally:
+        duck.close()
+        sqlite_store.close()
+
+
+def test_case_owner_is_pseudonymised_and_service_accounts_are_left_readable(tmp_path):
+    duck, sqlite_store, _ = _ingest(tmp_path, {
+        "alert.csv": (
+            "entity_id,alert_id,created_at,closed_at,severity_final,closed_by,closed_by_type",
+            ["PRIV-1,A-1,2026-01-05T09:00:00,2026-01-05T09:01:00,high,soar-playbook-7,automation"],
+        ),
+        "case.csv": (
+            "entity_id,case_id,severity,status,owner,opened_at",
+            ["PRIV-1,C-1,high,open,Rahul Verma,2026-01-05T09:00:00"],
+        ),
+    })
+    try:
+        assert duck.query('SELECT owner FROM "case"')["owner"][0].startswith("OWNER_")
+        assert duck.query("SELECT closed_by FROM alert")["closed_by"][0] == "soar-playbook-7"
+        assert "Rahul" not in _parquet_dump(tmp_path)
+    finally:
+        duck.close()
+        sqlite_store.close()
+
+
+def test_free_text_and_unknown_columns_are_not_stored(tmp_path):
+    """The closure comment is reduced to hash, length and shingles; a column the canonical model
+    does not know is dropped. Both used to be written to the Parquet files as submitted."""
+    duck, sqlite_store, result = _ingest(tmp_path, {
+        "alert.csv": (
+            "entity_id,alert_id,created_at,closed_at,severity_final,analyst_email,source_ip",
+            ["PRIV-1,A-1,2026-01-05T09:00:00,2026-01-05T10:00:00,high,kiran@cse.example,10.9.8.7"],
+        ),
+        "closure.csv": (
+            "entity_id,ref_id,reason_code,disposition,comment",
+            ["PRIV-1,A-1,resolved,benign,Spoke to Kiran about host 10.9.8.7 and kiran@cse.example"],
+        ),
+    })
+    try:
+        stored = _parquet_dump(tmp_path)
+        for token in ("kiran", "Kiran", "10.9.8.7", "Spoke to"):
+            assert token not in stored, token
+        closure = duck.query("SELECT * FROM closure").to_dicts()[0]
+        assert closure["comment_len"] > 0 and len(closure["comment_norm_hash"]) == 16
+        # Shingles are kept as hashes: comparable between comments, not readable.
+        shingles = closure["comment_shingles"].split(",")
+        assert len(shingles) == 5 and all(len(s) == 12 and int(s, 16) >= 0 for s in shingles)
+        assert result["dropped_columns"] == {"alert": ["analyst_email", "source_ip"]}
+        assert result["field_coverage"]["closure"]["filled"]["comment_norm_hash"] == 1
+    finally:
+        duck.close()
+        sqlite_store.close()
+
+
+def test_entity_without_an_alert_table_is_not_assessed_on_alert_rules(tmp_path):
+    """Cases only: alert-based rules are reported as not assessed instead of running on nothing."""
+    from satsa.scoring.runner import AssessmentRunner
+
+    duck, sqlite_store, result = _ingest(tmp_path, {
+        "case.csv": (
+            "entity_id,case_id,severity,status,owner,opened_at",
+            [f"CASE-ONLY,C-{i},high,open,owner{i},2026-01-0{i}T09:00:00" for i in range(1, 5)]
+            + ["CASE-ONLY,C-9,high,closed,owner9,2026-03-01T09:00:00"],
+        ),
+    })
+    try:
+        coverage = result["rule_coverage"]["CASE-ONLY"]
+        assert set(coverage["assessed"]) == {"EG09"}
+        assert coverage["not_assessed"]["NS08"] == ["alert"] and coverage["not_assessed"]["EG07"] == ["alert"]
+        AssessmentRunner(duck, sqlite_store).run_assessment(period="2026-Q1", actor="test")
+        findings = [r["rule_id"] for r in sqlite_store.conn.execute("SELECT rule_id FROM findings")]
+        assert findings == ["EG09"]
+        skipped = {
+            r["issue_id"].rsplit("-", 1)[1]
+            for r in sqlite_store.conn.execute("SELECT issue_id FROM dq_issues WHERE check_name = 'rule_not_assessed'")
+        }
+        assert skipped == set(coverage["not_assessed"]) and len(skipped) == 19
+    finally:
+        duck.close()
+        sqlite_store.close()
