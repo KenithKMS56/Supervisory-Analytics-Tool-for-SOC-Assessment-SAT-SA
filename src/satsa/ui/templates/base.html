@@ -26,6 +26,11 @@
     {% block content %}{% endblock %}
   </main>
 
+  {# On every page, whatever it shows: what SAT-SA's output is, and is not. #}
+  <p id="supervisoryNotice" role="note" style="margin: 1.5rem auto 6.5rem; padding: 0 1rem; max-width: 960px; text-align: center; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary);">
+    {{ supervisory_notice }}
+  </p>
+
   {% set current_identity = get_identity(request) %}
   {% set nav_is_analyst = current_identity and is_analyst(current_identity.role) %}
   {% if current_identity and not hide_nav %}

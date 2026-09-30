@@ -18,3 +18,5 @@ data/*.db-shm
 data/*.db-wal
 data/templates/*.zip
 data/templates/*.csv
+# TLS private keys and certificates (scripts/generate_selfsigned_cert.py)
+certs/

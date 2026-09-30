@@ -23,6 +23,29 @@ def band_tier(risk_band: str) -> str:
     return "low"
 
 
+# Blinded review: the examiner's concern level and the system band on one 1-4 scale.
+# The review form says "Elevated" where the system band says "High".
+_EXAMINER_CONCERN_LEVELS = {"low": 1, "moderate": 2, "elevated": 3, "high": 3, "critical": 4}
+_BAND_LEVELS = {"low": 1, "moderate": 2, "high": 3, "critical": 4}
+
+
+def blind_review_concordance(examiner_concern: str, system_risk_band: str) -> float:
+    """Agreement (0-100) between an examiner's blind concern level and the system's band.
+
+    100 when they match, minus 25 per band of difference. Raises ValueError for a value it
+    cannot place on the scale: guessing a level would silently misstate agreement, which is
+    how every High and Critical entity once came to be scored as if the system said Low.
+    """
+    examiner = _EXAMINER_CONCERN_LEVELS.get(examiner_concern.strip().lower())
+    if examiner is None:
+        raise ValueError(f"Unknown examiner concern level: {examiner_concern!r}")
+    band_word = (system_risk_band.split() or [""])[0].lower()
+    system = _BAND_LEVELS.get(band_word)
+    if system is None:
+        raise ValueError(f"Unknown system risk band: {system_risk_band!r}")
+    return max(0.0, 100.0 - abs(examiner - system) * 25.0)
+
+
 class ScoringEngine:
     """Computes rule scores, domain scores via Noisy-OR, and composite Entity Risk Index."""
 

@@ -30,7 +30,13 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from satsa.admin.rbac import can_access_admin_portal
-from satsa.auth.identities import LOGIN_LOCKOUT_MINUTES, LOGIN_MAX_FAILURES, verify_passphrase
+from satsa.auth.identities import (
+    LOGIN_LOCKOUT_MINUTES,
+    LOGIN_MAX_FAILURES,
+    MIN_PASSPHRASE_LENGTH,
+    passphrase_policy_error,
+    verify_passphrase,
+)
 from satsa.security import is_valid_username
 from satsa.store.sqlite import LIVE_EVENTS_MAX_LIMIT, SQLiteStore
 
@@ -56,6 +62,14 @@ class AdminAuthRequired(Exception):
     """
 
 
+class AdminPasswordChangeRequired(Exception):
+    """Raised when an administrator who still owes a passphrase change opens anything else.
+
+    Handled in satsa.admin.app: HTML GET pages redirect to /change-password; API paths and
+    mutating requests get HTTP 403.
+    """
+
+
 def get_session_user(request: Request) -> dict[str, Any] | None:
     """Resolve the identity behind the admin session cookie (any role), or None."""
     token = request.cookies.get(ADMIN_COOKIE_NAME)
@@ -73,9 +87,14 @@ def get_session_user(request: Request) -> dict[str, Any] | None:
 
 
 def get_current_operator(request: Request) -> dict[str, Any] | None:
-    """Return the session user only if their role may use the admin portal."""
+    """Return the session user only if their role may use the admin portal.
+
+    An administrator who still owes a passphrase change is sent to do that first.
+    """
     user = get_session_user(request)
     if user and can_access_admin_portal(user.get("role", "")):
+        if user.get("force_password_change"):
+            raise AdminPasswordChangeRequired()
         return user
     return None
 
@@ -87,6 +106,21 @@ def require_admin_operator(request: Request) -> dict[str, Any]:
     No session -> AdminAuthRequired (303 to /login for pages, 401 otherwise);
     authenticated but not an administrator role -> 403.
     """
+    user = get_session_user(request)
+    if user is None:
+        raise AdminAuthRequired()
+    if not can_access_admin_portal(user.get("role", "")):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="The NCIIPC Administration Portal requires an administrator role.",
+        )
+    if user.get("force_password_change"):
+        raise AdminPasswordChangeRequired()
+    return user
+
+
+def require_admin_session(request: Request) -> dict[str, Any]:
+    """Like require_admin_operator, but open to an administrator who owes a passphrase change."""
     user = get_session_user(request)
     if user is None:
         raise AdminAuthRequired()
@@ -186,9 +220,17 @@ async def admin_login_post(
     # Create session
     token = store.create_admin_session(username_clean, role)
     store.update_user_last_login(username_clean)
-    store.append_admin_audit("ADMIN_LOGIN", username_clean, target=username_clean, details={"role": role})
+    must_change = bool((store.get_user(username_clean) or {}).get("force_password_change"))
+    store.append_admin_audit(
+        "ADMIN_LOGIN",
+        username_clean,
+        target=username_clean,
+        details={"role": role, "password_change_required": must_change},
+    )
 
-    resp = RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    resp = RedirectResponse(
+        url="/change-password" if must_change else "/", status_code=status.HTTP_303_SEE_OTHER
+    )
     resp.set_cookie(
         key=ADMIN_COOKIE_NAME,
         value=token,
@@ -203,11 +245,75 @@ async def admin_login_post(
     return resp
 
 
+@router.get("/change-password", response_class=HTMLResponse)
+async def admin_change_password_page(
+    request: Request, user: dict[str, Any] = Depends(require_admin_session)
+) -> Any:
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_change_password.html",
+        context={
+            "request": request,
+            "error": None,
+            "forced": bool(user.get("force_password_change")),
+            "min_length": MIN_PASSPHRASE_LENGTH,
+        },
+    )
+
+
+@router.post("/change-password")
+async def admin_change_password_post(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    user: dict[str, Any] = Depends(require_admin_session),
+) -> Any:
+    """Replace the signed-in administrator's own passphrase; lifts a forced change.
+
+    A wrong current passphrase counts towards the admin login lockout.
+    """
+    store = get_store(request)
+    username = user["username"]
+    forced = bool(user.get("force_password_change"))
+
+    def _refuse(message: str) -> Any:
+        return templates.TemplateResponse(
+            request=request,
+            name="admin_change_password.html",
+            context={"request": request, "error": message, "forced": forced, "min_length": MIN_PASSPHRASE_LENGTH},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+
+    recent_failures = store.count_recent_login_failures(
+        username,
+        LOGIN_LOCKOUT_MINUTES,
+        table="admin_audit_log",
+        fail_action="ADMIN_LOGIN_FAIL",
+        success_action="ADMIN_LOGIN",
+    )
+    if recent_failures >= LOGIN_MAX_FAILURES:
+        return _refuse("Too many failed attempts. Try again later.")
+    row = store.get_identity(username)
+    if row is None or not verify_passphrase(current_password, row["pass_salt"], row["pass_hash"]):
+        store.append_admin_audit(
+            "ADMIN_LOGIN_FAIL", username, target=username, details={"reason": "Bad current passphrase"}
+        )
+        return _refuse("The current passphrase is not correct.")
+    problem = passphrase_policy_error(new_password, confirm_password, current_password)
+    if problem:
+        return _refuse(problem)
+    store.change_own_password(username, new_password, keep_token=request.cookies.get(ADMIN_COOKIE_NAME))
+    store.append_admin_audit("PASSWORD_CHANGED", username, target=username, details={"forced": forced})
+    return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/logout")
 async def admin_logout_post(request: Request) -> Any:
     """Invalidate administrative session and clear cookie."""
     token = request.cookies.get(ADMIN_COOKIE_NAME)
-    operator = get_current_operator(request)
+    user = get_session_user(request)
+    operator = user if user and can_access_admin_portal(user.get("role", "")) else None
     store = get_store(request)
 
     if token:
@@ -923,6 +1029,7 @@ async def admin_activity_websocket(websocket: WebSocket) -> None:
         or user.get("is_blocked")
         or user.get("status") == "BLOCKED"
         or not can_access_admin_portal(user.get("role", ""))
+        or user.get("force_password_change")
     ):
         await websocket.close(code=1008)
         return

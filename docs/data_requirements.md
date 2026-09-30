@@ -28,6 +28,15 @@ list (CSV/JSON/DB exports and APIs):
 
 ---
 
+### Product exports (Splunk ES, ServiceNow SIR, TheHive 5)
+
+`satsa ingest --source splunk|servicenow|thehive --entity <id>` translates a product's own
+export through a mapping in `config/mappings/` (`SourceMapping`, used by `IngestionPipeline`).
+Which canonical fields each export supplies, which it cannot, and which rules that leaves
+assessable is measured on sample exports in `docs/connectors.md`.
+
+---
+
 ## 1. Canonical Schema Specifications
 
 SAT-SA standardizes multi-source periodic submissions into 8 canonical relational entities:

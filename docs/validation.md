@@ -7,6 +7,13 @@ kind of evidence each result actually is.
 
 ---
 
+> **Current figures (30 September 2026).** The shortest accurate account is `docs/validation_summary.md`.
+> Since the sections below were written, NS03, NS05 and NS08 findings gained evidence records (a larger review
+> queue) and NS08's review period became a tunable threshold. Primary set now: 21/21 detected, 0 false positives,
+> sweep 4 of 66, lift 19.47x in the top 25 queue alerts and 5.19x over the 130-alert queue; stress 3/3, sweep 3 of 66.
+> Where a figure below differs, the generated reports (`docs/validation_report.md`,
+> `docs/validation_stress_report.md`, `docs/validation_hard_report.md`) are the record.
+
 ## 0. What This Validation Is -- and Is Not
 
 **Everything in Sections 2–4 is synthetic.** No run against real NCIIPC/CSE data has been done.
@@ -30,7 +37,7 @@ September 2026, 8 rules (EG07, EG08, EG09, EG11, EG12, NS05, NS07, NS08) had non
 ever shown to stay quiet. Their new defects are, like the rest of Section 2, built to clearly
 exceed each threshold; only EG04 and EG02 are tested near a threshold (Section 2A).
 
-Threshold sensitivity: each of the 17 rules with tunable thresholds is re-run with every threshold
+Threshold sensitivity: each of the 18 rules with tunable thresholds is re-run with every threshold
 moved ±20% (Section 4A). EG05 and EG11 used to turn clean entities into findings under a modest
 move; EG11 now compares with peers by robust z-score and EG05's repeat threshold now rises to the
 entity's own chance level, and neither does any more (Section 4A).
@@ -182,23 +189,23 @@ items and non-alert ground-truth IDs are excluded from both.
 
 | Audit Budget (% of Alerts) | Budget | Queue Alerts Examined | Affected Alerts Found | Queue Hit Rate | Random Sampling Rate | Lift Factor |
 |---|---|---|---|---|---|---|
-| **1%** | 162 | 119 (queue exhausted) | 19 | **16.0%** | 2.67% | **5.98x** |
-| **2%** | 325 | 119 (queue exhausted) | 19 | **16.0%** | 2.67% | **5.98x** |
-| **5%** | 812 | 119 (queue exhausted) | 19 | **16.0%** | 2.67% | **5.98x** |
+| **1%** | 162 | 130 (queue exhausted) | 18 | **13.9%** | 2.67% | **5.19x** |
+| **2%** | 325 | 130 (queue exhausted) | 18 | **13.9%** | 2.67% | **5.19x** |
+| **5%** | 812 | 130 (queue exhausted) | 18 | **13.9%** | 2.67% | **5.19x** |
 
-*Reading this table:* the queue holds only 119 alert items (147 items in total), fewer than even
+*Reading this table:* the queue holds only 130 alert items (168 items in total), fewer than even
 the 1% budget, so every budget examines the whole queue and reports the same figure: "the whole
 queue vs. random". The curve is in the queue-depth table:
 
 | Top queue alerts examined (score order) | Affected Alerts Found | Hit Rate | Lift Factor |
 |---|---|---|---|
 | 10 | 4 | 40.0% | **14.98x** |
-| 25 | 14 | 56.0% | **20.97x** |
-| 50 | 17 | 34.0% | **12.73x** |
-| 100 | 19 | 19.0% | **7.12x** |
-| 119 (whole queue) | 19 | 16.0% | **5.98x** |
+| 25 | 13 | 52.0% | **19.47x** |
+| 50 | 16 | 32.0% | **11.98x** |
+| 100 | 18 | 18.0% | **6.74x** |
+| 130 (whole queue) | 18 | 13.9% | **5.19x** |
 
-Affected alerts are concentrated at the top: 14 of the 19 found are in the first 25 items, and the
+Affected alerts are concentrated at the top: 13 of the 18 found are in the first 25 items, and the
 30% stratified-random part of the queue further down adds little. The figure moves with the ground
 truth: adding the EG11 defect (about 200 CSE-07 alerts relabelled, all counted as affected) raised
 the random baseline from 1.20% to 2.67% and cut whole-queue lift from 10.69x to 5.50x without any
@@ -226,11 +233,12 @@ The harness perturbed all 8 capability domain **weights** by **$\pm 20\%$** on t
 
 `satsa validate` and `satsa validate-stress` move each tunable rule threshold by −20% and +20%, one
 at a time (integers move by at least 1; shares and rates are capped at 1.0), re-run that rule on
-every entity, and score it against the ground truth. 17 of the 20 rules have tunable thresholds;
-EG03 and NS07 are zero-tolerance and NS08 checks the fixed 6-month review period, so they have none.
+every entity, and score it against the ground truth. 18 of the 20 rules have tunable thresholds
+(NS08's is the length of the review period, `review_period_months`); EG03 and NS07 are zero-tolerance,
+so they have none.
 Full tables: Section 7 of `docs/validation_report.md` and `docs/validation_stress_report.md`.
 
-**Primary dataset: 3 of 64 perturbations change an outcome.**
+**Primary dataset: 4 of 66 perturbations change an outcome** (the three described here, plus NS08's review period lowered from 6 to 5 months, which loses the one-month gap defect).
 
 | Threshold | Moved to | Effect | What it means |
 |---|---|---|---|
@@ -257,7 +265,7 @@ pairs, is 0 for nearly every peer.) The model assumes alerts spread evenly over 
 are uneven, so genuinely noisy pairs sit far above the floor and are still flagged, which is the
 rule's purpose. How widely it then fires on real SOCs is for the pilot to measure.
 
-**Stress scenario: 3 of 64.** Raising EG04's share to 0.30 loses both borderline defects
+**Stress scenario: 3 of 66.** Raising EG04's share to 0.30 loses both borderline defects
 (STRESS-01 at 27.5%, STRESS-02 at 30%), and raising its group size to 12 loses STRESS-01; lowering
 EG05's pair count to 1 flags the noisy clean STRESS-03, which does have one unremediated chronic
 pair. These are the near-threshold cases the scenario was built to contain, so they confirm the

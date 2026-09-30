@@ -786,11 +786,64 @@ class SQLiteStore:
             for username, role, passphrase in DEFAULT_IDENTITIES:
                 salt = generate_salt()
                 pass_hash = hash_passphrase(passphrase, salt)
+                # The passphrase is published, so the account must rotate it at first login.
                 self.conn.execute(
-                    "INSERT OR REPLACE INTO identities (username, role, pass_hash, pass_salt) VALUES (?, ?, ?, ?)",
+                    "INSERT OR REPLACE INTO identities (username, role, pass_hash, pass_salt, "
+                    "force_password_change) VALUES (?, ?, ?, ?, 1)",
                     (username, role, pass_hash, salt.hex()),
                 )
         return True
+
+    def flag_unrotated_default_accounts(self) -> list[str]:
+        """Require a passphrase change on every seeded account still using its published default.
+
+        Run at application start, so a database seeded before first-login rotation was
+        enforced is covered too. Returns the usernames newly flagged.
+        """
+        from satsa.auth.identities import SEEDED_DEFAULT_PASSPHRASES, verify_passphrase
+
+        flagged: list[str] = []
+        for username, passphrase in SEEDED_DEFAULT_PASSPHRASES.items():
+            row = self.conn.execute(
+                "SELECT pass_hash, pass_salt, force_password_change FROM identities WHERE username = ?",
+                (username,),
+            ).fetchone()
+            if row is None or row["force_password_change"]:
+                continue
+            if verify_passphrase(passphrase, row["pass_salt"], row["pass_hash"]):
+                flagged.append(username)
+        if flagged:
+            with self.conn:
+                self.conn.executemany(
+                    "UPDATE identities SET force_password_change = 1 WHERE username = ?",
+                    [(u,) for u in flagged],
+                )
+        return flagged
+
+    def change_own_password(
+        self, username: str, new_passphrase: str, keep_token: str | None = None
+    ) -> None:
+        """Set a passphrase the user chose themselves and lift any forced change.
+
+        Every other session of that user (on either portal) is ended; the session behind
+        `keep_token`, the one that made the change, stays signed in.
+        """
+        from satsa.auth.identities import generate_salt, hash_passphrase
+
+        salt = generate_salt()
+        pass_hash = hash_passphrase(new_passphrase, salt)
+        keep_hash = hashlib.sha256(keep_token.encode()).hexdigest() if keep_token else ""
+        with self.conn:
+            self.conn.execute(
+                "UPDATE identities SET pass_hash = ?, pass_salt = ?, force_password_change = 0 "
+                "WHERE username = ?",
+                (pass_hash, salt.hex(), username),
+            )
+            for table in ("sessions", "admin_sessions"):
+                self.conn.execute(
+                    f"DELETE FROM {table} WHERE username = ? AND session_hash != ?",
+                    (username, keep_hash),
+                )
 
     def upsert_identity(self, username: str, role: str, passphrase: str) -> None:
         """Create or update an identity with a freshly hashed passphrase."""
@@ -853,6 +906,7 @@ class SQLiteStore:
             SELECT s.session_hash, s.username, s.created_at, s.expires_at,
                    COALESCE(i.role, s.role) as role,
                    i.is_blocked, i.status, i.org_id, i.cse_id, i.is_admin_user,
+                   i.force_password_change,
                    o.name as org_name, c.name as cse_name
             FROM sessions s
             LEFT JOIN identities i ON s.username = i.username
@@ -1186,22 +1240,24 @@ class SQLiteStore:
 
     def seed_default_admin(self) -> None:
         """Seed initial bootstrap NCIIPC Administrator and ensure admin user has full admin access."""
-        from satsa.auth.identities import generate_salt, hash_passphrase
+        from satsa.auth.identities import BOOTSTRAP_ADMIN_IDENTITY, generate_salt, hash_passphrase
 
+        username, role, passphrase = BOOTSTRAP_ADMIN_IDENTITY
         cur = self.conn.cursor()
-        cur.execute("SELECT username FROM identities WHERE username = 'nciipc_admin'")
+        cur.execute("SELECT username FROM identities WHERE username = ?", (username,))
         if not cur.fetchone():
             salt = generate_salt()
-            pass_hash = hash_passphrase("ChangeMe-NCIIPC#2026", salt)
+            pass_hash = hash_passphrase(passphrase, salt)
             with self.conn:
+                # force_password_change = 1: the bootstrap passphrase is published.
                 self.conn.execute(
                     """
                     INSERT INTO identities (
                         username, role, pass_hash, pass_salt, is_blocked,
-                        org_id, cse_id, status, is_admin_user
-                    ) VALUES (?, ?, ?, ?, 0, 'ORG-NCIIPC', NULL, 'ACTIVE', 1)
+                        org_id, cse_id, status, is_admin_user, force_password_change
+                    ) VALUES (?, ?, ?, ?, 0, 'ORG-NCIIPC', NULL, 'ACTIVE', 1, 1)
                     """,
-                    ("nciipc_admin", "NCIIPC Super Administrator", pass_hash, salt.hex()),
+                    (username, role, pass_hash, salt.hex()),
                 )
 
         # Ensure demo 'admin' has admin portal access and active status

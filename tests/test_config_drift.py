@@ -12,6 +12,7 @@
 
 import inspect
 import re
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -44,10 +45,11 @@ EXPECTED_PARAMS = {
     "NS04": {"min_tp_without_case": 3},
     "NS05": {"max_dormant_share": 0.40, "min_dormant_rules": 5},
     "NS06": {"min_ghost_assets": 2},
+    "NS08": {"review_period_months": 6},
 }
 # EG03 and NS07 are zero-tolerance (one unescalated critical TP / one unreported critical
-# incident is a finding) and NS08 checks the fixed 6-month review period: no knobs.
-UNTUNABLE_RULES = {"EG03", "NS07", "NS08"}
+# incident is a finding): no knobs.
+UNTUNABLE_RULES = {"EG03", "NS07"}
 
 
 def _cfg() -> dict:
@@ -124,8 +126,8 @@ def eg04_fixture_store(tmp_path):
     store = DuckDBStore(tmp_path / "store")
     for i in range(40):
         store.execute(
-            "INSERT INTO alert (entity_id, alert_id, closed_by_type) VALUES (?, ?, 'human')",
-            ["EG4-ENT", f"A{i:03d}"],
+            "INSERT INTO alert (entity_id, alert_id, closed_by_type, closed_at) VALUES (?, ?, 'human', ?)",
+            ["EG4-ENT", f"A{i:03d}", datetime(2026, 2, 1, 9, 0, 0)],
         )
         comment_hash = "BOILERPLATE" if i < 20 else f"UNIQUE-{i}"
         store.execute(
@@ -220,3 +222,136 @@ def test_tuning_save_rejects_invalid_values(analyst_client, bad):
     resp = analyst_client.post("/tuning/save", data={"EG04__max_comment_hash_share": bad})
     assert resp.status_code == 422
     assert CONFIG.read_bytes() == before
+
+
+# ---------------------------------------------------------------- (d) preview and period
+
+
+def _state(store_path: str = "data/satsa.db") -> tuple[int, int, int, bytes]:
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(store_path)
+    counts = tuple(
+        store.conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
+        for t in ("runs", "findings", "audit_log")
+    )
+    store.close()
+    return (*counts, CONFIG.read_bytes())
+
+
+def test_tuning_preview_shows_the_effect_and_persists_nothing(analyst_client):
+    before = _state()
+    resp = analyst_client.post("/tuning/preview", data={"EG04__max_comment_hash_share": "0.99"})
+    assert resp.status_code == 200
+    html = resp.text
+    assert "Preview only" in html and "CSE-07 / EG04" in html  # the demo EG04 finding would disappear
+    assert 'value="0.99"' in html  # the form keeps the proposed value
+    # No config write, no run, no findings, no audit entry.
+    assert _state() == before
+
+
+def test_tuning_preview_rejects_invalid_values_like_save(analyst_client):
+    before = _state()
+    assert analyst_client.post("/tuning/preview", data={"EG04__max_comment_hash_share": "7"}).status_code == 422
+    assert analyst_client.post("/tuning/preview", data={"period": "next quarter"}).status_code == 422
+    assert _state() == before
+
+
+def test_tuning_save_reruns_the_selected_period_not_a_hardcoded_one(analyst_client):
+    from satsa.store.sqlite import SQLiteStore
+
+    def latest() -> tuple[str, str]:
+        store = SQLiteStore("data/satsa.db")
+        row = store.conn.execute("SELECT run_id, period FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
+        store.close()
+        return row["run_id"], row["period"]
+
+    created: list[str] = []
+    try:
+        resp = analyst_client.post("/tuning/save", data={"period": "2026-H1"}, follow_redirects=False)
+        assert resp.status_code == 303
+        run_id, period = latest()
+        created.append(run_id)
+        assert period == "2026-H1"
+        # With no period given, the latest run's period is kept (it used to snap back to 2026-Q1).
+        resp = analyst_client.post("/tuning/save", data={}, follow_redirects=False)
+        assert resp.status_code == 303
+        run_id, period = latest()
+        created.append(run_id)
+        assert period == "2026-H1"
+    finally:
+        from satsa.store.sqlite import SQLiteStore as _Store
+
+        store = _Store("data/satsa.db")
+        for rid in created:
+            for table in ("runs", "entity_scores", "domain_scores", "findings", "review_queue"):
+                store.conn.execute(f"DELETE FROM {table} WHERE run_id = ?", (rid,))
+        store.conn.commit()
+        store.close()
+
+
+# ---------------------------------------------------------------- NS08 review period
+
+
+def _ns08_store(tmp_path, months_by_entity):
+    store = DuckDBStore(tmp_path / "ns08")
+    n = 0
+    for entity, months in months_by_entity.items():
+        for month in months:
+            n += 1
+            store.execute(
+                "INSERT INTO alert (entity_id, alert_id, created_at) VALUES (?, ?, ?)",
+                [entity, f"A{n}", datetime(2026, month, 10, 9, 0, 0)],
+            )
+    return store
+
+
+def test_ns08_review_period_comes_from_config(tmp_path):
+    """A lone entity with 4 months of alerts: short of a 6-month period, complete for a 4-month one."""
+    from satsa.rules.negative_space import NS08SubmissionCompleteness
+
+    store = _ns08_store(tmp_path, {"SOLO": [1, 2, 3, 4]})
+    try:
+        default = NS08SubmissionCompleteness()
+        findings, _ = default.evaluate("SOLO", store, [], "RUN-X")
+        assert findings and findings[0].peer_comparison == {"active_months": 4, "expected_months": 6}
+
+        four = NS08SubmissionCompleteness({"params": {"review_period_months": 4}})
+        assert four.evaluate("SOLO", store, [], "RUN-X")[0] == []
+
+        twelve = NS08SubmissionCompleteness({"params": {"review_period_months": 12}})
+        findings, _ = twelve.evaluate("SOLO", store, [], "RUN-X")
+        assert findings[0].peer_comparison["expected_months"] == 12
+        assert "12-month supervisory review period" in findings[0].rationale
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("bad", [0, -3, 25, 600, 6.5, "6", True, None])
+def test_ns08_review_period_out_of_range_is_rejected(bad):
+    from satsa.rules.negative_space import NS08SubmissionCompleteness
+
+    with pytest.raises(ValueError, match="review_period_months must be a whole number of months between 1 and 24"):
+        NS08SubmissionCompleteness({"params": {"review_period_months": bad}})
+
+
+def test_out_of_range_review_period_in_rules_yaml_stops_the_registry(tmp_path):
+    cfg = _cfg()
+    cfg["rules"]["NS08"]["params"]["review_period_months"] = 99
+    path = tmp_path / "rules.yaml"
+    path.write_text(yaml.dump(cfg, sort_keys=False), encoding="utf-8")
+    with pytest.raises(ValueError, match="review_period_months"):
+        RuleRegistry(path)
+
+
+def test_tuning_form_rejects_an_out_of_range_review_period():
+    from fastapi import HTTPException
+
+    from satsa.api.routes import _apply_tuning_form
+
+    with pytest.raises(HTTPException) as exc:
+        _apply_tuning_form({"NS08__review_period_months": "30"}, _cfg())
+    assert exc.value.status_code == 422
+    cfg, changes = _apply_tuning_form({"NS08__review_period_months": "3"}, _cfg())
+    assert cfg["rules"]["NS08"]["params"]["review_period_months"] == 3
+    assert changes == {"NS08__review_period_months": {"old": 6, "new": 3}}

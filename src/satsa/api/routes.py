@@ -1,16 +1,19 @@
 """FastAPI application providing offline server-rendered UI and REST endpoints."""
 
+import copy
 import csv
 import hashlib
 import io
 import json
 import logging
 import os
+import re
 import shutil
 import statistics
 import tempfile
 import zipfile
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -22,7 +25,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
+from satsa import FINDING_NOTICE, SUPERVISORY_NOTICE
 from satsa.admin.rbac import SATSA_OPERATOR_ROLES, is_analyst, is_examiner
+from satsa.auth.identities import MIN_PASSPHRASE_LENGTH, passphrase_policy_error
 from satsa.auth.session import (
     SESSION_COOKIE_NAME,
     Identity,
@@ -38,9 +43,10 @@ from satsa.models.canonical import Entity
 from satsa.models.outputs import ExaminerFeedback
 from satsa.peers.grouping import PeerResolver
 from satsa.report.generator import ReportGenerator, ReportNotFoundError
+from satsa.rules.negative_space import REVIEW_PERIOD_MONTHS_RANGE
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
-from satsa.scoring.scorer import ScoringEngine, band_tier
+from satsa.scoring.scorer import ScoringEngine, band_tier, blind_review_concordance
 from satsa.security import (
     is_valid_entity_id,
     is_valid_finding_id,
@@ -48,7 +54,7 @@ from satsa.security import (
     safe_archive_member,
     safe_join,
 )
-from satsa.store.duckdb import DuckDBStore
+from satsa.store.duckdb import DuckDBStore, analytics_cache
 from satsa.store.sqlite import SQLiteStore
 from satsa.synth.generator import SyntheticDataGenerator
 
@@ -69,12 +75,27 @@ SUPERVISORY_READ_ROLES = ("analyst", "examiner")
 
 logger = logging.getLogger(__name__)
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    """At start, require a passphrase change on seeded accounts still using their default."""
+    store = SQLiteStore("data/satsa.db")
+    try:
+        for username in store.flag_unrotated_default_accounts():
+            logger.warning("Account %r still uses its published default passphrase; "
+                           "a new one must be set at first login.", username)
+    finally:
+        store.close()
+    yield
+
+
 app = FastAPI(
     title="SAT-SA Supervisory API",
     description="Supervisory Analytics Tool for SOC Assessment (NCIIPC)",
     version="0.1.0",
     docs_url="/docs",
     redoc_url=None,
+    lifespan=_lifespan,
 )
 
 # Setup directories
@@ -89,6 +110,7 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.globals["get_identity"] = get_current_identity
 # Role-adaptive views: templates decide what to show from these, never from
 # raw role strings, so every alias of a role (e.g. "NCIIPC Analyst") matches.
+templates.env.globals["supervisory_notice"] = SUPERVISORY_NOTICE
 templates.env.globals["band_tier"] = band_tier
 templates.env.globals["is_analyst"] = is_analyst
 templates.env.globals["is_examiner"] = is_examiner
@@ -98,6 +120,9 @@ templates.env.globals["is_examiner"] = is_examiner
 # route's own dependency then enforces the specific role (see the RBAC table
 # in tests/test_rbac_matrix.py, which must list every route).
 PUBLIC_PATHS = {"/", "/login", "/logout", "/splash", "/api/session/status", "/openapi.json"}
+# The only gated paths open to a session that still owes a passphrase change.
+PASSWORD_CHANGE_PATH = "/change-password"
+PASSWORD_CHANGE_REQUIRED = "A new passphrase must be set at /change-password before this account can be used."
 PUBLIC_PREFIXES = ("/static/", "/docs")
 # Non-page GET endpoints (JSON APIs and file downloads): an anonymous request
 # gets 401 rather than a login redirect.
@@ -140,6 +165,11 @@ async def enforce_auth_middleware(request: Request, call_next):
     # it was refused at login) is denied on every gated path.
     if identity.role not in SATSA_OPERATOR_ROLES:
         return JSONResponse({"detail": NOT_SATSA_OPERATOR}, status_code=403)
+    # A seeded default (or admin-reset) passphrase buys exactly one thing: replacing it.
+    if identity.must_change_password and path != PASSWORD_CHANGE_PATH:
+        if request.method == "GET" and not path.startswith(NON_PAGE_PREFIXES):
+            return RedirectResponse(url=PASSWORD_CHANGE_PATH, status_code=303)
+        return JSONResponse({"detail": PASSWORD_CHANGE_REQUIRED}, status_code=403)
 
     return await call_next(request)
 
@@ -156,11 +186,29 @@ def session_cookie_secure() -> bool:
     return os.environ.get("SATSA_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
 
 
+def get_sqlite_store() -> SQLiteStore:
+    """State store only, for the many requests that never touch the analytics tables."""
+    return SQLiteStore("data/satsa.db")
+
+
 def get_stores() -> tuple[DuckDBStore, SQLiteStore]:
+    """Stores for a request that only reads.
+
+    The analytics store is a view on the process-wide cache (satsa.store.duckdb.AnalyticsCache):
+    the Parquet tables are loaded once and reused until a new assessment run completes or the
+    stored data changes, instead of being re-read on every request.
+    """
+    sqlite_store = SQLiteStore("data/satsa.db")
+    row = sqlite_store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    return analytics_cache.view("data", row["run_id"] if row else None), sqlite_store
+
+
+def get_write_stores() -> tuple[DuckDBStore, SQLiteStore]:
+    """Stores for a request that ingests, deletes or re-assesses: a private analytics store,
+    loaded fresh. What it writes changes the Parquet fingerprint, which retires the read cache."""
     duckdb_store = DuckDBStore("data")
     duckdb_store.load_all_tables()
-    sqlite_store = SQLiteStore("data/satsa.db")
-    return duckdb_store, sqlite_store
+    return duckdb_store, SQLiteStore("data/satsa.db")
 
 
 def _build_real_trend_series(
@@ -278,7 +326,7 @@ async def handle_login(
         status_code=303,
     )
 
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     actor = uname or "unknown"
     if sqlite_store.count_recent_login_failures(actor, LOGIN_LOCKOUT_MINUTES) >= LOGIN_MAX_FAILURES:
         # Rejected even if the passphrase is correct; not counted as a new failure,
@@ -324,8 +372,11 @@ async def handle_login(
         )
 
     token = sqlite_store.create_session(identity_row["username"], identity_row["role"])
+    must_change = bool(identity_row.get("force_password_change"))
     sqlite_store.append_audit(
-        action="login", actor=identity_row["username"], details={"role": identity_row["role"]}
+        action="login",
+        actor=identity_row["username"],
+        details={"role": identity_row["role"], "password_change_required": must_change},
     )
     sqlite_store.record_live_event(
         "USER_LOGIN",
@@ -336,7 +387,7 @@ async def handle_login(
     )
     sqlite_store.close()
 
-    resp = RedirectResponse(url=safe_next, status_code=303)
+    resp = RedirectResponse(url=PASSWORD_CHANGE_PATH if must_change else safe_next, status_code=303)
     resp.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
@@ -348,11 +399,82 @@ async def handle_login(
     return resp
 
 
+@app.get("/change-password", response_class=HTMLResponse)
+async def view_change_password(
+    request: Request, identity: Identity = Depends(require_authenticated)
+) -> Response:
+    return templates.TemplateResponse(
+        request=request,
+        name="change_password.html",
+        context={
+            "active_tab": "login",
+            "error": "",
+            "forced": identity.must_change_password,
+            "min_length": MIN_PASSPHRASE_LENGTH,
+        },
+    )
+
+
+@app.post("/change-password")
+async def handle_change_password(
+    request: Request,
+    current_password: Annotated[str, Form()],
+    new_password: Annotated[str, Form()],
+    confirm_password: Annotated[str, Form()],
+    identity: Identity = Depends(require_authenticated),
+) -> Response:
+    """Replace the signed-in operator's own passphrase; lifts a forced change.
+
+    The current passphrase is asked for again, and a wrong one counts towards the login
+    lockout, so a borrowed session cannot be used to guess it.
+    """
+    from satsa.auth.identities import LOGIN_LOCKOUT_MINUTES, LOGIN_MAX_FAILURES, verify_passphrase
+
+    def _refuse(message: str) -> Response:
+        return templates.TemplateResponse(
+            request=request,
+            name="change_password.html",
+            context={
+                "active_tab": "login",
+                "error": message,
+                "forced": identity.must_change_password,
+                "min_length": MIN_PASSPHRASE_LENGTH,
+            },
+            status_code=400,
+        )
+
+    sqlite_store = get_sqlite_store()
+    try:
+        username = identity.username
+        if sqlite_store.count_recent_login_failures(username, LOGIN_LOCKOUT_MINUTES) >= LOGIN_MAX_FAILURES:
+            return _refuse("Too many failed attempts. Try again later.")
+        row = sqlite_store.get_identity(username)
+        if row is None or not verify_passphrase(current_password, row["pass_salt"], row["pass_hash"]):
+            sqlite_store.append_audit(
+                action="login_failed", actor=username, details={"reason": "bad_current_passphrase"}
+            )
+            return _refuse("The current passphrase is not correct.")
+        problem = passphrase_policy_error(new_password, confirm_password, current_password)
+        if problem:
+            return _refuse(problem)
+        sqlite_store.change_own_password(
+            username, new_password, keep_token=request.cookies.get(SESSION_COOKIE_NAME)
+        )
+        sqlite_store.append_audit(
+            action="password_changed",
+            actor=username,
+            details={"forced": identity.must_change_password},
+        )
+    finally:
+        sqlite_store.close()
+    return RedirectResponse(url="/portfolio", status_code=303)
+
+
 @app.post("/logout")
 async def handle_logout(request: Request) -> Response:
     token = request.cookies.get(SESSION_COOKIE_NAME)
     if token:
-        _, sqlite_store = get_stores()
+        sqlite_store = get_sqlite_store()
         session = sqlite_store.get_session(token)
         sqlite_store.delete_session(token)
         if session:
@@ -377,7 +499,7 @@ async def api_session_status(request: Request) -> JSONResponse:
     if not token:
         return JSONResponse({"authenticated": False, "revoked": False})
 
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     try:
         session = sqlite_store.get_session(token)
         if not session:
@@ -756,7 +878,7 @@ def _kpi_reconciliation(duckdb_store: DuckDBStore, entity_id: str) -> list[dict[
         empirical AS (
             SELECT severity_final AS severity, avg(epoch(closed_at) - epoch(created_at)) / 60.0 AS empirical
             FROM alert
-            WHERE entity_id = ? AND severity_final IN ('high', 'critical') AND closed_at IS NOT NULL
+            WHERE entity_id = ? AND severity_final IN ('high', 'critical') AND closed_at >= created_at
             GROUP BY severity_final
         )
         SELECT d.severity, d.declared, e.empirical
@@ -779,7 +901,7 @@ def _kpi_reconciliation(duckdb_store: DuckDBStore, entity_id: str) -> list[dict[
 
 @app.get("/finding/{finding_id}", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_finding_detail(request: Request, finding_id: str) -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT * FROM findings WHERE finding_id = ?", (finding_id,))
     f_row = cur.fetchone()
@@ -848,7 +970,7 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
 
 @app.get("/queue", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_review_queue(request: Request) -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("""
         SELECT queue_id, run_id, entity_id, record_type, record_id, severity, score, selection_reason, is_random, examiner_status
@@ -868,7 +990,7 @@ async def view_review_queue(request: Request) -> Response:
 
 @app.get("/dq", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_dq_coverage(request: Request) -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT * FROM dq_issues ORDER BY count DESC")
     dq_issues = [
@@ -905,7 +1027,7 @@ async def view_dq_coverage(request: Request) -> Response:
 @app.get("/audit", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 @app.get("/runs", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_runs_audit(request: Request) -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT * FROM runs ORDER BY created_at DESC")
     runs = [dict(r) for r in cur.fetchall()]
@@ -938,7 +1060,7 @@ SHADOW_MAX_BYTES = 5 * 1024 * 1024
 
 @app.get("/shadow-pilot", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_shadow_pilot(request: Request, message: str = "") -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     row = sqlite_store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
     history = sqlite_store.list_shadow_results(limit=20)
     sqlite_store.close()
@@ -981,7 +1103,7 @@ def handle_shadow_pilot(
         return done(f"Error: workpaper is missing column(s): {', '.join(sorted(missing))}.")
 
     source_name = Path((workpaper.filename or "workpaper.csv").replace("\\", "/")).name
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     try:
         row = sqlite_store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
         if row is None:
@@ -1025,7 +1147,7 @@ def _pct_or_na(value: float | None) -> str:
 
 @app.get("/api/v1/runs", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_list_runs() -> list[dict[str, Any]]:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT * FROM runs ORDER BY created_at DESC")
     rows = [dict(r) for r in cur.fetchall()]
@@ -1066,20 +1188,21 @@ async def api_list_entities() -> list[dict[str, Any]]:
 
 @app.get("/api/v1/findings", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_list_findings(entity_id: str | None = None) -> list[dict[str, Any]]:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     if entity_id:
         cur.execute("SELECT * FROM findings WHERE entity_id = ? ORDER BY score DESC", (entity_id,))
     else:
         cur.execute("SELECT * FROM findings ORDER BY score DESC")
-    rows = [dict(r) for r in cur.fetchall()]
+    # A finding that leaves the tool as data still says what it is.
+    rows = [{**dict(r), "supervisory_notice": FINDING_NOTICE} for r in cur.fetchall()]
     sqlite_store.close()
     return rows
 
 
 @app.get("/api/v1/queue", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
 async def api_get_queue(entity_id: str | None = None) -> list[dict[str, Any]]:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     if entity_id:
         cur.execute(
@@ -1087,7 +1210,7 @@ async def api_get_queue(entity_id: str | None = None) -> list[dict[str, Any]]:
         )
     else:
         cur.execute("SELECT * FROM review_queue ORDER BY score DESC")
-    rows = [dict(r) for r in cur.fetchall()]
+    rows = [{**dict(r), "supervisory_notice": FINDING_NOTICE} for r in cur.fetchall()]
     sqlite_store.close()
     return rows
 
@@ -1099,7 +1222,7 @@ async def api_submit_feedback(
     notes: Annotated[str, Form()] = "",
     identity: Identity = Depends(require_role(*REVIEW_ROLES)),
 ) -> RedirectResponse:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     import hashlib
 
     examiner_id = identity.username
@@ -1120,7 +1243,7 @@ async def api_submit_feedback(
 
 @app.get("/api/v1/audit/verify", dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def api_verify_audit() -> dict[str, Any]:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     ok, msg = sqlite_store.verify_audit_chain()
     sqlite_store.close()
     return {"verified": ok, "message": msg}
@@ -1128,7 +1251,7 @@ async def api_verify_audit() -> dict[str, Any]:
 
 @app.get("/api/v1/export/queue.csv", dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def api_export_queue_csv() -> Response:
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT * FROM review_queue ORDER BY score DESC")
     rows = cur.fetchall()
@@ -1137,9 +1260,9 @@ async def api_export_queue_csv() -> Response:
     output = io.StringIO()
     writer = csv.writer(output)
     if rows:
-        writer.writerow(rows[0].keys())
+        writer.writerow([*rows[0].keys(), "supervisory_notice"])
         for r in rows:
-            writer.writerow(list(r))
+            writer.writerow([*r, FINDING_NOTICE])
 
     return Response(
         content=output.getvalue(),
@@ -1314,7 +1437,7 @@ def handle_add_entity(
     elif not resolved_sector:
         resolved_sector = "General Infrastructure"
 
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
 
     # 1. Insert into entity table and parquet
     ent_df = pl.DataFrame(
@@ -1386,7 +1509,7 @@ def handle_add_entity(
 
     # 4. Run assessment to establish baseline
     runner = AssessmentRunner(duckdb_store, sqlite_store)
-    run_res = runner.run_assessment(period="2026-Q1", actor=identity.username)
+    run_res = runner.run_assessment(period=_latest_period(sqlite_store), actor=identity.username)
 
     duckdb_store.close()
     sqlite_store.close()
@@ -1401,7 +1524,7 @@ async def handle_delete_entity(
 ) -> Response:
     """Permanently delete an entity, its data partitions, and recalculate portfolio."""
     clean_id = require_valid_entity_id(entity_id.strip().upper())
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
 
     # 1. Delete from SQLite
     cur = sqlite_store.conn.cursor()
@@ -1435,7 +1558,7 @@ async def handle_delete_entity(
 
     # 4. Trigger assessment run to re-score remaining entities
     runner = AssessmentRunner(duckdb_store, sqlite_store)
-    runner.run_assessment(period="2026-Q1", actor=identity.username)
+    runner.run_assessment(period=_latest_period(sqlite_store), actor=identity.username)
 
     duckdb_store.close()
     sqlite_store.close()
@@ -1528,7 +1651,7 @@ def handle_upload(
         return RedirectResponse(
             url="/upload?message=Error:+invalid+target+entity+ID", status_code=303
         )
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
     pipeline = IngestionPipeline(duckdb_store, sqlite_store)
 
     try:
@@ -1571,22 +1694,23 @@ def handle_upload(
                     "fix the files and upload again."
                 )
             else:
-                # Trigger assessment run
+                # Trigger assessment run, for the period the dashboard is currently on
+                upload_period = _latest_period(sqlite_store)
                 sqlite_store.record_live_event(
                     "ASSESSMENT_STARTED",
                     actor=identity.username,
                     role=identity.role,
                     entity_id=target_clean or "PORTFOLIO",
-                    details={"period": "2026-Q1"},
+                    details={"period": upload_period},
                 )
                 runner = AssessmentRunner(duckdb_store, sqlite_store)
-                run_res = runner.run_assessment(period="2026-Q1", actor=identity.username)
+                run_res = runner.run_assessment(period=upload_period, actor=identity.username)
                 sqlite_store.record_live_event(
                     "ASSESSMENT_COMPLETED",
                     actor=identity.username,
                     role=identity.role,
                     entity_id=target_clean or "PORTFOLIO",
-                    details={"period": "2026-Q1", "findings_count": run_res.get("findings_count", 0)},
+                    details={"period": upload_period, "findings_count": run_res.get("findings_count", 0)},
                 )
 
                 detected = ", ".join(res.get("entities", [])) or target_entity or "Auto"
@@ -1622,7 +1746,7 @@ def handle_trigger_demo(
     chart has real, non-fabricated historical data to plot immediately
     after the demo re-seed.
     """
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
     sqlite_store.record_live_event(
         "ASSESSMENT_STARTED",
         actor=identity.username,
@@ -1772,7 +1896,7 @@ async def handle_blind_review_submit(
     identity: Identity = Depends(require_role(*REVIEW_ROLES)),
 ) -> Response:
     require_valid_entity_id(entity_id)
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
     cur.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1")
     run_row = cur.fetchone()
@@ -1786,23 +1910,11 @@ async def handle_blind_review_submit(
     sys_index = score_row["risk_index"] if score_row else 0.0
     sys_band = score_row["risk_band"] if score_row else "Low Supervisory Concern"
 
-    # Compute concordance score (0-100%)
-    concern_levels = {"Low": 1, "Moderate": 2, "Elevated": 3, "Critical": 4}
-    band_levels = {
-        "Low Supervisory Concern": 1,
-        "Moderate Supervisory Concern": 2,
-        "Elevated Concern": 3,
-        "High Concern": 4,
-    }
-    examiner_num = concern_levels.get(examiner_concern, 2)
-    sys_num = 1
-    for k, v in band_levels.items():
-        if k.lower() in sys_band.lower():
-            sys_num = v
-            break
-
-    diff = abs(examiner_num - sys_num)
-    concordance = max(0.0, round(100.0 - (diff * 25.0), 1))
+    try:
+        concordance = blind_review_concordance(examiner_concern, sys_band)
+    except ValueError as exc:
+        sqlite_store.close()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     rev_id = f"BLIND-{hashlib.sha256(f'{entity_id}:{run_id}:{examiner_concern}'.encode()).hexdigest()[:12]}"
     sqlite_store.save_blind_review(
@@ -1995,6 +2107,10 @@ TUNABLE_PARAMS: list[dict[str, Any]] = [
     {"rule": "NS06", "key": "min_ghost_assets", "type": "int", "min": 1, "max": 100000, "step": 1,
      "label": "NS06 - min inventory assets with no telemetry",
      "help": "Flag when at least this many inventory assets have no log events and no alerts."},
+    {"rule": "NS08", "key": "review_period_months", "type": "int",
+     "min": REVIEW_PERIOD_MONTHS_RANGE[0], "max": REVIEW_PERIOD_MONTHS_RANGE[1], "step": 1,
+     "label": "NS08 - supervisory review period (months)",
+     "help": "Months a submission is expected to cover. An entity is held to the months the portfolio submitted, up to this many; an entity alone in the portfolio is held to all of them."},
 ]
 
 RULES_CONFIG_PATH = Path("config/rules.yaml")
@@ -2034,6 +2150,9 @@ def _tunable_param_rows(rules_cfg: dict[str, Any]) -> list[dict[str, Any]]:
 @app.get("/tuning", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_tuning(request: Request, message: str = "") -> Response:
     rules_cfg = _load_rules_config()
+    sqlite_store = get_sqlite_store()
+    selected_period = _latest_period(sqlite_store)
+    sqlite_store.close()
     config_hash = (
         hashlib.sha256(RULES_CONFIG_PATH.read_bytes()).hexdigest()[:16]
         if RULES_CONFIG_PATH.exists()
@@ -2049,6 +2168,8 @@ async def view_tuning(request: Request, message: str = "") -> Response:
             "rules_config": rules_cfg,
             "tunable_params": _tunable_param_rows(rules_cfg),
             "config_hash": config_hash,
+            "preview": None,
+            "selected_period": selected_period,
         },
     )
 
@@ -2066,7 +2187,108 @@ async def handle_tuning_save(
     unchanged; out-of-range or non-numeric values are rejected (HTTP 422).
     """
     form = await request.form()
-    cfg = _load_rules_config()
+    cfg, changes = _apply_tuning_form(form, _load_rules_config())
+
+    if changes:
+        _write_rules_config(cfg)
+
+    # Re-evaluate with the (possibly) updated thresholds, for the selected period
+    duckdb_store, sqlite_store = get_write_stores()
+    period = _selected_period(form, sqlite_store)
+    runner = AssessmentRunner(duckdb_store, sqlite_store)
+    res = runner.run_assessment(period=period, actor=identity.username)
+    sqlite_store.append_audit(
+        action="tuning_save",
+        actor=identity.username,
+        details={"changes": changes, "run_id": res.get("run_id"), "period": period},
+    )
+    duckdb_store.close()
+    sqlite_store.close()
+
+    msg = (
+        f"Parameters updated and re-calibrated! Period: {period} | New Run ID: {res.get('run_id')} | "
+        f"Findings: {res.get('findings_count')}"
+    )
+    return RedirectResponse(url=f"/tuning?message={msg}", status_code=303)
+
+
+@app.post("/tuning/preview", response_class=HTMLResponse)
+async def handle_tuning_preview(
+    request: Request,
+    identity: Identity = Depends(require_role(*TUNING_ROLES)),
+) -> Response:
+    """Show what the submitted thresholds WOULD change, without saving anything.
+
+    The proposed config is written to a temporary file and assessed with a dry run: no
+    config write, no run row, no findings, no audit entry. The result is compared with
+    the latest stored run for the same period selection.
+    """
+    form = await request.form()
+    current_cfg = _load_rules_config()
+    proposed_cfg, changes = _apply_tuning_form(form, copy.deepcopy(current_cfg))
+
+    duckdb_store, sqlite_store = get_write_stores()
+    try:
+        period = _selected_period(form, sqlite_store)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / "rules.yaml"
+            cfg_path.write_text(yaml.safe_dump(proposed_cfg, sort_keys=False), encoding="utf-8")
+            runner = AssessmentRunner(duckdb_store, sqlite_store, rules_config_path=cfg_path)
+            res = runner.run_assessment(period=period, actor=identity.username, dry_run=True)
+        if res.get("status") != "success":
+            raise HTTPException(status_code=409, detail=res.get("message", "Nothing to assess."))
+
+        cur = sqlite_store.conn.cursor()
+        cur.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1")
+        run_row = cur.fetchone()
+        baseline_run = run_row["run_id"] if run_row else ""
+        cur.execute("SELECT entity_id, rule_id FROM findings WHERE run_id = ?", (baseline_run,))
+        before = {(r["entity_id"], r["rule_id"]) for r in cur.fetchall()}
+        cur.execute("SELECT entity_id, risk_band FROM entity_scores WHERE run_id = ?", (baseline_run,))
+        bands_before = {r["entity_id"]: r["risk_band"] for r in cur.fetchall()}
+    finally:
+        duckdb_store.close()
+        sqlite_store.close()
+
+    after = {(f["entity_id"], f["rule_id"]) for f in res["findings"]}
+    band_changes = [
+        {"entity_id": eid, "before": bands_before.get(eid, "n/a"), "after": info["risk_band"]}
+        for eid, info in sorted(res["entity_scores"].items())
+        if bands_before.get(eid) != info["risk_band"]
+    ]
+    preview = {
+        "period": period,
+        "baseline_run": baseline_run,
+        "changes": changes,
+        "findings_before": len(before),
+        "findings_after": len(after),
+        "added": [f"{e} / {r}" for e, r in sorted(after - before)],
+        "removed": [f"{e} / {r}" for e, r in sorted(before - after)],
+        "band_changes": band_changes,
+    }
+    return templates.TemplateResponse(
+        request=request,
+        name="tuning.html",
+        context={
+            "active_tab": "tuning",
+            "message": "",
+            "rules_config": proposed_cfg,
+            "tunable_params": _tunable_param_rows(proposed_cfg),
+            "config_hash": hashlib.sha256(RULES_CONFIG_PATH.read_bytes()).hexdigest()[:16]
+            if RULES_CONFIG_PATH.exists()
+            else "N/A",
+            "preview": preview,
+            "selected_period": period,
+        },
+    )
+
+
+def _apply_tuning_form(form: Any, cfg: dict[str, Any]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Apply "<RULE>__<key>" form fields to a rules config; returns (config, changes).
+
+    Validates every value against TUNABLE_PARAMS (HTTP 422 on a non-number or out of range).
+    The config passed in is modified and returned; callers decide whether to persist it.
+    """
     rules = cfg.setdefault("rules", {})
     changes: dict[str, dict[str, Any]] = {}
     for spec in TUNABLE_PARAMS:
@@ -2087,24 +2309,26 @@ async def handle_tuning_save(
         if old != value:
             changes[field] = {"old": old, "new": value}
         params[spec["key"]] = value
+    return cfg, changes
 
-    if changes:
-        _write_rules_config(cfg)
 
-    # Re-evaluate with the (possibly) updated thresholds
-    duckdb_store, sqlite_store = get_stores()
-    runner = AssessmentRunner(duckdb_store, sqlite_store)
-    res = runner.run_assessment(period="2026-Q1", actor=identity.username)
-    sqlite_store.append_audit(
-        action="tuning_save",
-        actor=identity.username,
-        details={"changes": changes, "run_id": res.get("run_id")},
-    )
-    duckdb_store.close()
-    sqlite_store.close()
+DEFAULT_PERIOD = "2026-Q1"
 
-    msg = f"Parameters updated and re-calibrated! New Run ID: {res.get('run_id')} | Findings: {res.get('findings_count')}"
-    return RedirectResponse(url=f"/tuning?message={msg}", status_code=303)
+
+def _latest_period(sqlite_store: SQLiteStore) -> str:
+    """Period of the most recent assessment run (the one the dashboard shows)."""
+    row = sqlite_store.conn.execute("SELECT period FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    return row["period"] if row and row["period"] else DEFAULT_PERIOD
+
+
+def _selected_period(form: Any, sqlite_store: SQLiteStore) -> str:
+    """The period chosen on the form, or the latest run's period when none was given."""
+    raw = str(form.get("period") or "").strip()
+    if not raw:
+        return _latest_period(sqlite_store)
+    if not re.match(PERIOD_RE, raw):
+        raise HTTPException(status_code=422, detail="period must look like 2026-Q1, 2026-H2 or 2026-03.")
+    return raw
 
 
 RULEPACK_DISABLED_DETAIL = (
@@ -2139,7 +2363,7 @@ def handle_import_pack(
         signer = RulePackSigner()
     except RulePackKeyError:
         raise HTTPException(status_code=503, detail=RULEPACK_DISABLED_DETAIL) from None
-    _, sqlite_store = get_stores()
+    sqlite_store = get_sqlite_store()
     with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as tmp:
         shutil.copyfileobj(pack_file.file, tmp)
         tmp_path = Path(tmp.name)
@@ -2418,7 +2642,7 @@ async def api_batch_submission(
             if row_eid and not is_valid_entity_id(str(row_eid)):
                 raise HTTPException(status_code=400, detail="Invalid entity_id in submitted rows.")
 
-    duckdb_store, sqlite_store = get_stores()
+    duckdb_store, sqlite_store = get_write_stores()
     try:
         # Claim the (entity, period) slot first: it is unique, so a concurrent or
         # repeated submission fails here before any data is written.

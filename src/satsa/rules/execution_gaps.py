@@ -58,12 +58,14 @@ class EG01FastClosure(BaseRule):
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Peer-cohort p5 close time for human High/Critical alerts. The entity itself is
         # excluded, so its own fast closures cannot drag down the baseline they are judged by.
+        # An alert closed before it was created is a timestamp fault (reported by the
+        # close_before_create data-quality check), not a fast closure, and is left out.
         peer_clause, peer_params = self.peer_filter(entity_id, peer_ids)
         peer_sql = f"""
         SELECT quantile_cont(epoch(closed_at) - epoch(created_at), 0.05) as peer_p5
         FROM alert
         WHERE severity_final IN ('high', 'critical') AND closed_by_type = 'human'
-          AND closed_at IS NOT NULL AND {peer_clause}
+          AND closed_at >= created_at AND {peer_clause}
         """
         peer_res = store.query(peer_sql, peer_params)
         peer_p5 = (
@@ -83,7 +85,7 @@ class EG01FastClosure(BaseRule):
             WHERE a.entity_id = ?
               AND a.severity_final IN ('high', 'critical')
               AND a.closed_by_type = 'human'
-              AND a.closed_at IS NOT NULL
+              AND a.closed_at >= a.created_at
             GROUP BY a.alert_id, a.severity_final, a.closed_by, a.closed_at, a.created_at
         )
         SELECT * FROM alt_events
@@ -175,7 +177,8 @@ class EG02AckWithoutInvestigation(BaseRule):
             FROM alert a
             LEFT JOIN workflow_event w ON a.entity_id = w.entity_id AND w.ref_type = 'alert' AND a.alert_id = w.ref_id
             LEFT JOIN closure c ON a.entity_id = c.entity_id AND a.alert_id = c.ref_id
-            WHERE a.entity_id = ? AND a.closed_by_type = 'human'
+            -- Closures only: an alert still open has no closure to judge.
+            WHERE a.entity_id = ? AND a.closed_by_type = 'human' AND a.closed_at IS NOT NULL
             GROUP BY a.alert_id, c.comment_len
         )
         SELECT * FROM alert_summary
@@ -334,7 +337,7 @@ class EG04TemplateDrivenInvestigations(BaseRule):
             min(a.alert_id) as sample_alert
         FROM alert a
         JOIN closure c ON a.entity_id = c.entity_id AND a.alert_id = c.ref_id
-        WHERE a.entity_id = ? AND a.closed_by_type = 'human'
+        WHERE a.entity_id = ? AND a.closed_by_type = 'human' AND a.closed_at IS NOT NULL
         GROUP BY c.comment_norm_hash
         HAVING count(*) >= ?
         ORDER BY repeats DESC
@@ -343,7 +346,10 @@ class EG04TemplateDrivenInvestigations(BaseRule):
         if df.is_empty():
             return [], []
 
-        total_human_sql = "SELECT count(*) as total FROM alert WHERE entity_id = ? AND closed_by_type = 'human'"
+        total_human_sql = (
+            "SELECT count(*) as total FROM alert "
+            "WHERE entity_id = ? AND closed_by_type = 'human' AND closed_at IS NOT NULL"
+        )
         total_res = store.query(total_human_sql, [entity_id])
         total_human = total_res["total"][0] if not total_res.is_empty() else 1
 
@@ -756,13 +762,18 @@ class EG09BacklogAndAging(BaseRule):
         # Tunable: age after which an open case is stale, and how many stale cases flag.
         stale_case_days = int(self.params.get("stale_case_days", 14))
         min_stale_cases = int(self.params.get("min_stale_cases", 3))
+        # Age is measured to the assessment reference date, not the wall clock, so the same
+        # submission gives the same result whenever it is assessed.
+        as_of = self.assessment_reference_date(store)
+        if as_of is None:
+            return [], []
         sql = """
         SELECT case_id, severity, opened_at
         FROM "case"
         WHERE entity_id = ? AND status = 'open'
-          AND epoch(now()) - epoch(opened_at) > ? * 86400
+          AND epoch(CAST(? AS TIMESTAMP)) - epoch(opened_at) > ? * 86400
         """
-        df = store.query(sql, [entity_id, stale_case_days])
+        df = store.query(sql, [entity_id, as_of, stale_case_days])
         if df.is_empty():
             return [], []
 
@@ -773,7 +784,10 @@ class EG09BacklogAndAging(BaseRule):
             f_id = f"FND-EG09-{entity_id}-{run_id}"
             sample_ids = df["case_id"].head(5).to_list()
 
-            rationale = f"Detected {stale_count} open cases aged beyond {stale_case_days} days without resolution."
+            rationale = (
+                f"Detected {stale_count} open cases aged beyond {stale_case_days} days without resolution "
+                f"as of {as_of.date().isoformat()}."
+            )
             finding = Finding(
                 finding_id=f_id,
                 run_id=run_id,
@@ -823,6 +837,9 @@ class EG10KPIRadicalGap(BaseRule):
         # weighted by its alert count. Averaging empirical high+critical MTTR against a
         # critical-only declaration compares different alert mixes and flags healthy
         # entities (high alerts legitimately take longer than critical ones).
+        # Alerts closed before they were created are timestamp faults: a negative duration
+        # would pull the mean down (or up) by weeks, so they are excluded here and reported
+        # by the close_before_create data-quality check instead.
         sql = """
         WITH empirical AS (
             SELECT
@@ -830,7 +847,7 @@ class EG10KPIRadicalGap(BaseRule):
                 count(*) as n,
                 avg(epoch(closed_at) - epoch(created_at)) / 60.0 as emp
             FROM alert
-            WHERE entity_id = ? AND severity_final IN ('high', 'critical') AND closed_at IS NOT NULL
+            WHERE entity_id = ? AND severity_final IN ('high', 'critical') AND closed_at >= created_at
             GROUP BY severity_final
         ),
         declared AS (
@@ -864,7 +881,7 @@ class EG10KPIRadicalGap(BaseRule):
             examined = self.population(
                 store,
                 "SELECT count(*) FROM alert WHERE entity_id = ? AND severity_final IN ('high', 'critical') "
-                "AND closed_at IS NOT NULL",
+                "AND closed_at >= created_at",
                 [entity_id],
             )
             score, conf = self.compute_rule_score(gap_ratio / 0.50, examined)

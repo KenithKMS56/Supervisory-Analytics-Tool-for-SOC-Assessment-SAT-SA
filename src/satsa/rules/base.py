@@ -1,11 +1,30 @@
 """Base class and interface for deterministic detection rules."""
 
 from abc import ABC, abstractmethod
+from datetime import datetime
 from typing import Any
 
 from satsa.models.outputs import Finding, FindingEvidence
 from satsa.peers.robust_stats import RobustStats
 from satsa.store.duckdb import DuckDBStore
+
+
+def data_reference_date(store: DuckDBStore) -> datetime | None:
+    """Latest timestamp across the submitted alerts and cases: the natural "as of" date of a
+    submission, and the same on every run over the same data."""
+    df = store.query(
+        """
+        SELECT max(ts) AS ref FROM (
+            SELECT max(created_at) AS ts FROM alert
+            UNION ALL SELECT max(closed_at) FROM alert
+            UNION ALL SELECT max(opened_at) FROM "case"
+            UNION ALL SELECT max(closed_at) FROM "case"
+        )
+        """
+    )
+    ref = df["ref"][0] if not df.is_empty() else None
+    return ref if isinstance(ref, datetime) else None
+
 
 # Minimum peers with enough data before a rule compares against them with a robust z-score.
 MIN_PEERS_FOR_Z = 3
@@ -24,6 +43,9 @@ class BaseRule(ABC):
     params: dict[str, Any] = {}
     benign_explanations: list[str] = []
     examiner_check: str = ""
+    # "As of" date for time-dependent rules, set by the assessment runner. Never the wall
+    # clock: the same submission must give the same findings whenever it is assessed.
+    reference_date: datetime | None = None
 
     def __init__(self, config_override: dict[str, Any] | None = None):
         if config_override:
@@ -59,6 +81,11 @@ class BaseRule(ABC):
         median = RobustStats.median(peer_values)
         scale = max(1.4826 * RobustStats.mad(peer_values), min_spread)
         return (value - median) / scale, median
+
+    def assessment_reference_date(self, store: DuckDBStore) -> datetime | None:
+        """The date this assessment is "as of": the runner's reference date, else the latest
+        timestamp in the submitted data. None only when the store holds no dated record."""
+        return self.reference_date or data_reference_date(store)
 
     @staticmethod
     def population(store: DuckDBStore, sql: str, params: list[Any]) -> int:

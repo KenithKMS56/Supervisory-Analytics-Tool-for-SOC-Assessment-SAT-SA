@@ -1,7 +1,11 @@
 """CLI for SAT-SA."""
 
+from typing import Any
+
 import typer
 from rich.console import Console
+
+from satsa.serving import ServingConfig
 
 app = typer.Typer(
     name="satsa",
@@ -40,6 +44,45 @@ def generate_data_cmd(
     console.print(f"  * Ground Truth: [cyan]{gt_path}[/cyan]")
 
 
+SOURCE_MAPPINGS = {
+    "splunk": "config/mappings/cse_splunk.yaml",
+    "servicenow": "config/mappings/cse_servicenow.yaml",
+    "thehive": "config/mappings/cse_thehive.yaml",
+}
+
+
+def _print_ingest_coverage(result: dict[str, Any]) -> None:
+    """Say plainly what the submission does not contain and which rules that costs."""
+    if result.get("source"):
+        console.print(f"  * Source mapping: [cyan]{result['source']}[/cyan]")
+        for table, info in sorted(result.get("field_coverage", {}).items()):
+            empty = [c for c, n in info["filled"].items() if n == 0]
+            console.print(
+                f"    - {table}: {info['rows']} rows; "
+                + (f"no value for: [yellow]{', '.join(empty)}[/yellow]" if empty else "every column filled")
+            )
+        for name in result.get("unmapped_files", []):
+            console.print(f"    - [yellow]not described by the mapping, not ingested:[/yellow] {name}")
+        for name, columns in sorted(result.get("unused_source_columns", {}).items()):
+            console.print(f"    - {name}: source columns not used: {', '.join(columns)}")
+
+    # Group entities with the same gaps so ten identical CSEs print once.
+    grouped: dict[tuple[str, str], list[str]] = {}
+    for entity_id, cov in sorted(result.get("rule_coverage", {}).items()):
+        skipped = "; ".join(f"{r} (no {', '.join(t)})" for r, t in sorted(cov["not_assessed"].items()))
+        degraded = "; ".join(f"{r} (alert.{', alert.'.join(c)} empty)" for r, c in sorted(cov["degraded"].items()))
+        if skipped or degraded:
+            grouped.setdefault((skipped, degraded), []).append(entity_id)
+    for (skipped, degraded), entity_ids in grouped.items():
+        console.print(f"  * Rule coverage for [cyan]{', '.join(entity_ids)}[/cyan]:")
+        if skipped:
+            console.print(f"    - [yellow]Not assessed[/yellow] (table never submitted): {skipped}")
+        if degraded:
+            console.print(f"    - [yellow]Cannot fire[/yellow] (input column empty): {degraded}")
+    if result.get("rule_coverage") and not grouped:
+        console.print("  * Rule coverage: all 20 rules can be assessed for every entity in this submission.")
+
+
 @app.command("ingest")
 def ingest_cmd(
     data_dir: str = typer.Option(
@@ -51,20 +94,49 @@ def ingest_cmd(
     parquet_dir: str = typer.Option(
         "data", "--parquet-dir", help="Root directory for Parquet storage"
     ),
+    source: str = typer.Option(
+        None, "--source", help=f"Product export to translate: {', '.join(sorted(SOURCE_MAPPINGS))}"
+    ),
+    mapping_path: str = typer.Option(
+        None, "--mapping", help="Source mapping YAML (instead of --source), see config/mappings/"
+    ),
+    entity: str = typer.Option(
+        None, "--entity", "-e", help="Entity the files belong to (required with --source / --mapping)"
+    ),
 ) -> None:
     """Ingest datasets, execute DQ checks, pseudonymise actors, redact PII, and store partitioned Parquet."""
     from pathlib import Path
 
+    from satsa.ingest.mapper import MappingError, SourceMapping
     from satsa.ingest.pipeline import IngestionPipeline
     from satsa.store.duckdb import DuckDBStore
     from satsa.store.sqlite import SQLiteStore
+
+    mapping = None
+    if source and mapping_path:
+        console.print("[bold red][!] Give either --source or --mapping, not both.[/bold red]")
+        raise typer.Exit(code=2)
+    if source or mapping_path:
+        if source and source not in SOURCE_MAPPINGS:
+            console.print(
+                f"[bold red][!] Unknown source '{source}'. Known: {', '.join(sorted(SOURCE_MAPPINGS))}.[/bold red]"
+            )
+            raise typer.Exit(code=2)
+        if not entity:
+            console.print("[bold red][!] --entity is required with --source / --mapping.[/bold red]")
+            raise typer.Exit(code=2)
+        try:
+            mapping = SourceMapping(SOURCE_MAPPINGS[source] if source else mapping_path)
+        except MappingError as exc:
+            console.print(f"[bold red][!] {exc}[/bold red]")
+            raise typer.Exit(code=2) from None
 
     console.print(f"[bold blue]Starting ingestion from:[/bold blue] [cyan]{data_dir}[/cyan]")
     duckdb_store = DuckDBStore(parquet_dir)
     sqlite_store = SQLiteStore(db_path)
     pipeline = IngestionPipeline(duckdb_store, sqlite_store)
 
-    result = pipeline.ingest_directory(Path(data_dir))
+    result = pipeline.ingest_directory(Path(data_dir), default_entity_id=entity, mapping=mapping)
     duckdb_store.close()
     sqlite_store.close()
 
@@ -84,6 +156,7 @@ def ingest_cmd(
         console.print(
             f"  * Data Quality Issues Detected: [yellow]{result.get('dq_issues')}[/yellow]"
         )
+        _print_ingest_coverage(result)
     else:
         console.print(f"[bold red][!] Ingestion failed/empty:[/bold red] {result.get('message')}")
 
@@ -97,8 +170,23 @@ def run_cmd(
     parquet_dir: str = typer.Option(
         "data", "--parquet-dir", help="Root directory for Parquet storage"
     ),
+    reference_date: str = typer.Option(
+        "",
+        "--reference-date",
+        help="Date the assessment is 'as of' (YYYY-MM-DD) for time-dependent rules such as stale "
+        "cases. Default: the latest timestamp in the submitted data. Never the current date.",
+    ),
 ) -> None:
     """Execute supervisory assessment across all entities: evaluate rules, compute risk index, rank review queue."""
+    from datetime import datetime
+
+    as_of = None
+    if reference_date:
+        try:
+            as_of = datetime.strptime(reference_date, "%Y-%m-%d")
+        except ValueError:
+            console.print("[bold red][!] --reference-date must be YYYY-MM-DD[/bold red]")
+            raise typer.Exit(code=2) from None
     from satsa.scoring.runner import AssessmentRunner
     from satsa.store.duckdb import DuckDBStore
     from satsa.store.sqlite import SQLiteStore
@@ -110,7 +198,9 @@ def run_cmd(
     sqlite_store = SQLiteStore(db_path)
     runner = AssessmentRunner(duckdb_store, sqlite_store)
 
-    res = runner.run_assessment(period=period)
+    res = runner.run_assessment(period=period, reference_date=as_of)
+    if res.get("reference_date"):
+        console.print(f"  * Reference date (as of): [cyan]{res['reference_date']}[/cyan]")
     duckdb_store.close()
     sqlite_store.close()
 
@@ -181,38 +271,110 @@ def seed_history_cmd(
         )
 
 
+def _serving_config_or_exit(
+    host: str | None, certfile: str | None, keyfile: str | None
+) -> ServingConfig:
+    """Bind address and TLS for `serve` / `admin`; over TLS the session cookies become Secure."""
+    import os
+
+    from satsa.serving import (
+        ENV_COOKIE_SECURE,
+        ServingConfigError,
+        exposure_warning,
+        serving_config,
+    )
+
+    try:
+        config = serving_config(host=host, certfile=certfile, keyfile=keyfile)
+    except ServingConfigError as exc:
+        console.print(f"[bold red][!] Refusing to start: {exc}[/bold red]")
+        raise typer.Exit(code=2) from None
+    warning = exposure_warning(config)
+    if warning:
+        console.print(f"[bold yellow][!] {warning}[/bold yellow]")
+    if config.tls:
+        os.environ.setdefault(ENV_COOKIE_SECURE, "1")
+    return config
+
+
 @app.command("serve")
 def serve_cmd(
     host: str = typer.Option(
-        "127.0.0.1", "--host", "-h", help="Bind address (default local air-gapped 127.0.0.1)"
+        None, "--host", "-h", help="Bind address (default: SATSA_HOST, else loopback 127.0.0.1)"
     ),
     port: int = typer.Option(8001, "--port", "-p", help="Server port (default 8001)"),
+    ssl_certfile: str = typer.Option(None, "--ssl-certfile", help="TLS certificate (default: SATSA_TLS_CERT)"),
+    ssl_keyfile: str = typer.Option(None, "--ssl-keyfile", help="TLS private key (default: SATSA_TLS_KEY)"),
 ) -> None:
     """Launch local offline server-rendered UI and REST API."""
     import uvicorn
 
+    config = _serving_config_or_exit(host, ssl_certfile, ssl_keyfile)
     console.print(
-        f"[bold green][+] Launching SAT-SA offline dashboard at:[/bold green] [cyan]http://{host}:{port}[/cyan]"
+        f"[bold green][+] Launching SAT-SA offline dashboard at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
     )
     console.print("[dim]Fully offline, air-gapped server. Press Ctrl+C to exit.[/dim]")
-    uvicorn.run("satsa.api:app", host=host, port=port, log_level="info")
+    uvicorn.run(
+        "satsa.api:app",
+        host=config.host,
+        port=port,
+        log_level="info",
+        ssl_certfile=config.certfile,
+        ssl_keyfile=config.keyfile,
+    )
 
 
 @app.command("admin")
 def admin_cmd(
     host: str = typer.Option(
-        "127.0.0.1", "--host", "-h", help="Bind address (default local air-gapped 127.0.0.1)"
+        None, "--host", "-h", help="Bind address (default: SATSA_HOST, else loopback 127.0.0.1)"
     ),
     port: int = typer.Option(8000, "--port", "-p", help="NCIIPC Administration Portal port (default 8000)"),
+    ssl_certfile: str = typer.Option(None, "--ssl-certfile", help="TLS certificate (default: SATSA_TLS_CERT)"),
+    ssl_keyfile: str = typer.Option(None, "--ssl-keyfile", help="TLS private key (default: SATSA_TLS_KEY)"),
 ) -> None:
     """Launch NCIIPC Administration Portal control plane."""
     import uvicorn
 
+    config = _serving_config_or_exit(host, ssl_certfile, ssl_keyfile)
     console.print(
-        f"[bold green][+] Launching NCIIPC Administration Portal at:[/bold green] [cyan]http://{host}:{port}[/cyan]"
+        f"[bold green][+] Launching NCIIPC Administration Portal at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
     )
     console.print("[dim]Administrative identity and control console. Press Ctrl+C to exit.[/dim]")
-    uvicorn.run("satsa.admin.app:app", host=host, port=port, log_level="info")
+    uvicorn.run(
+        "satsa.admin.app:app",
+        host=config.host,
+        port=port,
+        log_level="info",
+        ssl_certfile=config.certfile,
+        ssl_keyfile=config.keyfile,
+    )
+
+
+@app.command("tls-cert")
+def tls_cert_cmd(
+    out_dir: str = typer.Option("certs", "--out", "-o", help="Directory for the certificate and key"),
+    hostname: list[str] = typer.Option(["localhost"], "--hostname", help="DNS name(s) the portals are reached by"),
+    ip: list[str] = typer.Option(["127.0.0.1"], "--ip", help="IP address(es) the portals are reached by"),
+    days: int = typer.Option(365, "--days", help="Validity in days (1-825)"),
+    force: bool = typer.Option(False, "--force", help="Replace an existing certificate and key"),
+) -> None:
+    """Create a self-signed TLS certificate offline (needs the local `openssl` command)."""
+    from satsa.serving import (
+        ENV_TLS_CERT,
+        ENV_TLS_KEY,
+        ServingConfigError,
+        generate_self_signed_cert,
+    )
+
+    try:
+        cert, key = generate_self_signed_cert(out_dir, list(hostname), list(ip), days=days, force=force)
+    except ServingConfigError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    console.print(f"[bold green][+] Certificate:[/bold green] {cert}")
+    console.print(f"[bold green][+] Private key:[/bold green] {key}")
+    console.print(f"[dim]Serve with TLS: set {ENV_TLS_CERT}={cert} and {ENV_TLS_KEY}={key}[/dim]")
 
 
 @app.command("report")

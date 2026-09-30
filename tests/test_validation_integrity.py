@@ -443,3 +443,49 @@ def test_confidence_reflects_population_examined_not_offender_count(tmp_path):
         store.close()
     assert many[0].confidence == 1.0 and many[0].score == 60.0
     assert few[0].confidence == 0.2 and few[0].score < many[0].score
+
+
+# ------------------------------------------------------------------ reproducible reference date
+
+
+def test_eg09_case_age_uses_the_assessment_reference_date_not_the_clock(tmp_path):
+    """Three cases left open since early March, in data that ends on 20 March. They are 15+
+    days stale as of the data's end. Before, age ran to now(), so the same submission gave a
+    different answer depending on the day it was assessed."""
+    from satsa.rules.base import data_reference_date
+
+    store = DuckDBStore(tmp_path / "eg09")
+    for i in range(3):
+        store.execute(
+            'INSERT INTO "case" (entity_id, case_id, severity, status, opened_at) VALUES (?, ?, \'high\', \'open\', ?)',
+            ["AGE", f"C{i}", datetime(2026, 3, 1 + i, 9, 0, 0)],
+        )
+    store.execute(
+        "INSERT INTO alert (entity_id, alert_id, created_at, closed_at) VALUES ('AGE', 'A1', ?, ?)",
+        [datetime(2026, 3, 20, 9, 0, 0), datetime(2026, 3, 20, 10, 0, 0)],
+    )
+    rule = RuleRegistry().get_rule("EG09")
+    try:
+        assert data_reference_date(store) == datetime(2026, 3, 20, 10, 0, 0)
+        findings, _ = rule.evaluate("AGE", store, [], "RUN-X")
+        assert findings and "as of 2026-03-20" in findings[0].rationale
+
+        # Assessed "as of" 10 March, none of the cases is 14 days old yet.
+        rule.reference_date = datetime(2026, 3, 10, 0, 0, 0)
+        assert rule.evaluate("AGE", store, [], "RUN-X")[0] == []
+        # And as of a year later they all are: the result follows the reference date only.
+        rule.reference_date = datetime(2027, 3, 10, 0, 0, 0)
+        assert len(rule.evaluate("AGE", store, [], "RUN-X")[0]) == 1
+    finally:
+        rule.reference_date = None
+        store.close()
+
+
+def test_no_rule_reads_the_wall_clock():
+    import inspect
+
+    from satsa.rules import execution_gaps, negative_space
+
+    for module in (execution_gaps, negative_space):
+        source = inspect.getsource(module)
+        assert "now()" not in source and "datetime.now" not in source and "date.today" not in source

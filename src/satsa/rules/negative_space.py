@@ -1,13 +1,15 @@
 """Negative Space Detection Rules: NS01 through NS08."""
 
 import math
+from typing import Any
 
 from satsa.models.outputs import Finding, FindingEvidence
 from satsa.rules.base import BaseRule
 from satsa.store.duckdb import DuckDBStore
 
-# Length of the supervisory review period NS08 expects a submission to cover.
-REVIEW_PERIOD_MONTHS = 6
+# Allowed range for NS08's `review_period_months` (config/rules.yaml). Outside it the
+# configuration is rejected when the rule is built, not silently clamped.
+REVIEW_PERIOD_MONTHS_RANGE = (1, 24)
 
 
 class NS01SilentCriticalAssets(BaseRule):
@@ -294,7 +296,39 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
                 benign_explanations=self.benign_explanations,
                 evidence_ids=[f"FLATLINE-{entity_id}"],
             )
-            return [finding], []
+            # An absence has no row of its own, so the supporting rows are the ones around
+            # it: any night-time alerts that do exist, and the last alert of each recent day
+            # (where activity stops until the next morning).
+            night_df = store.query(
+                "SELECT alert_id, created_at FROM alert WHERE entity_id = ? "
+                "AND (extract(hour from created_at) < 8 OR extract(hour from created_at) >= 20) "
+                "ORDER BY created_at DESC, alert_id LIMIT 5",
+                [entity_id],
+            )
+            last_df = store.query(
+                """
+                SELECT alert_id, created_at FROM (
+                    SELECT alert_id, created_at,
+                           row_number() OVER (PARTITION BY CAST(created_at AS DATE) ORDER BY created_at DESC, alert_id) AS rn
+                    FROM alert WHERE entity_id = ? AND created_at IS NOT NULL
+                ) WHERE rn = 1 ORDER BY created_at DESC, alert_id LIMIT 10
+                """,
+                [entity_id],
+            )
+            evidences = [
+                FindingEvidence(
+                    finding_id=f_id,
+                    record_type="alert",
+                    record_id=str(row["alert_id"]),
+                    details={"reason": reason, "created_at": str(row["created_at"])},
+                )
+                for df_ev, reason in (
+                    (night_df, "Night-time alert (20:00-08:00)"),
+                    (last_df, "Last alert recorded that day"),
+                )
+                for row in df_ev.iter_rows(named=True)
+            ]
+            return [finding], evidences
         return [], []
 
 
@@ -422,7 +456,7 @@ class NS05RuleCoverageGaps(BaseRule):
 
             rationale = (
                 f"{len(dormant_rules)} of {total_rules} ({dormant_share:.1%}) enabled SIEM detection rules "
-                f"never fired a single alert over the 6-month observation period."
+                f"never fired a single alert in the submitted observation period."
             )
             finding = Finding(
                 finding_id=f_id,
@@ -445,7 +479,16 @@ class NS05RuleCoverageGaps(BaseRule):
                 benign_explanations=self.benign_explanations,
                 evidence_ids=dormant_rules[:10],
             )
-            return [finding], []
+            evidences = [
+                FindingEvidence(
+                    finding_id=f_id,
+                    record_type="detection_rule",
+                    record_id=str(rule_id),
+                    details={"reason": "Enabled detection rule with no alert in the period"},
+                )
+                for rule_id in dormant_rules[:10]
+            ]
+            return [finding], evidences
         return [], []
 
 
@@ -599,7 +642,7 @@ class NS08SubmissionCompleteness(BaseRule):
     """NS08: Submission completeness (alerts missing for months of the review period).
 
     The review period is the months the portfolio's submissions cover, up to
-    REVIEW_PERIOD_MONTHS; an entity alone in the portfolio is held to the full period.
+    `review_period_months`; an entity alone in the portfolio is held to the full period.
     """
 
     id = "NS08"
@@ -615,6 +658,21 @@ class NS08SubmissionCompleteness(BaseRule):
         "Review submission logs for missing monthly batch data or data ingestion parse failures."
     )
 
+    def __init__(self, config_override: dict[str, Any] | None = None):
+        super().__init__(config_override)
+        self.review_period_months()  # reject an out-of-range period before any assessment runs
+
+    def review_period_months(self) -> int:
+        """Length of the supervisory review period in months, from config, range-checked."""
+        value = self.params.get("review_period_months", 6)
+        low, high = REVIEW_PERIOD_MONTHS_RANGE
+        if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+            raise ValueError(
+                f"NS08 review_period_months must be a whole number of months between {low} and "
+                f"{high}; config/rules.yaml has {value!r}."
+            )
+        return value
+
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
@@ -629,12 +687,13 @@ class NS08SubmissionCompleteness(BaseRule):
 
         month_cnt = len(own)
         # Months the entity is expected to cover: what the portfolio as a whole submitted,
-        # capped at the review period. Judging a short or partly-elapsed period against a
-        # fixed six months would flag every entity.
+        # capped at the configured review period. Judging a short or partly-elapsed period
+        # against the full period would flag every entity.
+        review_months = self.review_period_months()
         others = self.population(
             store, "SELECT count(DISTINCT entity_id) FROM alert WHERE entity_id != ?", [entity_id]
         )
-        expected = min(REVIEW_PERIOD_MONTHS, len(portfolio)) if others else REVIEW_PERIOD_MONTHS
+        expected = min(review_months, len(portfolio)) if others else review_months
         if month_cnt < expected:
             missing_months = expected - month_cnt
             score, conf = self.compute_rule_score(missing_months / 2.0, 10)
@@ -665,5 +724,35 @@ class NS08SubmissionCompleteness(BaseRule):
                 evidence_ids=[f"missing-month:{m}" for m in missing_labels]
                 or [f"submitted-month:{m}" for m in sorted(own)],
             )
-            return [finding], []
+            # The real alerts on either side of each gap (or, with no named gap, the first and
+            # last alerts of the submission), so an examiner can see where the data stops.
+            edges: list[tuple[str, str]] = []
+            for m in missing_labels:
+                edges.append((f"Last alert before the gap in {m}", f"strftime(created_at, '%Y-%m') < '{m}' ORDER BY created_at DESC"))
+                edges.append((f"First alert after the gap in {m}", f"strftime(created_at, '%Y-%m') > '{m}' ORDER BY created_at ASC"))
+            if not missing_labels:
+                edges = [
+                    ("First alert in the submission", "1 = 1 ORDER BY created_at ASC"),
+                    ("Last alert in the submission", "1 = 1 ORDER BY created_at DESC"),
+                ]
+            evidences = []
+            seen: set[str] = set()
+            for reason, clause in edges:
+                edge_df = store.query(
+                    f"SELECT alert_id, created_at FROM alert WHERE entity_id = ? AND created_at IS NOT NULL AND {clause}, alert_id LIMIT 1",
+                    [entity_id],
+                )
+                for row in edge_df.iter_rows(named=True):
+                    if str(row["alert_id"]) in seen:
+                        continue
+                    seen.add(str(row["alert_id"]))
+                    evidences.append(
+                        FindingEvidence(
+                            finding_id=f_id,
+                            record_type="alert",
+                            record_id=str(row["alert_id"]),
+                            details={"reason": reason, "created_at": str(row["created_at"])},
+                        )
+                    )
+            return [finding], evidences
         return [], []
