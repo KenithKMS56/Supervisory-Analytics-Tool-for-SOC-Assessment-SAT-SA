@@ -131,7 +131,11 @@ def seed_historical_periods(
         # refresh_tables=False: run_assessment must assess THIS window. Its default reload
         # from Parquet would restore the full dataset and make every period identical.
         res = runner.run_assessment(
-            period=period_label, actor=actor, refresh_tables=False, record_data_gaps=False
+            period=period_label,
+            actor=actor,
+            refresh_tables=False,
+            record_data_gaps=False,
+            reference_date=cutoff,
         )
         window_store.close()
         res["period"] = period_label

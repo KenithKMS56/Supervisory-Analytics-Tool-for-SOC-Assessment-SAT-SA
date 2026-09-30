@@ -97,8 +97,23 @@ def run_cmd(
     parquet_dir: str = typer.Option(
         "data", "--parquet-dir", help="Root directory for Parquet storage"
     ),
+    reference_date: str = typer.Option(
+        "",
+        "--reference-date",
+        help="Date the assessment is 'as of' (YYYY-MM-DD) for time-dependent rules such as stale "
+        "cases. Default: the latest timestamp in the submitted data. Never the current date.",
+    ),
 ) -> None:
     """Execute supervisory assessment across all entities: evaluate rules, compute risk index, rank review queue."""
+    from datetime import datetime
+
+    as_of = None
+    if reference_date:
+        try:
+            as_of = datetime.strptime(reference_date, "%Y-%m-%d")
+        except ValueError:
+            console.print("[bold red][!] --reference-date must be YYYY-MM-DD[/bold red]")
+            raise typer.Exit(code=2) from None
     from satsa.scoring.runner import AssessmentRunner
     from satsa.store.duckdb import DuckDBStore
     from satsa.store.sqlite import SQLiteStore
@@ -110,7 +125,9 @@ def run_cmd(
     sqlite_store = SQLiteStore(db_path)
     runner = AssessmentRunner(duckdb_store, sqlite_store)
 
-    res = runner.run_assessment(period=period)
+    res = runner.run_assessment(period=period, reference_date=as_of)
+    if res.get("reference_date"):
+        console.print(f"  * Reference date (as of): [cyan]{res['reference_date']}[/cyan]")
     duckdb_store.close()
     sqlite_store.close()
 
