@@ -226,8 +226,9 @@ The harness perturbed all 8 capability domain **weights** by **$\pm 20\%$** on t
 
 `satsa validate` and `satsa validate-stress` move each tunable rule threshold by −20% and +20%, one
 at a time (integers move by at least 1; shares and rates are capped at 1.0), re-run that rule on
-every entity, and score it against the ground truth. 17 of the 20 rules have tunable thresholds;
-EG03 and NS07 are zero-tolerance and NS08 checks the fixed 6-month review period, so they have none.
+every entity, and score it against the ground truth. 18 of the 20 rules have tunable thresholds
+(NS08's is the length of the review period, `review_period_months`); EG03 and NS07 are zero-tolerance,
+so they have none.
 Full tables: Section 7 of `docs/validation_report.md` and `docs/validation_stress_report.md`.
 
 **Primary dataset: 3 of 64 perturbations change an outcome.**

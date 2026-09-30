@@ -296,8 +296,9 @@ def sensitivity_markdown(sens: dict[str, Any]) -> list[str]:
         "",
         (
             f"Not covered: {', '.join(sens['rules_not_covered'])} have no tunable threshold (no `params` in "
-            "`config/rules.yaml`): EG03 and NS07 are zero-tolerance and NS08 checks the fixed 6-month "
-            "review period. A rule showing TP 0 / FN 0 has no injected defect in this dataset."
+            "`config/rules.yaml`): they are zero-tolerance, one unescalated critical true positive or "
+            "one unreported critical incident is a finding. A rule showing TP 0 / FN 0 has no injected "
+            "defect in this dataset."
         ),
     ]
     return lines

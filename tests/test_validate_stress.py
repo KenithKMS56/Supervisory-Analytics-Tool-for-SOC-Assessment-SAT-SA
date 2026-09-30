@@ -101,7 +101,7 @@ def test_stress_scenario_runs_end_to_end():
     # The sweep must see the borderline case it was built for: raising EG04's share
     # threshold by 20% (0.25 -> 0.30) loses STRESS-01's 27.5% defect.
     sens = results["threshold_sensitivity"]
-    assert sens["rules_not_covered"] == ["EG03", "NS07", "NS08"]
+    assert sens["rules_not_covered"] == ["EG03", "NS07"]
     eg04_up = next(
         r for r in sens["rows"] if r["rule_id"] == "EG04" and r["param"] == "max_comment_hash_share" and r["tested"] > 0.25
     )
