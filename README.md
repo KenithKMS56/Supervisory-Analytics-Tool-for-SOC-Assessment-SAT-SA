@@ -296,7 +296,9 @@ The easiest way to run the entire unified platform (NCIIPC Admin Portal + SAT-SA
 
    > **Upgrading an existing database:** the former `supervisor` role is migrated to `analyst` automatically on startup. The untouched demo account `supervisor` / `ChangeMe-Supervisor#2026` becomes `analyst` / `ChangeMe-Analyst#2026`; an account whose passphrase was rotated keeps its username.
 
-   > **Note on Security:** As documented in Section 2 of `docs/functional_design.md`, default credentials are intentionally seeded CHANGE-ME credentials for immediate offline evaluation. NCIIPC administrators should rotate these in production.
+   > **First login:** every seeded account must choose a new passphrase the first time it signs in. Until it does, its session can open the change-password page and nothing else (pages redirect there; APIs and mutating requests return HTTP 403). The new passphrase must be at least 12 characters and cannot be one of the defaults above. Accounts an administrator creates or resets with "force password change" ticked are held to the same rule.
+
+   > **Network exposure:** `docker compose` publishes both ports on `127.0.0.1` only. To reach the portals from another machine, opt in with `SATSA_BIND_ADDRESS=0.0.0.0 docker compose up -d`, and turn on TLS first (`python scripts/generate_selfsigned_cert.py`, then `SATSA_TLS_CERT` / `SATSA_TLS_KEY`). See `docs/deployment_ops.md` Section 1.3.
 
 4. **Stop the platform:**
    - **Windows**: `stop.bat`

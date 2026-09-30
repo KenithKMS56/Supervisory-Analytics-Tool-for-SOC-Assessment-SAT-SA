@@ -3,6 +3,8 @@
 import typer
 from rich.console import Console
 
+from satsa.serving import ServingConfig
+
 app = typer.Typer(
     name="satsa",
     help="Supervisory Analytics Tool for SOC Assessment (NCIIPC)",
@@ -198,38 +200,110 @@ def seed_history_cmd(
         )
 
 
+def _serving_config_or_exit(
+    host: str | None, certfile: str | None, keyfile: str | None
+) -> ServingConfig:
+    """Bind address and TLS for `serve` / `admin`; over TLS the session cookies become Secure."""
+    import os
+
+    from satsa.serving import (
+        ENV_COOKIE_SECURE,
+        ServingConfigError,
+        exposure_warning,
+        serving_config,
+    )
+
+    try:
+        config = serving_config(host=host, certfile=certfile, keyfile=keyfile)
+    except ServingConfigError as exc:
+        console.print(f"[bold red][!] Refusing to start: {exc}[/bold red]")
+        raise typer.Exit(code=2) from None
+    warning = exposure_warning(config)
+    if warning:
+        console.print(f"[bold yellow][!] {warning}[/bold yellow]")
+    if config.tls:
+        os.environ.setdefault(ENV_COOKIE_SECURE, "1")
+    return config
+
+
 @app.command("serve")
 def serve_cmd(
     host: str = typer.Option(
-        "127.0.0.1", "--host", "-h", help="Bind address (default local air-gapped 127.0.0.1)"
+        None, "--host", "-h", help="Bind address (default: SATSA_HOST, else loopback 127.0.0.1)"
     ),
     port: int = typer.Option(8001, "--port", "-p", help="Server port (default 8001)"),
+    ssl_certfile: str = typer.Option(None, "--ssl-certfile", help="TLS certificate (default: SATSA_TLS_CERT)"),
+    ssl_keyfile: str = typer.Option(None, "--ssl-keyfile", help="TLS private key (default: SATSA_TLS_KEY)"),
 ) -> None:
     """Launch local offline server-rendered UI and REST API."""
     import uvicorn
 
+    config = _serving_config_or_exit(host, ssl_certfile, ssl_keyfile)
     console.print(
-        f"[bold green][+] Launching SAT-SA offline dashboard at:[/bold green] [cyan]http://{host}:{port}[/cyan]"
+        f"[bold green][+] Launching SAT-SA offline dashboard at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
     )
     console.print("[dim]Fully offline, air-gapped server. Press Ctrl+C to exit.[/dim]")
-    uvicorn.run("satsa.api:app", host=host, port=port, log_level="info")
+    uvicorn.run(
+        "satsa.api:app",
+        host=config.host,
+        port=port,
+        log_level="info",
+        ssl_certfile=config.certfile,
+        ssl_keyfile=config.keyfile,
+    )
 
 
 @app.command("admin")
 def admin_cmd(
     host: str = typer.Option(
-        "127.0.0.1", "--host", "-h", help="Bind address (default local air-gapped 127.0.0.1)"
+        None, "--host", "-h", help="Bind address (default: SATSA_HOST, else loopback 127.0.0.1)"
     ),
     port: int = typer.Option(8000, "--port", "-p", help="NCIIPC Administration Portal port (default 8000)"),
+    ssl_certfile: str = typer.Option(None, "--ssl-certfile", help="TLS certificate (default: SATSA_TLS_CERT)"),
+    ssl_keyfile: str = typer.Option(None, "--ssl-keyfile", help="TLS private key (default: SATSA_TLS_KEY)"),
 ) -> None:
     """Launch NCIIPC Administration Portal control plane."""
     import uvicorn
 
+    config = _serving_config_or_exit(host, ssl_certfile, ssl_keyfile)
     console.print(
-        f"[bold green][+] Launching NCIIPC Administration Portal at:[/bold green] [cyan]http://{host}:{port}[/cyan]"
+        f"[bold green][+] Launching NCIIPC Administration Portal at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
     )
     console.print("[dim]Administrative identity and control console. Press Ctrl+C to exit.[/dim]")
-    uvicorn.run("satsa.admin.app:app", host=host, port=port, log_level="info")
+    uvicorn.run(
+        "satsa.admin.app:app",
+        host=config.host,
+        port=port,
+        log_level="info",
+        ssl_certfile=config.certfile,
+        ssl_keyfile=config.keyfile,
+    )
+
+
+@app.command("tls-cert")
+def tls_cert_cmd(
+    out_dir: str = typer.Option("certs", "--out", "-o", help="Directory for the certificate and key"),
+    hostname: list[str] = typer.Option(["localhost"], "--hostname", help="DNS name(s) the portals are reached by"),
+    ip: list[str] = typer.Option(["127.0.0.1"], "--ip", help="IP address(es) the portals are reached by"),
+    days: int = typer.Option(365, "--days", help="Validity in days (1-825)"),
+    force: bool = typer.Option(False, "--force", help="Replace an existing certificate and key"),
+) -> None:
+    """Create a self-signed TLS certificate offline (needs the local `openssl` command)."""
+    from satsa.serving import (
+        ENV_TLS_CERT,
+        ENV_TLS_KEY,
+        ServingConfigError,
+        generate_self_signed_cert,
+    )
+
+    try:
+        cert, key = generate_self_signed_cert(out_dir, list(hostname), list(ip), days=days, force=force)
+    except ServingConfigError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    console.print(f"[bold green][+] Certificate:[/bold green] {cert}")
+    console.print(f"[bold green][+] Private key:[/bold green] {key}")
+    console.print(f"[dim]Serve with TLS: set {ENV_TLS_CERT}={cert} and {ENV_TLS_KEY}={key}[/dim]")
 
 
 @app.command("report")

@@ -29,13 +29,73 @@ Build and deploy using the self-contained production `Containerfile`:
 # Build local container image without network
 podman build -t satsa:latest -f Containerfile .
 
-# Launch container exposing port 8000
+# Launch container, published on this machine's loopback only
 podman run -d \
   --name satsa-soc \
-  -p 8000:8000 \
+  -p 127.0.0.1:8000:8000 \
   -v ./data:/app/data:Z \
   satsa:latest
 ```
+
+### 1.3 Network exposure, first login and TLS
+
+**Bind address.** The portals are reachable from the local machine only, unless you say otherwise.
+
+| How it is started | Default | To accept connections from other machines |
+|---|---|---|
+| `satsa serve` / `satsa admin` | listens on `127.0.0.1` | `--host <address>` or `SATSA_HOST=<address>` |
+| `docker compose up` (`docker-compose.yml`) | ports published on `127.0.0.1` | `SATSA_BIND_ADDRESS=0.0.0.0` (or one interface address) |
+| `python entrypoint.py` outside a container | listens on `127.0.0.1` | `SATSA_HOST=<address>` |
+| `docker run` / `podman run` | wherever `-p` publishes | use `-p 127.0.0.1:8000:8000`; a bare `-p 8000:8000` publishes on every interface |
+
+Inside the container image the processes listen on `0.0.0.0` (`ENV SATSA_HOST=0.0.0.0` in the
+`Dockerfile`), because container port publishing cannot reach a container-internal loopback.
+What other machines can reach is decided by the published address, which is why that is the
+setting that defaults to loopback. When the portals listen beyond loopback over plain HTTP,
+start-up prints a warning.
+
+**First login.** A new database is seeded with four accounts whose passphrases are published
+in the README (`nciipc_admin`, `admin`, `analyst`, `examiner`). Each is created owing a
+passphrase change: signing in with the published passphrase opens a session that can reach
+the change-password page and nothing else (pages redirect there; APIs, downloads and every
+mutating request return HTTP 403). The same applies to any account an administrator creates
+or resets with "force password change" ticked. The new passphrase must be at least 12
+characters, differ from the current one and not be one of the published defaults; the current
+passphrase is asked for again, and wrong attempts count towards the login lockout (5 failures
+in 15 minutes). Changing it ends that user's other sessions and is written to the audit log
+(`password_changed` / `PASSWORD_CHANGED`). A database created before this rule existed is
+covered at start-up: any seeded account still on its published passphrase is flagged then.
+There is no setting that turns this off. From the CLI, `satsa users set-password <username>`
+sets a passphrase directly.
+
+**TLS (optional).** Serving is plain HTTP unless both a certificate and a key are configured.
+
+```bash
+# 1. Create a self-signed certificate offline (needs the local `openssl` command; no CA, no network).
+#    Name every hostname and IP address the portals will be reached by.
+python scripts/generate_selfsigned_cert.py --out certs --hostname satsa.internal --ip 10.0.0.5
+#    (equivalently: satsa tls-cert --out certs --hostname satsa.internal --ip 10.0.0.5)
+
+# 2a. Local processes
+satsa serve --ssl-certfile certs/satsa-cert.pem --ssl-keyfile certs/satsa-key.pem
+satsa admin --ssl-certfile certs/satsa-cert.pem --ssl-keyfile certs/satsa-key.pem
+
+# 2b. Docker Compose (./certs is mounted read-only at /app/certs)
+SATSA_TLS_CERT=/app/certs/satsa-cert.pem SATSA_TLS_KEY=/app/certs/satsa-key.pem docker compose up -d
+```
+
+- `SATSA_TLS_CERT` and `SATSA_TLS_KEY` are the environment equivalents of the two flags. One
+  without the other, or a path that does not exist, stops start-up: a half-configured TLS
+  setup never falls back to plain HTTP.
+- With TLS on, session cookies are issued with the `Secure` flag (`SATSA_COOKIE_SECURE=1` is
+  set for the portal processes).
+- The certificate is self-signed (RSA 3072, SHA-256, server-auth only, default 365 days,
+  maximum 825). Browsers will warn until `certs/satsa-cert.pem` is added to the client
+  machines' trust store; distribute that file, never `satsa-key.pem`. `certs/` is git-ignored.
+  An existing pair is not replaced unless `--force` is given. For a certificate issued by an
+  organisational CA, point the same two settings at its files instead.
+- The container healthcheck (`python /app/entrypoint.py --healthcheck`) follows the same
+  settings and probes over HTTPS when TLS is on.
 
 ---
 
@@ -63,9 +123,9 @@ satsa report --entity all --format all --output-dir reports/2026-Q1
 
 ### SOP-04: Launching Offline Examiner Portal
 ```bash
-satsa serve --host 127.0.0.1 --port 8000
+satsa serve --port 8000
 ```
-- Navigate to `http://127.0.0.1:8000` in local browser.
+- Navigate to `http://127.0.0.1:8000` in local browser (loopback is the default bind address; see Section 1.3).
 - Examiner views portfolio heatmap, inspects entity profiles, reviews finding cards, and marks feedback.
 
 ---
