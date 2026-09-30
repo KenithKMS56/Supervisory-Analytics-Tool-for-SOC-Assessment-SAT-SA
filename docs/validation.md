@@ -115,7 +115,7 @@ Added in September 2026 so that every rule has a positive case (each sized to cr
 ## 2. Detector-Implementation Correctness Results (Primary Dataset)
 
 `satsa validate` against the ground truth in Section 1, with every finding counted (see
-Section 0.1). Figures from run `RUN-20260930060740856186-dc501387`; regenerate with
+Section 0.1). Figures from run `RUN-20260930063308360511-73288831`; regenerate with
 `satsa validate`, and see `docs/validation_report.md` for the per-rule table.
 
 | Evaluation Metric | Measured Result | Benchmark Target | Verdict |
@@ -134,7 +134,7 @@ defect; 0 findings on the small-band entities (CSE-08, CSE-10) for rules not inj
 These are correctness-check results, not a real-world accuracy benchmark; see Section 0.
 
 ### 2.1 Entity Ranking Confirmation
-- **Top 7 Ranked Entities (All Injected):** CSE-02, CSE-03, CSE-07, CSE-09, CSE-08, CSE-05, CSE-10
+- **Top 7 Ranked Entities (All Injected):** CSE-02, CSE-08, CSE-03, CSE-05, CSE-07, CSE-09, CSE-10
 - **Bottom 3 Entities (All Clean Baselines):** CSE-01, CSE-04, CSE-06
 
 *(Exact risk indices vary slightly between regenerations of the synthetic dataset; run `satsa validate` for the current run's numbers.)*
@@ -339,7 +339,7 @@ These are not historical examiner findings. They are also deliberately **not** t
 SAT-SA's own findings: labels copied from the tool's output would make recall and precision 100%
 by construction.
 
-**Result** (primary dataset, run `RUN-20260930060740856186-dc501387`):
+**Result** (primary dataset, run `RUN-20260930063308360511-73288831`):
 
 | Measure | Value | What it means |
 |---|---|---|

@@ -362,3 +362,12 @@ The only differences in the validation report are the run ID and the audit-entry
 - **Methodology §4 rewritten from the code.** It stated severity weights 1.0/0.8/0.5/0.25 (actual: per-rule 70–95), breadth weight 0.15 (actual 0.10), and bands at 20/40/70 with an "Elevated" band (actual 25/50/75: Low/Moderate/High/Critical).
 - **Noted, not changed.** For EG03, EG08, EG09, EG12, NS04, NS06 and NS07 the confidence input is the number of offending items, so a few serious cases score low (EG12: 3 critical cases without containment score 12). Changing it would move most risk indices; documented in methodology §4.1 as a known limitation.
 - **Verified.** 728 passed / 0 failed / 33 skipped on Python 3.13 from freshly generated data (PDF/report/bundle tests run from the repo path); detection unchanged (21/21, 0 false positives); `satsa validate`, `satsa validate-stress`, ruff and mypy clean.
+
+## Step 26 — Rule confidence uses the population examined — done, verified
+
+- **Defect.** Confidence is `min(1, n / min_sample)`. For EG03, EG08, EG09, EG12, NS04 and NS06, `n` was the number of offending records, so it double-counted with the distance term and a few serious cases scored very low (EG12: 3 critical cases without containment, 3/15 = 0.2, score 12). EG10 passed a hardcoded 100 and NS02 passed the number of standard categories (always 12/30 = 0.4).
+- **Fix.** `BaseRule.population` counts what the rule examined for the entity: critical TP alerts (EG03), escalations (EG08), cases (EG09), High/Critical alerts measured (EG10), critical cases (EG12), alerts (NS02), High/Critical TP alerts (NS04), inventory assets (NS06). NS07 (`min_sample` 1) needed no change.
+- **Effect on the synthetic run.** Every finding is now at confidence 1.0 (each entity has enough data). Scores: EG12 12 → 60, NS06 19 → 64, EG09 19 → 47, NS02 34 → 85, EG08 45 → 57, EG03 76 → 95. Risk indices rise for CSE-08 (22.7 → 29.6), CSE-05 (19.6 → 26.4), CSE-09 (20.6 → 24.9) and CSE-03 (26.2 → 27.7); the order of the top 7 changes (CSE-08 is now second) but the same 7 defect entities lead and the 3 clean entities stay at 0. Bands are unchanged.
+- **Unchanged.** Detection (21/21, 0 false positives), threshold sensitivity (3 of 64), lift.
+- **Test.** `test_confidence_reflects_population_examined_not_offender_count`.
+- **Verified.** 729 passed / 0 failed / 33 skipped on Python 3.13 from freshly generated data (4 PDF/bundle tests run from the repo path); `satsa validate`, `satsa validate-stress`, ruff and mypy clean.

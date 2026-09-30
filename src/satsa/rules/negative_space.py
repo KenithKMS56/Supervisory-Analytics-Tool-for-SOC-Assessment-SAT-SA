@@ -140,7 +140,8 @@ class NS02MissingAlertCategories(BaseRule):
 
         missing = {m for m in (peer_common_cats - target_cats) if m is not None}
         if missing:
-            score, conf = self.compute_rule_score(len(missing) / 1.5, len(peer_common_cats))
+            examined = self.population(store, "SELECT count(*) FROM alert WHERE entity_id = ?", [entity_id])
+            score, conf = self.compute_rule_score(len(missing) / 1.5, examined)
             f_id = f"FND-NS02-{entity_id}-{run_id}"
             missing_list = sorted([str(m) for m in missing])
 
@@ -329,7 +330,13 @@ class NS04MissingRecords(BaseRule):
         # Tunable: High/Critical TP alerts with no case needed before flagging.
         min_tp_without_case = int(self.params.get("min_tp_without_case", 3))
         if tp_without_case >= min_tp_without_case:
-            score, conf = self.compute_rule_score(tp_without_case / 3.0, tp_without_case)
+            examined = self.population(
+                store,
+                "SELECT count(*) FROM alert WHERE entity_id = ? AND disposition = 'true_positive' "
+                "AND severity_final IN ('high', 'critical')",
+                [entity_id],
+            )
+            score, conf = self.compute_rule_score(tp_without_case / 3.0, examined)
             f_id = f"FND-NS04-{entity_id}-{run_id}"
             sample_ids = df_tp["alert_id"].head(5).to_list()
 
@@ -475,7 +482,8 @@ class NS06InventoryVsTelemetry(BaseRule):
         # Tunable: inventory assets with no telemetry and no alerts needed before flagging.
         min_ghost_assets = int(self.params.get("min_ghost_assets", 2))
         if len(ghost_assets) >= min_ghost_assets:
-            score, conf = self.compute_rule_score(len(ghost_assets) / 2.0, len(ghost_assets))
+            examined = self.population(store, "SELECT count(*) FROM asset WHERE entity_id = ?", [entity_id])
+            score, conf = self.compute_rule_score(len(ghost_assets) / 2.0, examined)
             f_id = f"FND-NS06-{entity_id}-{run_id}"
 
             rationale = (

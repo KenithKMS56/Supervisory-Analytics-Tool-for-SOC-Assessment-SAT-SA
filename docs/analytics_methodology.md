@@ -231,8 +231,7 @@ runs once per assessment, AFTER all per-entity rules, and looks ACROSS the whole
 $$\text{Score}(r) = \frac{\min(2, \; \text{Distance}(r))}{2} \times \text{SeverityWeight}(r) \times \text{Confidence}(r)$$
 - **Distance** is how far the measured value is past the rule's threshold (e.g. measured share ÷ threshold share), capped at 2, so a finding at twice its threshold or more scores the full severity weight.
 - **SeverityWeight** is per rule (`severity_weight` in `config/rules.yaml`, 70–95), and is therefore also the maximum score a rule can produce.
-- **Confidence:** $\min\left(1.0, \; n / n_{\min}\right)$, where $n_{\min}$ is the rule's `min_sample` in `config/rules.yaml`.
-- **Known limitation:** for several count-based rules (EG03, EG08, EG09, EG12, NS04, NS06, NS07) $n$ is the number of offending items, not the size of the population examined, so a small number of serious cases scores low: 3 critical cases without containment (EG12, `min_sample` 15) get confidence 0.2 and a score of 12. The band floor in Section 4.3 is not affected by this for findings at confidence ≥ 0.5, but the index is.
+- **Confidence:** $\min\left(1.0, \; n / n_{\min}\right)$, where $n_{\min}$ is the rule's `min_sample` in `config/rules.yaml` and $n$ is the size of the population the rule examined for that entity (e.g. its critical cases for EG12, its inventory assets for NS06, its alerts for NS02), never the number of offending records. How many offenders there are already drives the Distance term; confidence only says whether there was enough data to judge. So 3 critical cases without containment score 60 when the entity has 20 critical cases, and 12 when those 3 are all it has.
 
 ### 4.2 Capability Domain Score (Probabilistic Noisy-OR)
 For domain $d$ encompassing $m$ triggered rules with scores $s_1, s_2, \dots, s_m \in [0, 100]$:
