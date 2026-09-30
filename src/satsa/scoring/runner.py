@@ -145,8 +145,13 @@ class AssessmentRunner:
         actor: str = "system",
         refresh_tables: bool = True,
         record_data_gaps: bool = True,
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         """Run full evaluation pipeline.
+
+        `dry_run=True` evaluates and scores exactly as a real run would but persists nothing:
+        no run row, findings, scores, queue, audit entry or DQ changes. The result carries
+        the findings themselves (`findings`) so a caller can preview a configuration.
 
         `refresh_tables=False` assesses the store exactly as the caller prepared it instead
         of reloading every table from Parquet. satsa.scoring.history relies on this: it
@@ -188,7 +193,9 @@ class AssessmentRunner:
         all_queue_items: list[ReviewQueueItem] = []
 
         not_assessed = self._report_empty_dependencies(
-            [e.entity_id for e in entities], self.sqlite_store.get_submitted_tables(), record=record_data_gaps
+            [e.entity_id for e in entities],
+            self.sqlite_store.get_submitted_tables(),
+            record=record_data_gaps and not dry_run,
         )
 
         # Evaluate rules per entity
@@ -254,6 +261,28 @@ class AssessmentRunner:
         # findings just computed, not within any single entity's data.
         systemic_findings = self.systemic_detector.evaluate(entities, all_findings, run_id)
 
+        result: dict[str, Any] = {
+            "status": "success",
+            "run_id": run_id,
+            "period": period,
+            "config_hash": config_hash,
+            "entities_count": len(entities),
+            "findings_count": len(all_findings),
+            "queue_count": len(all_queue_items),
+            "systemic_findings_count": len(systemic_findings),
+            "entity_scores": {
+                es.entity_id: {"risk_index": es.risk_index, "risk_band": es.risk_band}
+                for es in all_entity_scores
+            },
+        }
+        if dry_run:
+            result["dry_run"] = True
+            result["findings"] = [
+                {"entity_id": f.entity_id, "rule_id": f.rule_id, "score": f.score, "severity": f.severity, "title": f.title}
+                for f in all_findings
+            ]
+            return result
+
         # Save to SQLite
         self.sqlite_store.save_run(run_obj)
         self.sqlite_store.save_findings(all_findings, all_evidences)
@@ -276,16 +305,4 @@ class AssessmentRunner:
             },
         )
 
-        return {
-            "status": "success",
-            "run_id": run_id,
-            "config_hash": config_hash,
-            "entities_count": len(entities),
-            "findings_count": len(all_findings),
-            "queue_count": len(all_queue_items),
-            "systemic_findings_count": len(systemic_findings),
-            "entity_scores": {
-                es.entity_id: {"risk_index": es.risk_index, "risk_band": es.risk_band}
-                for es in all_entity_scores
-            },
-        }
+        return result
