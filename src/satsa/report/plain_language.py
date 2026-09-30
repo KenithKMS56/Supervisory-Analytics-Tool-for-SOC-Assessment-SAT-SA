@@ -171,11 +171,11 @@ HEADLINES: dict[str, tuple[str, Formatters]] = {
     ),
     "NS03": (
         (
-            "Only {night_share} of {entity}'s alerts occur overnight, compared with {peer_average} "
-            "on average across assessed entities, which suggests monitoring may lapse outside "
-            "business hours."
+            "Only {night_share} of {entity}'s alerts occur overnight, compared with a median of "
+            "{peer_median} among its {peer_count} peers, which suggests monitoring may lapse "
+            "outside business hours."
         ),
-        {"night_share": _pct, "peer_average": _pct},
+        {"night_share": _pct, "peer_median": _pct, "peer_count": _count},
     ),
     "NS04": (
         (
@@ -250,8 +250,11 @@ def paired_comparison(rule_id: str, peer_comparison: dict[str, Any]) -> Comparis
                 title="Share of alerts raised overnight (20:00-08:00)",
                 entity_label="This entity",
                 entity_value=float(peer_comparison["night_share"]) * 100,
-                baseline_label="Portfolio average",
-                baseline_value=float(peer_comparison["peer_average"]) * 100,
+                # Findings from before the robust-z change stored a portfolio average instead.
+                baseline_label="Peer median" if "peer_median" in peer_comparison else "Portfolio average",
+                baseline_value=float(
+                    peer_comparison["peer_median"] if "peer_median" in peer_comparison else peer_comparison["peer_average"]
+                ) * 100,
                 unit="%",
             )
         if rule_id == "EG10":

@@ -21,6 +21,11 @@ def test_robust_statistics():
     z_outlier = RobustStats.robust_z_score(100.0, data)
     assert z_outlier > 50.0  # Massive z-score for outlier
 
+    # No spread in the reference values: an outlier is infinitely extreme, not 0.
+    assert RobustStats.robust_z_score(5.0, [0.0, 0.0, 0.0, 0.0]) == float("inf")
+    assert RobustStats.robust_z_score(0.0, [0.22, 0.22, 0.22]) == float("-inf")
+    assert RobustStats.robust_z_score(0.22, [0.22, 0.22, 0.22]) == 0.0
+
     # Test percentile rank
     rank = RobustStats.percentile_rank(12.0, data)
     assert 40.0 <= rank <= 60.0

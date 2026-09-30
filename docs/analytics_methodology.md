@@ -8,7 +8,16 @@ This document provides the exhaustive mathematical, statistical, and algorithmic
 
 ## 1. Robust Statistics & Peer Benchmarking
 
-Traditional mean and standard deviation metrics are highly sensitive to extreme outliers and asymmetric distributions common in SOC incident response data. SAT-SA employs **classical robust statistics** exclusively.
+> **Implementation status.** Peer cohorts (Section 1.4) are used by EG01, EG11, NS02 and NS03. The
+> robust z-score (Section 1.2) decides **NS03** (night share far below peers) and **EG11** (FP rate
+> far above peers), via `BaseRule.robust_z`: $z = (x - \tilde{x}) / \max(1.4826\,\text{MAD}, s_{\min})$
+> against the cohort, where the spread floor $s_{\min}$ stops near-identical peers from making a
+> trivial difference look extreme; with fewer than 3 comparable peers these rules fall back to a
+> fixed threshold. The other rules use the fixed thresholds stated in Section 3. IQR/percentile rank
+> (Section 1.3) and the SPC charts (Section 2) are implemented and unit-tested but not used by any
+> rule or score.
+
+Traditional mean and standard deviation metrics are highly sensitive to extreme outliers and asymmetric distributions common in SOC incident response data. SAT-SA's statistics library therefore implements **classical robust statistics**.
 
 ### 1.1 Median & Median Absolute Deviation (MAD)
 For an entity observation set $X = \{x_1, x_2, \dots, x_n\}$ across a peer group:
@@ -25,9 +34,15 @@ $$\text{IQR} = Q_3 - Q_1 = P_{75} - P_{25}$$
 $$\text{Percentile}(x) = \frac{\sum_{i=1}^n \mathbb{I}(x_i \le x)}{n} \times 100$$
 
 ### 1.4 Peer Grouping Hierarchy
+`PeerResolver` (`config/peers.yaml`, `min_peers: 3`) picks the first level with at least 3 other entities:
 1. Primary: `(sector, size_band)` (e.g., Banking Large, Power Medium).
-2. Fallback 1: `sector` (all size bands in sector if peer group count $N < 3$).
-3. Fallback 2: `portfolio` (all entities across portfolio if sector count $N < 3$).
+2. Fallback 1: same `sector`, any size band.
+3. Fallback 2: same `size_band`, any sector.
+4. Fallback 3: every other entity in the portfolio.
+
+The entity itself is never in its own cohort. In the 10-entity synthetic portfolio no
+`(sector, size_band)` or sector cohort reaches 3 peers, so large entities fall back to "all large"
+and the rest to "all other entities"; genuine sector cohorts need a larger portfolio.
 
 ---
 
@@ -56,7 +71,7 @@ $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
 
 #### EG01: Fast Closures Without Investigation
 - **Purpose:** Detect rubber-stamping and premature dismissals of high-priority alerts.
-- **Logic:** Among the entity's human-closed High/Critical alerts, the share closed faster than the portfolio-wide 5th-percentile close time (for human High/Critical closures) with at most one workflow event exceeds `fast_share_threshold` (0.15), with at least `min_fast_count` (5) such closures. SOAR/automation closures are excluded.
+- **Logic:** Among the entity's human-closed High/Critical alerts, the share closed faster than its peer cohort's 5th-percentile close time (human High/Critical closures of the peers resolved from `config/peers.yaml`, never including the entity itself) with at most one workflow event exceeds `fast_share_threshold` (0.15), with at least `min_fast_count` (5) such closures. SOAR/automation closures are excluded.
 - **Benign Explanations:** Automated playbook executions mislabeled as human; duplicate suppression rules in external SIEM.
 - **Examiner Checks:** Inspect closure logs for script execution IDs; verify if analyst could have reviewed payload in the time recorded.
 
@@ -80,8 +95,8 @@ $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
 
 #### EG05: Repeat Alerts Without Root Cause Remediation
 - **Purpose:** Detect chronic alert fatigue and lack of permanent tuning.
-- **Logic:** `(asset_id, rule_id)` pairs that fired at least `min_repeat_count` (8) times over the whole period, were always closed benign/FP, and have no matching `remediation` record; flagged when at least `min_unaddressed_pairs` (2) such pairs exist. There is no 30-day window.
-- **Known sensitivity:** on the synthetic data, lowering `min_repeat_count` to 6 makes EG05 fire on every clean entity from random repeats alone. Real alert streams are far more repetitive than uniform random data, so expect this rule to need calibration on real submissions (see `docs/validation.md` Section 4A).
+- **Logic:** `(asset_id, rule_id)` pairs that fired at least $k$ times over the whole period, were always closed benign/FP, and have no matching `remediation` record; flagged when at least `min_unaddressed_pairs` (2) such pairs exist. There is no 30-day window.
+- **Repeat threshold $k$:** $k = \max(\texttt{min\_repeat\_count}, k_{\text{chance}})$, with `min_repeat_count` 8. $k_{\text{chance}}$ is the smallest count for which $M \cdot P(X \ge k) <$ `max_chance_pairs` (0.5), where $M$ is the entity's distinct assets × distinct rules and $X \sim \text{Poisson}(N / M)$ for its $N$ alerts: the count that coincidence alone would rarely reach at that volume. $k_{\text{chance}}$ is capped at $2 \times$ `min_repeat_count`, so a pair repeating 16+ times, always benign and never tuned, always counts however busy the entity. The Poisson model assumes alerts spread evenly over pairs; it removes only small-count repeats that volume explains (see `docs/validation.md` Section 4A).
 - **Benign Explanations:** Legacy system awaiting decommissioning; scheduled quarterly tuning backlog.
 - **Examiner Checks:** Review change request logs for scheduled tuning on the affected asset.
 
@@ -119,7 +134,7 @@ $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
 
 #### EG11: Disposition Extremes
 - **Purpose:** Detect abnormal classification skew indicative of alert tuning failure or detection blindspots.
-- **Logic:** With at least `min_alert_volume` (200) alerts, a false-positive/benign rate above `max_fp_rate` (0.98) or exactly zero True Positives over the review period.
+- **Logic:** With at least `min_alert_volume` (200) alerts: exactly zero True Positives over the review period, or a false-positive/benign rate with a robust z-score of at least `max_robust_z` (3.5) above the peer cohort's median (peers with at least 200 alerts; spread floor `min_spread` 0.01). With fewer than 3 comparable peers, the rate is compared with the fixed `max_fp_rate` (0.98) instead.
 - **Benign Explanations:** Ultra-noisy commercial rule left in staging mode.
 - **Examiner Checks:** Verify if rule was active in production or marked as test/monitoring only.
 
@@ -141,13 +156,13 @@ $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
 
 #### NS02: Missing Alert Categories
 - **Purpose:** Detect blindspots in detection coverage where peers actively detect standard threat classes.
-- **Logic:** Alert categories reported by at least `min_peer_entity_count` (6) entities in the whole portfolio but absent from this entity's alerts. It compares against the whole portfolio, not a sector/size peer group, and uses alert categories, not MITRE tactics.
+- **Logic:** Alert categories reported by at least `min_peer_share` (0.6) of the entity's peer cohort (resolved from `config/peers.yaml`) but absent from this entity's alerts. Uses alert categories, not MITRE tactics.
 - **Benign Explanations:** Entity relies on upstream ISP-managed cloud scrubbers for DDoS/Malware.
 - **Examiner Checks:** Verify third-party perimeter architecture and outsourced managed controls.
 
 #### NS03: Unexpectedly Low or Flat Activity
 - **Purpose:** Identify missing 24x7 coverage or logging collapse.
-- **Logic:** With at least `min_alert_volume` (100) alerts, the share created at night (20:00–08:00) is below `max_night_share` (0.03). Robust z-scores, CUSUM and weekend activity are not used by this rule.
+- **Logic:** With at least `min_alert_volume` (100) alerts, the share created at night (20:00–08:00) has a robust z-score of at most −`max_robust_z` (3.5) against the peer cohort's night shares (peers with at least 100 alerts; spread floor `min_spread` 0.02). With fewer than 3 comparable peers, the share is compared with the fixed `max_night_share` (0.03) instead. CUSUM and weekend activity are not used.
 - **Benign Explanations:** 8x5 business application with no user activity outside business hours.
 - **Examiner Checks:** Review shift rosters to verify if 24x7 SOC shift coverage was formally contracted.
 

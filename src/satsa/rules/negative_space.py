@@ -1,5 +1,7 @@
 """Negative Space Detection Rules: NS01 through NS08."""
 
+import math
+
 from satsa.models.outputs import Finding, FindingEvidence
 from satsa.rules.base import BaseRule
 from satsa.store.duckdb import DuckDBStore
@@ -88,7 +90,7 @@ class NS01SilentCriticalAssets(BaseRule):
 
 
 class NS02MissingAlertCategories(BaseRule):
-    """NS02: Missing alert categories reported by >= min_peer_entity_count portfolio entities."""
+    """NS02: Missing alert categories reported by at least min_peer_share of the peer cohort."""
 
     id = "NS02"
     name = "Missing Alert Categories"
@@ -108,17 +110,23 @@ class NS02MissingAlertCategories(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        # Tunable: a category counts as "standard" when at least this many entities
-        # in the portfolio report it (6 of the 10 demo entities by default).
-        min_peer_entity_count = int(self.params.get("min_peer_entity_count", 6))
-        sql_peers = """
+        # Tunable: a category counts as "standard" when at least this share of the peer
+        # cohort (the entity's resolved peers, or every other entity) reports it.
+        min_peer_share = float(self.params.get("min_peer_share", 0.6))
+        peer_clause, peer_params = self.peer_filter(entity_id, peer_ids)
+        df_n = store.query(f"SELECT count(DISTINCT entity_id) as n FROM alert WHERE {peer_clause}", peer_params)
+        n_peers = int(df_n["n"][0]) if not df_n.is_empty() else 0
+        if n_peers == 0:
+            return [], []
+        sql_peers = f"""
         SELECT category, count(DISTINCT entity_id) as ent_count
         FROM alert
-        WHERE category IS NOT NULL AND category != ''
+        WHERE category IS NOT NULL AND category != '' AND {peer_clause}
         GROUP BY category
         HAVING count(DISTINCT entity_id) >= ?
         """
-        df_peers = store.query(sql_peers, [min_peer_entity_count])
+        required = max(1, math.ceil(min_peer_share * n_peers - 1e-9))
+        df_peers = store.query(sql_peers, [*peer_params, required])
         peer_common_cats = (
             {c for c in df_peers["category"].to_list() if c} if not df_peers.is_empty() else set()
         )
@@ -138,7 +146,7 @@ class NS02MissingAlertCategories(BaseRule):
 
             rationale = (
                 f"Negative space detected: Entity completely lacks alert volume for standard categories "
-                f"reported by >= {min_peer_entity_count} entities in the portfolio: {', '.join(missing_list)}."
+                f"reported by at least {required} of its {n_peers} peers: {', '.join(missing_list)}."
             )
             finding = Finding(
                 finding_id=f_id,
@@ -153,7 +161,7 @@ class NS02MissingAlertCategories(BaseRule):
                 severity="high",
                 title=f"{self.name}: Missing categories ({', '.join(missing_list[:3])})",
                 rationale=rationale,
-                peer_comparison={"missing_categories": missing_list},
+                peer_comparison={"missing_categories": missing_list, "peer_count": n_peers},
                 examiner_check=self.examiner_check,
                 benign_explanations=self.benign_explanations,
                 evidence_ids=missing_list,
@@ -172,7 +180,11 @@ class NS02MissingAlertCategories(BaseRule):
 
 
 class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
-    """NS03: Unexpectedly low or flat activity (night-time alert share below max_night_share)."""
+    """NS03: Unexpectedly low night-time activity.
+
+    Night-time share of alerts compared with the peer cohort by robust z-score; the absolute
+    max_night_share floor applies only when too few peers have enough volume to compare.
+    """
 
     id = "NS03"
     name = "Unexpectedly Low or Flat Activity"
@@ -205,29 +217,60 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
         night_cnt = df["night_cnt"][0]
         night_share = night_cnt / max(total, 1)
 
-        # Peer average night share
-        sql_peer = """
-        SELECT avg(night_cnt * 1.0 / total) as peer_night_share
-        FROM (
-            SELECT entity_id, count(*) as total,
-                   count(CASE WHEN extract(hour from created_at) < 8 OR extract(hour from created_at) >= 20 THEN 1 END) as night_cnt
-            FROM alert
-            GROUP BY entity_id
-        )
-        """
-        peer_res = store.query(sql_peer)
-        peer_avg = float(peer_res["peer_night_share"][0] or 0.20)
-
-        # Tunable: flag when the night-time share of alerts is below this, given enough volume.
-        max_night_share = float(self.params.get("max_night_share", 0.03))
+        # Tunable: minimum volume for a night share to mean anything; the robust-z cut-off
+        # and minimum spread for the peer comparison; and the absolute fallback threshold
+        # used when fewer than MIN_PEERS_FOR_Z peers have enough volume.
         min_alert_volume = int(self.params.get("min_alert_volume", 100))
-        if total >= min_alert_volume and night_share < max_night_share:
+        max_robust_z = float(self.params.get("max_robust_z", 3.5))
+        min_spread = float(self.params.get("min_spread", 0.02))
+        max_night_share = float(self.params.get("max_night_share", 0.03))
+        if total < min_alert_volume:
+            return [], []
+
+        # Night share of each peer in the cohort with enough volume to compare.
+        peer_clause, peer_params = self.peer_filter(entity_id, peer_ids)
+        sql_peer = f"""
+        SELECT entity_id,
+               count(CASE WHEN extract(hour from created_at) < 8 OR extract(hour from created_at) >= 20 THEN 1 END) * 1.0
+                 / count(*) as night_share
+        FROM alert
+        WHERE {peer_clause}
+        GROUP BY entity_id
+        HAVING count(*) >= ?
+        """
+        peer_df = store.query(sql_peer, [*peer_params, min_alert_volume])
+        peer_shares = [float(v) for v in peer_df["night_share"].to_list()] if not peer_df.is_empty() else []
+        z_res = self.robust_z(night_share, peer_shares, min_spread)
+
+        if z_res is not None:
+            z, peer_median = z_res
+            flagged = z <= -max_robust_z
+            basis = (
+                f"a robust z-score of {z:.1f} against the median of {len(peer_shares)} peers "
+                f"({peer_median:.1%}; flagged at <= -{max_robust_z:g})"
+            )
+            comparison = {
+                "night_share": night_share,
+                "method": "peer_robust_z",
+                "robust_z": round(z, 2),
+                "peer_median": peer_median,
+                "peer_count": len(peer_shares),
+            }
+        else:
+            flagged = night_share < max_night_share
+            basis = (
+                f"below the absolute {max_night_share:.0%} floor (only {len(peer_shares)} comparable peers, "
+                "too few for a peer comparison)"
+            )
+            comparison = {"night_share": night_share, "method": "absolute", "peer_count": len(peer_shares)}
+
+        if flagged:
             score, conf = self.compute_rule_score(2.0, total)
             f_id = f"FND-NS03-{entity_id}-{run_id}"
 
             rationale = (
-                f"Abnormal operational flatline: Night-time volume accounts for only {night_share:.1%} of alerts "
-                f"(vs peer average of {peer_avg:.1%}), indicating potential monitoring blackouts outside business hours."
+                f"Abnormal operational flatline: night-time (20:00-08:00) volume is only {night_share:.1%} of "
+                f"alerts, {basis}, indicating potential monitoring blackouts outside business hours."
             )
             finding = Finding(
                 finding_id=f_id,
@@ -240,9 +283,9 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
                 score=score,
                 confidence=conf,
                 severity="high",
-                title=f"{self.name}: Near-zero night activity ({night_share:.1%})",
+                title=f"{self.name}: Low night activity ({night_share:.1%})",
                 rationale=rationale,
-                peer_comparison={"night_share": night_share, "peer_average": peer_avg},
+                peer_comparison=comparison,
                 examiner_check=self.examiner_check,
                 benign_explanations=self.benign_explanations,
                 evidence_ids=[f"FLATLINE-{entity_id}"],
