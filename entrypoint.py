@@ -21,7 +21,6 @@ import sys
 import time
 from pathlib import Path
 
-
 ADMIN_PORT = 8000
 SATSA_PORT = 8001
 
@@ -90,6 +89,7 @@ def main() -> None:
             print("[+] Fresh volume detected. Seeding baseline supervisory demonstration dataset...")
             try:
                 import tempfile
+
                 from satsa.ingest.pipeline import IngestionPipeline
                 from satsa.scoring.history import seed_historical_periods
                 from satsa.scoring.runner import AssessmentRunner
@@ -107,12 +107,12 @@ def main() -> None:
                 duckdb_store.close()
                 seed_historical_periods("data", store, n_periods=3, actor="system")
                 print("[+] Baseline assessment dataset seeded successfully.")
-            except Exception as seed_err:
+            except Exception as seed_err:  # noqa: BLE001 - the portals must start even if the demo seed fails
                 print(f"[!] Notice: Baseline seed deferred: {seed_err}")
 
         store.close()
         print("[+] Shared identity and assessment database verified: data/satsa.db")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - reported; the portals report their own storage errors
         print(f"[!] Storage initialization warning: {exc}")
 
     warning = exposure_warning(config)
