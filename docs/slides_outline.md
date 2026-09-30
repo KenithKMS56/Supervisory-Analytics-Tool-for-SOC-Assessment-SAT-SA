@@ -37,7 +37,7 @@
 - **Synthetic Ground-Truth Correctness Check** (not a real-world accuracy benchmark; see docs/validation.md §0):
   - **Entity Rank Precision@7:** **100.0%** (all 7 injected entities ranked in top 7; clean entities at bottom).
   - **Injected Defect Recall / Precision:** **100.0%** (21/21 defects found; 21 of 21 findings correct, every finding counted).
-  - **Review-Effort Lift:** the top 25 queue alerts are **19x** as likely to be defect-affected as random alerts (5.5x across the whole 109-alert queue), on the synthetic dataset.
+  - **Review-Effort Lift:** the top 25 queue alerts are **21x** as likely to be defect-affected as random alerts (6x across the whole 119-alert queue), on the synthetic dataset.
   - **Ranking Stability:** Spearman $\rho = \mathbf{1.0000}$ under $\pm 20\%$ domain-weight perturbations.
   - **Threshold Sensitivity:** every tunable threshold moved ±20%; no move creates a false alarm on a clean entity.
   - **Limits:** all synthetic; real accuracy needs a shadow pilot on historical examiner workpapers.

@@ -99,27 +99,40 @@ SAT-SA standardizes multi-source periodic submissions into 8 canonical relationa
 
 ## 2. Per-Rule Data Dependencies
 
-The table below details the canonical tables required for each supervisory detection rule. If a mandatory dependency is absent, SAT-SA gracefully marks the rule as *Skipped due to insufficient data* in the Data Quality report:
+The table below lists the tables each rule actually reads. **Rules are not skipped when a table is
+missing.** A rule that treats absence as the signal cannot tell "this SOC never did this" from "this
+table was not submitted": with no `escalation` table, EG03 reads every Critical true positive as
+unescalated. So when an entity has no rows at all in a table marked **bold** below, each assessment
+run records a `rule_dependency_empty` warning on the Data Quality view (`/dq`) naming the rules
+affected. Treat findings from those rules as unconfirmed until you have checked what the entity
+actually submitted; equally, no finding from them does not mean the control works.
 
-| Rule ID | Rule Name | Primary Table | Secondary Dependencies |
+| Rule ID | Rule Name | Tables read | Flagged on `/dq` when the entity has no rows in |
 |---|---|---|---|
-| **EG01** | Fast Closures Without Investigation | `alert` | `workflow_event` |
-| **EG02** | Triage Without Action | `alert` | `workflow_event` |
-| **EG03** | Missing Escalations | `alert` | `escalation`, `case` |
-| **EG04** | Template Closure Comments | `closure` | `alert` |
-| **EG05** | Repeat Alerts No Root Cause | `alert` | `remediation`, `asset` |
-| **EG06** | Metric Gaming & SLA Distortions | `alert` | `sla_policy`, `workflow_event` |
-| **EG07** | Analyst Implausibility | `workflow_event` | `entity` |
-| **EG08** | Escalation Without Follow-Through | `escalation` | `sla_policy`, `case` |
-| **EG09** | Backlog & Aging Accumulation | `case` | `workflow_event`, `sla_policy` |
-| **EG10** | KPI Reconciliation Gap | `alert` | `declared_kpi` |
-| **EG11** | Disposition Extremes | `alert` | `remediation` |
-| **EG12** | Workflow Non-Conformance | `workflow_event` | `alert`, `case` |
-| **NS01** | Silent Critical Assets | `asset` | `log_source_daily`, `alert` |
-| **NS02** | Missing Alert Categories | `alert` | `detection_rule` |
-| **NS03** | Unexpected Low/Flat Activity | `alert` | `log_source_daily` |
-| **NS04** | Missing Records & Sequence Gaps | `alert` | `case`, `workflow_event` |
-| **NS05** | Inactive Rule Coverage | `detection_rule` | `alert` |
-| **NS06** | Inventory vs Telemetry | `asset` | `alert`, `log_source_daily` |
-| **NS07** | Absent External Reporting | `case` | `alert`, `external_report` |
-| **NS08** | Submission Completeness | `alert` | `dq_issues` |
+| **EG01** | Fast Closures Without Investigation | `alert`, `workflow_event` | **`workflow_event`** |
+| **EG02** | Acknowledged Without Investigation | `alert`, `workflow_event`, `closure` | **`workflow_event`**, **`closure`** |
+| **EG03** | Missing Escalations | `alert`, `escalation` | **`escalation`** |
+| **EG04** | Template Closure Comments | `alert`, `closure` | **`closure`** |
+| **EG05** | Repeat Alerts No Root Cause | `alert`, `remediation` | **`remediation`** |
+| **EG06** | Metric Gaming & SLA Distortions | `alert`, `sla_policy` | **`sla_policy`** |
+| **EG07** | Analyst Implausibility | `alert` | — |
+| **EG08** | Escalation Without Follow-Through | `escalation` | **`escalation`** |
+| **EG09** | Backlog & Aging Accumulation | `case` | **`case`** |
+| **EG10** | KPI Reconciliation Gap | `alert`, `declared_kpi` | **`declared_kpi`** |
+| **EG11** | Disposition Extremes | `alert` | — |
+| **EG12** | Workflow Non-Conformance | `case`, `workflow_event` | **`case`**, **`workflow_event`** |
+| **NS01** | Silent Critical Assets | `asset`, `log_source_daily` | **`asset`**, **`log_source_daily`** |
+| **NS02** | Missing Alert Categories | `alert` | — |
+| **NS03** | Unexpected Low/Flat Activity | `alert` | — |
+| **NS04** | Missing Records | `alert`, `case_alert_link` | **`case_alert_link`** |
+| **NS05** | Inactive Rule Coverage | `detection_rule`, `alert` | **`detection_rule`** |
+| **NS06** | Inventory vs Telemetry | `asset`, `alert`, `log_source_daily` | **`asset`**, **`log_source_daily`** |
+| **NS07** | Absent External Reporting | `case`, `external_report` | **`case`**, **`external_report`** |
+| **NS08** | Submission Completeness | `alert` | — |
+
+Ingest also reports, on the same view: missing required fields, close-before-create timestamps,
+duplicate IDs, alert-ID sequence gaps, high null rates, and orphaned references (a closure,
+workflow event, escalation or case link whose alert is not in the submission, a case link whose
+case is missing, an alert whose asset is not in the inventory). Orphaned child records both
+distort the rules above and can indicate that alerts were withheld. A table that fails to store
+is reported as an error and no assessment is run on that upload.

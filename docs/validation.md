@@ -115,7 +115,7 @@ Added in September 2026 so that every rule has a positive case (each sized to cr
 ## 2. Detector-Implementation Correctness Results (Primary Dataset)
 
 `satsa validate` against the ground truth in Section 1, with every finding counted (see
-Section 0.1). Figures from run `RUN-20260930063308360511-73288831`; regenerate with
+Section 0.1). Figures from run `RUN-20260930080152730787-c2c8d6f0`; regenerate with
 `satsa validate`, and see `docs/validation_report.md` for the per-rule table.
 
 | Evaluation Metric | Measured Result | Benchmark Target | Verdict |
@@ -182,27 +182,27 @@ items and non-alert ground-truth IDs are excluded from both.
 
 | Audit Budget (% of Alerts) | Budget | Queue Alerts Examined | Affected Alerts Found | Queue Hit Rate | Random Sampling Rate | Lift Factor |
 |---|---|---|---|---|---|---|
-| **1%** | 162 | 109 (queue exhausted) | 16 | **14.7%** | 2.67% | **5.50x** |
-| **2%** | 325 | 109 (queue exhausted) | 16 | **14.7%** | 2.67% | **5.50x** |
-| **5%** | 812 | 109 (queue exhausted) | 16 | **14.7%** | 2.67% | **5.50x** |
+| **1%** | 162 | 119 (queue exhausted) | 19 | **16.0%** | 2.67% | **5.98x** |
+| **2%** | 325 | 119 (queue exhausted) | 19 | **16.0%** | 2.67% | **5.98x** |
+| **5%** | 812 | 119 (queue exhausted) | 19 | **16.0%** | 2.67% | **5.98x** |
 
-*Reading this table:* the queue holds only 109 alert items (134 items in total), fewer than even
+*Reading this table:* the queue holds only 119 alert items (147 items in total), fewer than even
 the 1% budget, so every budget examines the whole queue and reports the same figure: "the whole
 queue vs. random". The curve is in the queue-depth table:
 
 | Top queue alerts examined (score order) | Affected Alerts Found | Hit Rate | Lift Factor |
 |---|---|---|---|
 | 10 | 4 | 40.0% | **14.98x** |
-| 25 | 13 | 52.0% | **19.47x** |
-| 50 | 14 | 28.0% | **10.49x** |
-| 100 | 16 | 16.0% | **5.99x** |
-| 109 (whole queue) | 16 | 14.7% | **5.50x** |
+| 25 | 14 | 56.0% | **20.97x** |
+| 50 | 17 | 34.0% | **12.73x** |
+| 100 | 19 | 19.0% | **7.12x** |
+| 119 (whole queue) | 19 | 16.0% | **5.98x** |
 
-Affected alerts are concentrated at the top: 13 of the 16 found are in the first 25 items, and the
+Affected alerts are concentrated at the top: 14 of the 19 found are in the first 25 items, and the
 30% stratified-random part of the queue further down adds little. The figure moves with the ground
 truth: adding the EG11 defect (about 200 CSE-07 alerts relabelled, all counted as affected) raised
-the random baseline from 1.20% to 2.67% and cut lift from 10.69x to 5.50x without any change to the
-queue. As with Section 2, treat it as a design check of the prioritisation logic on synthetic data,
+the random baseline from 1.20% to 2.67% and cut whole-queue lift from 10.69x to 5.50x without any
+change to the queue; EG11 later citing 10 sample alerts as evidence added them to the queue (5.98x). As with Section 2, treat it as a design check of the prioritisation logic on synthetic data,
 not a real-world lift guarantee.
 
 *Correction history:* this table previously reported 16.60x (stale, older dataset) and then
@@ -339,22 +339,22 @@ These are not historical examiner findings. They are also deliberately **not** t
 SAT-SA's own findings: labels copied from the tool's output would make recall and precision 100%
 by construction.
 
-**Result** (primary dataset, run `RUN-20260930063308360511-73288831`):
+**Result** (primary dataset, run `RUN-20260930080152730787-c2c8d6f0`):
 
 | Measure | Value | What it means |
 |---|---|---|
 | `rule_finding_recall` | **1.0** (47/47 confirmed rows) | Restates Section 2's 21/21 recall in workpaper form (same ground truth). Not new evidence. |
-| `queue_record_recall` | **0.553** (26/47) | 26 labelled records are in the review queue. |
+| `queue_record_recall` | **0.575** (27/47) | 27 labelled records are in the review queue. |
 | `workpaper_precision` | **1.0** (21/21 adjudicated findings) | Restates Section 2's precision: the cleared rows come from the same ground truth. Not new evidence. |
 | Unadjudicated findings | **0** | The stand-in adjudicates every entity it names; a real workpaper will not. |
 | Per-rule intervals | e.g. EG01 recall 1/1, 95% CI 21–100% | One confirmed case per rule proves very little: with this few cases every per-rule interval spans most of the range. A real pilot needs many entities per rule. |
 | Cleared records in the queue | **0/15** | None of the individually cleared clean-entity alerts were queued. |
-| Queue coverage of *all* affected IDs | 44/498; at least one queue item for 13 of 21 defects | Computed by the build script over every affected ID, not just the capped sample. |
+| Queue coverage of *all* affected IDs | 47/498; at least one queue item for 13 of 21 defects | Computed by the build script over every affected ID, not just the capped sample. |
 
 **Reading the queue figure.** The review queue holds up to 30 items per entity (cited records up to
-70% of that, plus 9 random controls; 134 items in this run, 44 cited and 90 random). It is built to put *examples* of each triggered rule
+70% of that, plus 9 random controls; 147 items in this run, 57 cited and 90 random). It is built to put *examples* of each triggered rule
 in front of an examiner, not to list every affected record, so record-level recall is expected to be
-low for large defects: 14 of the 195 EG01 fast-closure alerts and 2 of the 204 EG11 relabelled
+low for large defects: 14 of the 195 EG01 fast-closure alerts and 5 of the 204 EG11 relabelled
 alerts are queued. EG07's burst alerts (0/35) are not queued because EG07's evidence is the analyst,
 not the alerts, and NS05's dormant rules (0/25) are not queue records. Entity-level defects such as
 EG10, EG04, EG06, NS03, NS04 and NS08 have marker IDs that are not queue records.

@@ -868,6 +868,13 @@ class EG10KPIRadicalGap(BaseRule):
                 [entity_id],
             )
             score, conf = self.compute_rule_score(gap_ratio / 0.50, examined)
+            # The declared KPI rows this comparison used, as metric:severity:period.
+            kpi_df = store.query(
+                "SELECT DISTINCT severity, period FROM declared_kpi WHERE entity_id = ? AND metric = 'MTTR' "
+                "AND severity IN ('high', 'critical') ORDER BY severity, period",
+                [entity_id],
+            )
+            kpi_keys = [f"MTTR:{r['severity']}:{r['period']}" for r in kpi_df.iter_rows(named=True)]
             f_id = f"FND-EG10-{entity_id}-{run_id}"
 
             rationale = (
@@ -895,19 +902,20 @@ class EG10KPIRadicalGap(BaseRule):
                 },
                 examiner_check=self.examiner_check,
                 benign_explanations=self.benign_explanations,
-                evidence_ids=[f"KPI-GAP-{entity_id}"],
+                evidence_ids=kpi_keys,
             )
             evidences = [
                 FindingEvidence(
                     finding_id=f_id,
                     record_type="declared_kpi",
-                    record_id=f"KPI-{entity_id}",
+                    record_id=key,
                     details={
                         "declared": dec_mttr,
                         "empirical": emp_mttr,
-                        "formula": "abs(empirical - declared) / declared",
+                        "formula": "(empirical - declared) / declared, over the declared severities",
                     },
                 )
+                for key in kpi_keys
             ]
             return [finding], evidences
         return [], []
@@ -988,6 +996,13 @@ class EG11DispositionExtremes(BaseRule):
 
         if tp_count == 0 or rate_extreme:
             score, conf = self.compute_rule_score(fp_rate / 0.98, total)
+            # A fixed sample of the closures the rate is made of, for an examiner to re-check.
+            sample_df = store.query(
+                "SELECT alert_id FROM alert WHERE entity_id = ? AND disposition IN ('false_positive', 'benign') "
+                "ORDER BY severity_final = 'critical' DESC, severity_final = 'high' DESC, alert_id LIMIT 10",
+                [entity_id],
+            )
+            sample_ids = sample_df["alert_id"].to_list() if not sample_df.is_empty() else []
             f_id = f"FND-EG11-{entity_id}-{run_id}"
 
             rationale = (
@@ -1011,9 +1026,18 @@ class EG11DispositionExtremes(BaseRule):
                 peer_comparison=comparison,
                 examiner_check=self.examiner_check,
                 benign_explanations=self.benign_explanations,
-                evidence_ids=[f"DISP-EXTREME-{entity_id}"],
+                evidence_ids=sample_ids,
             )
-            return [finding], []
+            evidences = [
+                FindingEvidence(
+                    finding_id=f_id,
+                    record_type="alert",
+                    record_id=aid,
+                    details={"rule": self.id, "reason": "Closed false positive/benign; sample for re-examination"},
+                )
+                for aid in sample_ids
+            ]
+            return [finding], evidences
         return [], []
 
 

@@ -88,3 +88,26 @@ def test_injected_defects_detection():
     assert len(clean_f01) == 0
 
     store.close()
+
+
+def test_findings_cite_checkable_evidence_not_placeholders():
+    """EG10, EG11 and NS08 used to cite invented IDs (KPI-GAP-<entity>, DISP-EXTREME-<entity>,
+    MISSING-MONTHS-<entity>). They now cite the declared KPI rows, a sample of the alerts, and
+    the actual missing months."""
+    store = DuckDBStore("data")
+    store.load_all_tables()
+    registry = RuleRegistry("config/rules.yaml")
+    try:
+        eg10, eg10_ev = registry.get_rule("EG10").evaluate("CSE-02", store, [], "RUN-X")
+        assert eg10[0].evidence_ids and all(e.startswith("MTTR:") for e in eg10[0].evidence_ids)
+        assert [e.record_id for e in eg10_ev] == eg10[0].evidence_ids
+
+        eg11, eg11_ev = registry.get_rule("EG11").evaluate("CSE-07", store, [], "RUN-X")
+        alert_ids = set(store.query("SELECT alert_id FROM alert WHERE entity_id = 'CSE-07'")["alert_id"].to_list())
+        assert eg11[0].evidence_ids and set(eg11[0].evidence_ids) <= alert_ids
+        assert {e.record_type for e in eg11_ev} == {"alert"}
+
+        ns08, _ = registry.get_rule("NS08").evaluate("CSE-10", store, [], "RUN-X")
+        assert ns08[0].evidence_ids == ["missing-month:2026-06"]
+    finally:
+        store.close()

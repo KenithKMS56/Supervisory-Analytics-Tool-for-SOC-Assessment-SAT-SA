@@ -250,4 +250,4 @@ Per entity, up to `queue_size_per_entity` (30) items (`review_queue` in `config/
 1. **Cited records:** records named as evidence by the entity's findings, ordered by accumulated finding score, up to `top_risk_ratio` (70%) of the size.
 2. **Random controls:** the remainder of the size (9 of 30), sampled from the entity's other alerts and stratified by severity, with a fixed seed.
 
-The 70/30 split is an upper bound on cited records, not the actual mix: rules cite only a few example records, and entity-level findings cite none, so an entity with few cited records gets a shorter, mostly random queue (a clean entity gets only the 9 controls). In the synthetic run the queue is 44 cited records and 90 random controls.
+The 70/30 split is an upper bound on cited records, not the actual mix: rules cite only a few example records, and entity-level findings cite none, so an entity with few cited records gets a shorter, mostly random queue (a clean entity gets only the 9 controls). In the synthetic run the queue is 57 cited records and 90 random controls.
