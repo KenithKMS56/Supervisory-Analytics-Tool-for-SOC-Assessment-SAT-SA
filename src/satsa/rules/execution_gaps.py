@@ -175,7 +175,8 @@ class EG02AckWithoutInvestigation(BaseRule):
             FROM alert a
             LEFT JOIN workflow_event w ON a.entity_id = w.entity_id AND w.ref_type = 'alert' AND a.alert_id = w.ref_id
             LEFT JOIN closure c ON a.entity_id = c.entity_id AND a.alert_id = c.ref_id
-            WHERE a.entity_id = ? AND a.closed_by_type = 'human'
+            -- Closures only: an alert still open has no closure to judge.
+            WHERE a.entity_id = ? AND a.closed_by_type = 'human' AND a.closed_at IS NOT NULL
             GROUP BY a.alert_id, c.comment_len
         )
         SELECT * FROM alert_summary
@@ -334,7 +335,7 @@ class EG04TemplateDrivenInvestigations(BaseRule):
             min(a.alert_id) as sample_alert
         FROM alert a
         JOIN closure c ON a.entity_id = c.entity_id AND a.alert_id = c.ref_id
-        WHERE a.entity_id = ? AND a.closed_by_type = 'human'
+        WHERE a.entity_id = ? AND a.closed_by_type = 'human' AND a.closed_at IS NOT NULL
         GROUP BY c.comment_norm_hash
         HAVING count(*) >= ?
         ORDER BY repeats DESC
@@ -343,7 +344,10 @@ class EG04TemplateDrivenInvestigations(BaseRule):
         if df.is_empty():
             return [], []
 
-        total_human_sql = "SELECT count(*) as total FROM alert WHERE entity_id = ? AND closed_by_type = 'human'"
+        total_human_sql = (
+            "SELECT count(*) as total FROM alert "
+            "WHERE entity_id = ? AND closed_by_type = 'human' AND closed_at IS NOT NULL"
+        )
         total_res = store.query(total_human_sql, [entity_id])
         total_human = total_res["total"][0] if not total_res.is_empty() else 1
 
