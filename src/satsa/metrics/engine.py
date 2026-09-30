@@ -25,7 +25,7 @@ class MetricsEngine:
             quantile_cont(epoch(closed_at) - epoch(created_at), 0.50) as mttr_p50_secs,
             quantile_cont(epoch(closed_at) - epoch(created_at), 0.95) as mttr_p95_secs
         FROM alert
-        WHERE closed_at IS NOT NULL AND created_at IS NOT NULL
+        WHERE closed_at >= created_at
         GROUP BY entity_id, severity_final, closed_by_type
         """
         return self.store.query(sql)

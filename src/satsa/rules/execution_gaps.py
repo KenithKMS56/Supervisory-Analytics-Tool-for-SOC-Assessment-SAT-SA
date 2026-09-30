@@ -58,12 +58,14 @@ class EG01FastClosure(BaseRule):
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Peer-cohort p5 close time for human High/Critical alerts. The entity itself is
         # excluded, so its own fast closures cannot drag down the baseline they are judged by.
+        # An alert closed before it was created is a timestamp fault (reported by the
+        # close_before_create data-quality check), not a fast closure, and is left out.
         peer_clause, peer_params = self.peer_filter(entity_id, peer_ids)
         peer_sql = f"""
         SELECT quantile_cont(epoch(closed_at) - epoch(created_at), 0.05) as peer_p5
         FROM alert
         WHERE severity_final IN ('high', 'critical') AND closed_by_type = 'human'
-          AND closed_at IS NOT NULL AND {peer_clause}
+          AND closed_at >= created_at AND {peer_clause}
         """
         peer_res = store.query(peer_sql, peer_params)
         peer_p5 = (
@@ -83,7 +85,7 @@ class EG01FastClosure(BaseRule):
             WHERE a.entity_id = ?
               AND a.severity_final IN ('high', 'critical')
               AND a.closed_by_type = 'human'
-              AND a.closed_at IS NOT NULL
+              AND a.closed_at >= a.created_at
             GROUP BY a.alert_id, a.severity_final, a.closed_by, a.closed_at, a.created_at
         )
         SELECT * FROM alt_events
@@ -835,6 +837,9 @@ class EG10KPIRadicalGap(BaseRule):
         # weighted by its alert count. Averaging empirical high+critical MTTR against a
         # critical-only declaration compares different alert mixes and flags healthy
         # entities (high alerts legitimately take longer than critical ones).
+        # Alerts closed before they were created are timestamp faults: a negative duration
+        # would pull the mean down (or up) by weeks, so they are excluded here and reported
+        # by the close_before_create data-quality check instead.
         sql = """
         WITH empirical AS (
             SELECT
@@ -842,7 +847,7 @@ class EG10KPIRadicalGap(BaseRule):
                 count(*) as n,
                 avg(epoch(closed_at) - epoch(created_at)) / 60.0 as emp
             FROM alert
-            WHERE entity_id = ? AND severity_final IN ('high', 'critical') AND closed_at IS NOT NULL
+            WHERE entity_id = ? AND severity_final IN ('high', 'critical') AND closed_at >= created_at
             GROUP BY severity_final
         ),
         declared AS (
@@ -876,7 +881,7 @@ class EG10KPIRadicalGap(BaseRule):
             examined = self.population(
                 store,
                 "SELECT count(*) FROM alert WHERE entity_id = ? AND severity_final IN ('high', 'critical') "
-                "AND closed_at IS NOT NULL",
+                "AND closed_at >= created_at",
                 [entity_id],
             )
             score, conf = self.compute_rule_score(gap_ratio / 0.50, examined)

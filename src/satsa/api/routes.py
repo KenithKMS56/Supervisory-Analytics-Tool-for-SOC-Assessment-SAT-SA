@@ -878,7 +878,7 @@ def _kpi_reconciliation(duckdb_store: DuckDBStore, entity_id: str) -> list[dict[
         empirical AS (
             SELECT severity_final AS severity, avg(epoch(closed_at) - epoch(created_at)) / 60.0 AS empirical
             FROM alert
-            WHERE entity_id = ? AND severity_final IN ('high', 'critical') AND closed_at IS NOT NULL
+            WHERE entity_id = ? AND severity_final IN ('high', 'critical') AND closed_at >= created_at
             GROUP BY severity_final
         )
         SELECT d.severity, d.declared, e.empirical
