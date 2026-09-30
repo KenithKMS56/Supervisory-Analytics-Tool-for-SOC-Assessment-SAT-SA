@@ -1410,6 +1410,7 @@ async def handle_delete_entity(
     cur.execute("DELETE FROM findings WHERE entity_id = ?", (clean_id,))
     cur.execute("DELETE FROM domain_scores WHERE entity_id = ?", (clean_id,))
     cur.execute("DELETE FROM review_queue WHERE entity_id = ?", (clean_id,))
+    cur.execute("DELETE FROM submitted_tables WHERE entity_id = ?", (clean_id,))
     sqlite_store.conn.commit()
 
     # 2. Delete from DuckDB parquet files: only the exact `entity_id=<id>`
@@ -2433,6 +2434,7 @@ async def api_batch_submission(
         ingested_counts: dict[str, int] = {}
         submitted_eids: set[str] = set()
         new_entities: list[dict[str, Any]] = []
+        stored_tables: list[str] = []
         try:
             # canonical DuckDB table for each payload section
             for section, table, rows in (
@@ -2449,6 +2451,7 @@ async def api_batch_submission(
                     submitted_eids.add(str(r["entity_id"]))
                 duckdb_store.write_partitioned_parquet(table, pl.DataFrame(rows))
                 ingested_counts[section] = len(rows)
+                stored_tables.append(table)
 
             # The assessment (and so every UI view) only covers registered
             # entities, so a CSE first seen in this batch is registered here,
@@ -2461,6 +2464,11 @@ async def api_batch_submission(
             # Nothing usable was stored: free the slot so the batch can be resubmitted.
             sqlite_store.release_batch_submission(clean_id, payload.period)
             raise
+
+        # Submission manifest: this endpoint carries only these sections, so rules that need
+        # other tables (escalations, workflow events, ...) are reported as not assessed
+        # rather than read as SOC defects.
+        sqlite_store.record_submitted_tables(submitted_eids | {clean_id}, stored_tables)
 
         sqlite_store.append_audit(
             action="api_batch_submission",

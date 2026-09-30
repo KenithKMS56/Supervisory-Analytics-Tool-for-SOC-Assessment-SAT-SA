@@ -382,3 +382,14 @@ The only differences in the validation report are the run ID and the audit-entry
 - **Rows 11 and 13** corrected (queue composition; roles are NCIIPC Analyst / Examiner, not admin/supervisor/examiner).
 - **Effect.** Detection unchanged (21/21, 0 false positives; sweep 3 of 64). The queue is 147 items (57 cited, 90 random) because EG11 now cites sample alerts; lift is 20.97x (top 25), 12.73x (top 50), 5.98x (all 119 alerts). Three dependency warnings on the synthetic data: CSE-08 `case` and `case_alert_link` (its injected defect) and CSE-10 `external_report`.
 - **Verified.** 734 passed / 0 failed / 33 skipped on Python 3.13 from freshly generated data (4 PDF/bundle tests run from the repo path); `satsa validate`, `satsa validate-stress`, ruff and mypy clean.
+
+## Step 28 — Submission manifest: "never submitted" is no longer read as a SOC defect — done, verified
+
+- **Problem (from Step 27).** Rules that treat absence as the signal could not tell "the SOC never did this" from "this table was not submitted"; Step 27 only warned.
+- **Manifest.** Ingest records, per entity, every table its submissions have included (`submitted_tables` in SQLite; a file or payload section present, even with zero rows). A header-only file now counts: it used to be skipped as if absent.
+- **Assessment.** When an entity has no rows in a table a rule depends on: table **not in its manifest** → the rule is *not assessed* for that entity (`rule_not_assessed`, no finding, no clean result); table **in the manifest but empty** → the rule runs, absence is a real signal (`rule_dependency_empty`, "submitted but holds no records"); **no manifest at all** (data stored before manifests, or written directly) → the rule runs with the Step 27 warning. Withholding a table is therefore visible, not rewarded.
+- **JSON endpoint.** `POST /api/v1/submissions` records the sections it stored, so rules needing tables it cannot carry (escalations, workflow events, ...) are not assessed for entities submitted that way.
+- **Second swallowed failure.** A submission file that failed to parse was dropped by `except Exception: continue`. It is now logged, reported as `file_unreadable`, returned in the ingest result, and kept out of the manifest.
+- **Effect on the synthetic run.** None on detection (21/21, 0 false positives): every table is present in the combined submission, so CSE-08's missing cases remain a finding (submitted table, no rows for it).
+- **Tests.** Three manifest cases and the unreadable-file case in `tests/test_ingest.py`.
+- **Verified.** 737 passed / 0 failed / 33 skipped on Python 3.13 from freshly generated data (4 PDF/bundle tests run from the repo path); `satsa validate`, `satsa validate-stress`, ruff and mypy clean.

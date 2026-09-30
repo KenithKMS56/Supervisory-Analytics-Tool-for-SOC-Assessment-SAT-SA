@@ -99,13 +99,26 @@ SAT-SA standardizes multi-source periodic submissions into 8 canonical relationa
 
 ## 2. Per-Rule Data Dependencies
 
-The table below lists the tables each rule actually reads. **Rules are not skipped when a table is
-missing.** A rule that treats absence as the signal cannot tell "this SOC never did this" from "this
-table was not submitted": with no `escalation` table, EG03 reads every Critical true positive as
-unescalated. So when an entity has no rows at all in a table marked **bold** below, each assessment
-run records a `rule_dependency_empty` warning on the Data Quality view (`/dq`) naming the rules
-affected. Treat findings from those rules as unconfirmed until you have checked what the entity
-actually submitted; equally, no finding from them does not mean the control works.
+The table below lists the tables each rule actually reads. A rule that treats absence as the
+signal cannot, from the data alone, tell "this SOC never did this" from "this table was not
+submitted": with no `escalation` table, EG03 would read every Critical true positive as unescalated.
+SAT-SA resolves this with a **submission manifest**, recorded automatically at ingest: the tables
+each entity has ever submitted (a file or payload section was present, even with zero rows).
+
+When an entity has no rows in a table marked **bold** below, each assessment run does one of three
+things and says which on the Data Quality view (`/dq`):
+
+| The entity's manifest | What happens | DQ entry |
+|---|---|---|
+| Does **not** include the table | The dependent rules are **not assessed** for that entity: no finding, and no clean result either. | `rule_not_assessed` (one per rule, naming the missing table) |
+| Includes the table, but it has no rows for the entity | The rules **run**: the entity submitted an empty table, so absence is a real signal. | `rule_dependency_empty` ("submitted ... but holds no records") |
+| No manifest at all (data stored before manifests existed, or written directly) | The rules **run**, as before. | `rule_dependency_empty` ("no record of what it submitted": the finding may be an artifact) |
+
+**To state that a table is complete and empty, submit it with headers and no rows.** An entity
+that leaves a table out is not flagged by the rules that need it, but every such rule is listed
+as not assessed, so withholding a table is visible rather than rewarded. The JSON endpoint
+(`POST /api/v1/submissions`) carries only alerts, cases, assets and closures, so rules needing other
+tables are not assessed for entities submitted that way.
 
 | Rule ID | Rule Name | Tables read | Flagged on `/dq` when the entity has no rows in |
 |---|---|---|---|
@@ -135,4 +148,6 @@ duplicate IDs, alert-ID sequence gaps, high null rates, and orphaned references 
 workflow event, escalation or case link whose alert is not in the submission, a case link whose
 case is missing, an alert whose asset is not in the inventory). Orphaned child records both
 distort the rules above and can indicate that alerts were withheld. A table that fails to store
-is reported as an error and no assessment is run on that upload.
+(`table_write_failed`) or a file that cannot be read (`file_unreadable`) is reported as an error
+and left out of the manifest, so its rules are not assessed on missing data; after a failed store
+no assessment is run on that upload.
