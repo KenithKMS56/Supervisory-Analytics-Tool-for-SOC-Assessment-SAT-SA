@@ -126,8 +126,8 @@ def eg04_fixture_store(tmp_path):
     store = DuckDBStore(tmp_path / "store")
     for i in range(40):
         store.execute(
-            "INSERT INTO alert (entity_id, alert_id, closed_by_type) VALUES (?, ?, 'human')",
-            ["EG4-ENT", f"A{i:03d}"],
+            "INSERT INTO alert (entity_id, alert_id, closed_by_type, closed_at) VALUES (?, ?, 'human', ?)",
+            ["EG4-ENT", f"A{i:03d}", datetime(2026, 2, 1, 9, 0, 0)],
         )
         comment_hash = "BOILERPLATE" if i < 20 else f"UNIQUE-{i}"
         store.execute(

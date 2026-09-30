@@ -1,5 +1,7 @@
 """Test detection rules EG01-EG12 and NS01-NS08 on ingested synthetic data."""
 
+from datetime import datetime
+
 from satsa.rules.registry import RuleRegistry
 from satsa.store.duckdb import DuckDBStore
 
@@ -144,3 +146,52 @@ def test_every_finding_carries_evidence_records():
     finally:
         store.close()
     assert checked >= 19
+
+
+# ------------------------------------------------------------------ closures, not open alerts
+
+
+def _insert_alert(store, alert_id, *, closed, comment_len=None, investigated=False):
+    created = datetime(2026, 2, 1, 9, 0, 0)
+    store.execute(
+        "INSERT INTO alert (entity_id, alert_id, rule_id, severity_final, created_at, closed_at, closed_by, "
+        "closed_by_type, status) VALUES ('E1', ?, 'R1', 'medium', ?, ?, 'ANALYST_1', 'human', ?)",
+        [alert_id, created, datetime(2026, 2, 1, 12, 0, 0) if closed else None, "closed" if closed else "open"],
+    )
+    if comment_len is not None:
+        store.execute(
+            "INSERT INTO closure (entity_id, ref_id, reason_code, disposition, comment_norm_hash, comment_len) "
+            "VALUES ('E1', ?, 'none', 'benign', 'samehash', ?)",
+            [alert_id, comment_len],
+        )
+    if investigated:
+        store.execute(
+            "INSERT INTO workflow_event (entity_id, ref_type, ref_id, ts, action) VALUES ('E1', 'alert', ?, ?, 'investigate')",
+            [alert_id, created],
+        )
+
+
+def test_eg02_and_eg04_judge_closures_not_alerts_still_open(tmp_path):
+    """Open alerts have no closure. Counting them made EG02 report them as closed uninvestigated
+    and watered down EG04's share. Synthetic data never showed it: there, every alert is closed."""
+    store = DuckDBStore(tmp_path / "pq")
+    try:
+        for i in range(40):  # closed properly: investigated, real comment, each its own text
+            _insert_alert(store, f"OK{i}", closed=True, comment_len=80, investigated=True)
+            store.execute("UPDATE closure SET comment_norm_hash = ? WHERE ref_id = ?", [f"h{i}", f"OK{i}"])
+        for i in range(30):  # still open: nothing recorded yet
+            _insert_alert(store, f"OPEN{i}", closed=False)
+        registry = RuleRegistry()
+        assert registry.get_rule("EG02").evaluate("E1", store, [], "RUN")[0] == []
+
+        for i in range(12):  # closed with one boilerplate comment, uninvestigated
+            _insert_alert(store, f"BAD{i}", closed=True, comment_len=10)
+        eg02 = registry.get_rule("EG02").evaluate("E1", store, [], "RUN")[0]
+        assert eg02 and "12 of 52 alerts" in eg02[0].rationale  # 52 closures; the 30 open alerts are not counted
+        eg04 = registry.get_rule("EG04").evaluate("E1", store, [], "RUN")[0]
+        assert eg04 == []  # 12 of 52 closures = 23%, under the 25% threshold
+        for i in range(12, 16):
+            _insert_alert(store, f"BAD{i}", closed=True, comment_len=10)
+        assert registry.get_rule("EG04").evaluate("E1", store, [], "RUN")[0]  # 16 of 56 = 29%
+    finally:
+        store.close()
