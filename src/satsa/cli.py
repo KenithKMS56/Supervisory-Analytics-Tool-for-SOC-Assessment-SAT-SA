@@ -743,6 +743,57 @@ def validate_stress_cmd(
     console.print(f"\n[bold green][+] Stress report written to:[/bold green] [cyan]{md_path}[/cyan]")
 
 
+@app.command("validate-independent")
+def validate_independent_cmd(
+    seeds: int = typer.Option(20, "--seeds", "-n", help="Number of seeds to run"),
+    start_seed: int = typer.Option(1, "--start-seed", help="First seed"),
+    output_md: str = typer.Option(
+        "docs/validation_independent_report.md", "--output-md", help="Markdown report path"
+    ),
+    output_json: str = typer.Option("", "--output-json", help="Also write the raw per-seed results as JSON"),
+    rules_config: str = typer.Option("config/rules.yaml", "--rules-config", help="Rule configuration to evaluate"),
+    sweep: bool = typer.Option(True, "--sweep/--no-sweep", help="Run the +/-20% threshold sweep per seed"),
+) -> None:
+    """Validate on the INDEPENDENT generator (written from the documented rule catalogue):
+    engine vs three naive baselines, family ablation, +/-20% sweep, Wilson intervals.
+
+    Each seed runs in its own temporary store; data/ is never touched. Synthetic data only.
+    """
+    import json
+    from pathlib import Path
+
+    from satsa.validate.independent import aggregate, render_markdown, run_seed
+
+    results = []
+    for seed in range(start_seed, start_seed + seeds):
+        r = run_seed(seed, rules_config=rules_config, sweep=sweep)
+        e = r["engine"]
+        console.print(
+            f"  * seed {seed}: {e['tp']}/{e['tp'] + e['fn']} defects detected, {e['fp']} false positives "
+            f"({e['fp_on_decoys']} on decoys), {r['seconds']} s"
+        )
+        results.append(r)
+    agg = aggregate(results)
+    t = agg["totals"]
+    command = (
+        f"satsa validate-independent --seeds {seeds} --start-seed {start_seed}"
+        + ("" if sweep else " --no-sweep")
+        + (f" --rules-config {rules_config}" if rules_config != "config/rules.yaml" else "")
+    )
+    md = Path(output_md)
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text(render_markdown(results, agg, command), encoding="utf-8")
+    if output_json:
+        Path(output_json).write_text(json.dumps({"results": results}, indent=1, default=str), encoding="utf-8")
+    recall = t["tp"] / max(t["tp"] + t["fn"], 1)
+    precision = t["tp"] / max(t["tp"] + t["fp"], 1)
+    console.print(
+        f"[bold green][+] Independent set:[/bold green] recall {recall * 100:.1f}% ({t['tp']:g}/{t['tp'] + t['fn']:g}), "
+        f"precision {precision * 100:.1f}% ({t['tp']:g}/{t['tp'] + t['fp']:g}), decoys flagged "
+        f"{t['decoys_flagged']:g}/{t['decoys']:g}. Report: [cyan]{md}[/cyan]"
+    )
+
+
 @app.command("offline-bundle")
 def offline_bundle_cmd(
     output_dir: str = typer.Option("dist", "--output-dir", "-o", help="Output directory"),

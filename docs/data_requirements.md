@@ -48,7 +48,8 @@ SAT-SA standardizes multi-source periodic submissions into 8 canonical relationa
 | `name` | String | Mandatory | Full organizational name. |
 | `sector` | String | Mandatory | Critical sector (`power`, `banking`, `telecom`, `transport`, `oil_and_gas`). |
 | `size_band` | String | Mandatory | Relative operational scale (`small`, `medium`, `large`). |
-| `soc_model` | String | Optional | Operating model (`internal`, `hybrid`, `managed_mssp`). |
+| `soc_model` | String | Optional | Operating model (`inhouse`, `hybrid`, `mssp`). |
+| `soc_provider` | String | Optional | The SOC operator: `internal` for an in-house SOC, otherwise the third-party provider's name. Used by the systemic detector. |
 | `timezone` | String | Optional | Local operational timezone (default `UTC`). |
 | `declared_shift_hours` | String | Optional | Operational shift windows (e.g., `09:00-18:00` or `24x7`). |
 
@@ -97,12 +98,16 @@ SAT-SA standardizes multi-source periodic submissions into 8 canonical relationa
 | `note_len` | Integer | Optional | Character count of investigator notes. |
 
 ### 1.5 Supporting Tables
-- `asset`: Inventory master list (`asset_id`, `asset_type`, `criticality` 1–5, `monitored_flag`, `owner_unit`).
+(Column names as `satsa.models.canonical` defines them; corrected in the quality pass: writing a test-data generator from this page showed that several names and value lists here differed from the code.)
+- `asset`: Inventory master list (`asset_id`, `asset_type`, `criticality` 1–4, `monitored_flag`, `owner_unit`).
 - `escalation`: Escalation events (`esc_id`, `ref_id`, `escalated_at`, `from_role`, `to_role`, `acknowledged_at`, `outcome`).
-- `closure`: Detailed resolution records (`ref_id`, `reason_code`, `disposition`, `comment_norm_hash`, `comment_shingles`).
+- `closure`: Detailed resolution records (`ref_id` = the alert ID, `reason_code`, `disposition`, `comment_norm_hash`, `comment_len` (EG02 reads it), `comment_shingles`).
 - `log_source_daily`: Daily aggregate event volumes (`asset_id`, `source_type`, `date`, `event_count`).
-- `declared_kpi`: Quarterly entity self-attestations (`period`, `metric_name`, `severity`, `declared_value`).
-- `external_report`: Mandatory statutory regulatory filings (`report_id`, `case_id`, `reported_at`, `regulatory_body`).
+- `declared_kpi`: Entity self-attestations (`period`, `metric` e.g. `MTTR`, `severity`, `value`; EG10 reads `metric = 'MTTR'` in minutes).
+- `external_report`: Regulatory filings (`incident_id` = the case ID, `reported_to`, `reported_at`).
+- `detection_rule`: The entity's detection catalogue (`rule_id`, `category`, `mitre_tactic`, `mitre_technique`, `enabled`, `last_fired`).
+- `remediation`: Tuning and fix tickets (`ticket_id`, `linked_asset_id`, `linked_rule_id`, `type`, `created_at`, `closed_at`); EG05 matches them on (asset, rule).
+- `sla_policy`: Per-severity targets (`severity`, `ack_minutes`, `resolve_minutes`); EG06 reads `resolve_minutes`.
 
 ---
 

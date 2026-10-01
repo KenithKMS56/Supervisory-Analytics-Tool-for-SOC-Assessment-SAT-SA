@@ -681,8 +681,14 @@ class IngestionPipeline:
                 existing_eids.add(eid)
 
         if new_entities_to_add:
+            # Defaults go FIRST: the entity table keeps the newest non-null value per column
+            # (store.duckdb._upsert_entity_row), so the submission's own name, sector, size band
+            # and SOC model win and a default only fills a column the submission left empty.
+            # (They used to go last, which replaced every submitted profile with
+            # "General Infrastructure" / "Medium" on a fresh store and put every entity in one
+            # peer cohort.)
             parts = [tables["entity"]] if "entity" in tables else []
-            tables["entity"] = _concat_frames([*parts, _frame_from_rows(new_entities_to_add)])
+            tables["entity"] = _concat_frames([_frame_from_rows(new_entities_to_add), *parts])
             row_counts["entity"] = row_counts.get("entity", 0) + len(new_entities_to_add)
 
         # Each table split by entity once; an entity's rows become dicts only while its
