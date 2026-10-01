@@ -770,7 +770,7 @@ def benchmark_cmd(
     console.print("[bold blue]Executing SAT-SA performance benchmark...[/bold blue]")
     bench = BenchmarkRunner(data_dir)
 
-    console.print("\n[bold]1. Columnar Parquet Scan & Aggregation Benchmark:[/bold]")
+    console.print("\n[bold]1. One in-memory DuckDB aggregation query (one thread, generated table):[/bold]")
     col_results = bench.run_columnar_scan_benchmark([50_000, 200_000, 1_000_000])
     for r in col_results:
         console.print(
@@ -786,7 +786,9 @@ def benchmark_cmd(
         f"  * Assessment throughput: [bold green]{e2e['throughput_alerts_per_sec']:,.1f} alerts/s[/bold green]"
     )
     console.print(
-        f"  * Extrapolated 5M time:  [bold yellow]{e2e['extrapolated_5m_runtime_minutes']:.1f} minutes[/bold yellow]"
+        "[dim]Scan figures time one in-memory query (DuckDB pinned to one thread); they are not "
+        "assessment times. Scale is measured, not extrapolated, by scripts/benchmark_scale.py "
+        "(docs/benchmarks.md).[/dim]"
     )
 
 

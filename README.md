@@ -2,7 +2,7 @@
 # SAT-SA: Supervisory Analytics Tool for SOC Assessment:
 **National Critical Information Infrastructure Protection Centre (NCIIPC)**
 
-**SAT-SA** is an air-gapped, fully deterministic analytical tool and sovereign identity management platform designed for regulatory oversight of Security Operations Centres (SOCs) across Critical Sector Entities (CSEs) in power, banking, telecom, transport, and oil & gas.
+**SAT-SA** is an offline, deterministic analytical tool with its own identity management, built for regulatory oversight of Security Operations Centres (SOCs) across Critical Sector Entities (CSEs) in power, banking, telecom, transport, and oil & gas.
 
 The platform provides a unified dual-application architecture:
 - **NCIIPC Administration Portal (`http://localhost:8000`)**: Authoritative governance, centralized identity provisioning, critical sector entity and organisation registries, an admin activity feed (operator session monitor of SAT-SA's own users), and administrative cryptographic audit chaining.
@@ -12,7 +12,7 @@ The platform provides a unified dual-application architecture:
 
 ## Architectural Differentiators & Why It Stands Out
 
-Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is engineered to meet strict regulatory and forensic standards:
+Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is built around explainability, auditability and offline operation:
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────────────┐
@@ -25,7 +25,7 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is en
 │  • Admin Activity Feed (Operators)      │  • Blinded Review Studio & Bias Defense │
 │  • Cryptographic Admin Audit Log        │  • PDF Dossiers & Peer Benchmarking     │
 ├─────────────────────────────────────────┴─────────────────────────────────────────┤
-│                      SHARED PERSISTENT SOVEREIGN BACKEND                          │
+│                      SHARED PERSISTENT LOCAL BACKEND                              │
 │   SQLite Database (Autocommit + WAL)  •  DuckDB Columnar Parquet  •  WebSockets   │
 └───────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -33,11 +33,11 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is en
 1. **Authoritative Identity & Governance Layer:**
    Centralized administrative control plane where users cannot self-register or select their own role, organisation, or scoped CSE. All identities are authoritatively provisioned by NCIIPC administrators before credentials are issued.
 2. **Offline Operation & Data Minimisation:**
-   Binds to loopback (`127.0.0.1`) by default. No CDN dependencies or external script calls; Apache ECharts is vendored. SAT-SA makes no outbound network calls, and as **best-effort defence in depth** each portal installs an in-process egress guard (`satsa/netguard.py`) that refuses Python socket connections to anything but loopback. It does not cover native code that bypasses Python sockets and does not block DNS lookups; the host firewall and the air gap remain the real controls. Ingested analyst identities are irreversibly pseudonymised using HMAC-SHA256 (`.satsa_salt`), and IP addresses/PII are redacted using deterministic regex masks.
+   Binds to loopback (`127.0.0.1`) by default. No CDN dependencies or external script calls; Apache ECharts is vendored. SAT-SA makes no outbound network calls, and as **best-effort defence in depth** each portal installs an in-process egress guard (`satsa/netguard.py`) that refuses Python socket connections to anything but loopback. It does not cover native code that bypasses Python sockets and does not block DNS lookups; the host firewall and the air gap remain the real controls. Ingested analyst identities are pseudonymised with HMAC-SHA256 under a local secret salt (`.satsa_salt`; anyone holding the salt can re-derive a known name's pseudonym), and IP addresses, e-mail addresses and host names are masked by deterministic regexes.
 3. **Cryptographic Tamper-Evidence:**
    Every batch upload, schema validation, assessment run, rule configuration change, administrative provisioning action, and human examiner disposition is recorded into append-only SQLite logs hash-chained (SHA3-256 for new entries; legacy SHA-256 entries still verify). Editing, inserting, deleting or reordering an entry in the middle of the chain breaks verification; removal of the newest entries or a full recomputation of the chain is only caught by comparing against a checkpoint recorded off-box with `satsa audit head` (see DECISIONS.md ADR-005).
-4. **Extreme Columnar Analytics Performance:**
-   Built on DuckDB and PyArrow columnar storage, achieving scan speeds exceeding **10.6 Million rows/second** on standard x86 CPU hardware—enabling multi-gigabyte periodic supervisory submissions to be evaluated in seconds with zero external database dependencies.
+4. **Columnar Analytics, Measured at Scale:**
+   DuckDB over Parquet, no database server. On one 4-core / 8-thread laptop (AMD Ryzen 5 7235HS, 23.7 GB RAM) with uniform synthetic data, 5,000,000 alerts (21.4M rows) took **603 s to ingest** (13.2 GB peak memory) and **310 s to assess** (3.3 GB peak), recorded 2026-09-30 in [`docs/benchmarks.md`](docs/benchmarks.md). A single in-memory aggregation query is much faster than that (7.6M rows/s at 1M rows, `satsa benchmark`), but scan speed is not end-to-end time.
 5. **Cognitive Bias Mitigation (Blinded Review Studio):**
    Includes a double-blind supervisory mode that presents raw operational metrics without showing pre-calculated risk scores, helping examiners reach unbiased conclusions before revealing inter-rater concordance.
 6. **Admin Activity Feed (Operator Session Monitor):**
@@ -45,7 +45,7 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is en
 
 ---
 
-## Regulatory Detection Catalog: 20 Production Rules
+## Regulatory Detection Catalog: 20 Detection Rules
 
 SAT-SA evaluates each periodic CSE submission against **12 Execution Gaps** (malfunctions in active workflows) and **8 Negative Space Inferences** (anomalies revealed by what is absent or missing).
 
@@ -163,7 +163,7 @@ SAT-SA follows the operating model of real regulators: one person operates the p
 
 Separation of duties is deliberate: whoever tunes the rules can't also sign off the findings. Every other role, including NCIIPC administrators and CSE-scoped accounts, is refused at SAT-SA's login.
 
-## NCIIPC Administration & Sovereign Identity Control (`:8000`)
+## NCIIPC Administration & Identity Control (`:8000`)
 
 The **NCIIPC Administration Portal** (`http://localhost:8000`) is a dedicated supervisory governance and identity control plane operating alongside SAT-SA:
 
@@ -255,8 +255,8 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 | **Review-Effort Lift** (primary dataset) | **19.5x** for the top 25 queue alerts, **12.0x** for the top 50, **5.19x** for the whole 130-alert queue, vs random sampling. (Every 1%/2%/5% budget exceeds the queue, so those all equal 5.19x.) *See docs/validation_report.md Section 4.* | $\ge 5.00x$ | Meets target |
 | **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations) | $\ge 0.8500$ | Meets target |
 | **Rule Threshold Sensitivity** (primary dataset) | **4 of 66** single-threshold ±20% moves change an outcome, all injected defects built just over their threshold (EG05 pairs, EG07, NS05, NS08's review period). None creates a false alarm on a clean entity on this seed; across the hard set, lowering EG05's pair threshold does. | n/a -- reported for transparency | Margins are synthetic; real calibration needs the pilot |
-| **DuckDB Scan Throughput** | **10,623,549 rows/second** (single aggregation query, in memory) | $\ge 1,000,000$ | Measured, exceeds target |
-| **Scale, end to end** (`docs/benchmarks.md`) | 5,000,000 alerts (50 entities, 21.4M rows): ingest **603 s** (13.2 GB peak), assessment **310 s** (3.3 GB peak); repeat page loads under 0.7 s | n/a | Measured on a 4-core / 24 GB laptop, uniform synthetic data |
+| **DuckDB Scan Throughput** (one in-memory query, one thread; not an assessment time) | **7,570,338 rows/second** at 1,000,000 rows (`satsa benchmark`, 2026-10-01) | n/a | Scan only; end-to-end figures in the next row |
+| **Scale, end to end** (`docs/benchmarks.md`, recorded 2026-09-30) | 5,000,000 alerts (50 entities, 21.4M rows): ingest **603 s** (13.2 GB peak), assessment **310 s** (3.3 GB peak); repeat page loads under 0.7 s | n/a | Measured on a 4-core / 24 GB laptop, uniform synthetic data |
 | **Automated Test Suite** | **871 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), from freshly generated data on Python 3.13 (Windows). Statement-and-branch coverage **89%** overall; rules 94-100%, scoring 83-100%, audit-chain store 91%. Not re-run on Python 3.11 or Linux in this pass. | 100% passing | Verified locally |
 
 ---
@@ -269,7 +269,7 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 
 ---
 
-### Method 1: One-Click Docker Deployment (Production & Demo — Recommended)
+### Method 1: One-Click Docker Deployment (Demo; the image has not been built in this project's recorded evidence)
 
 The easiest way to run the entire unified platform (NCIIPC Admin Portal + SAT-SA + Shared RBAC + Admin Activity Feed) without configuring local Python environments:
 
@@ -473,7 +473,7 @@ satsa/
 │   │   ├── static/              # Admin CSS stylesheets & 0xZenith branding assets
 │   │   └── templates/           # Dedicated Jinja2 templates for admin control tabs
 │   ├── api/routes.py            # SAT-SA Supervisory Tool (:8001) endpoints
-│   ├── auth/                    # Sovereign PBKDF2 identity store & session tokens
+│   ├── auth/                    # Local PBKDF2 identity store & session tokens
 │   ├── cli.py                   # Typer CLI application entry point
 │   ├── ingest/ scoring/ validate/ # Ingestion & pseudonymisation; scoring; validation harness
 │   ├── rules/                   # Deterministic DuckDB SQL rule definitions (EG/NS)

@@ -32,11 +32,18 @@ class BenchmarkRunner:
     def run_columnar_scan_benchmark(
         self, scale_sizes: list[int] | None = None
     ) -> list[dict[str, Any]]:
-        """Benchmark DuckDB columnar aggregation throughput across simulated alert volumes."""
+        """Time ONE in-memory DuckDB aggregation query over a generated alert table.
+
+        This is a scan figure, not an assessment time: it excludes reading Parquet, the 20 rules,
+        scoring and persistence (measured end to end by scripts/benchmark_scale.py, reported in
+        docs/benchmarks.md). The connection is pinned to one thread, as DuckDBStore is, so the
+        figure reflects how SAT-SA actually runs DuckDB.
+        """
         scale_sizes = scale_sizes or [50_000, 200_000, 500_000, 1_000_000]
         results = []
 
         con = duckdb.connect(":memory:")
+        con.execute("PRAGMA threads=1")  # same as DuckDBStore (reproducible aggregation)
         for n in scale_sizes:
             # Generate simulated alert batch in memory
             t0 = time.perf_counter()
@@ -114,7 +121,6 @@ class BenchmarkRunner:
         sqlite_store.close()
 
         throughput = alert_count / max(elapsed, 0.001)
-        extrapolated_5m_sec = 5_000_000 / max(throughput, 1.0)
 
         return {
             "dataset_alerts": alert_count,
@@ -122,6 +128,5 @@ class BenchmarkRunner:
             "findings_count": res.get("findings_count", 0),
             "queue_count": res.get("queue_count", 0),
             "throughput_alerts_per_sec": round(throughput, 1),
-            "extrapolated_5m_runtime_minutes": round(extrapolated_5m_sec / 60.0, 2),
             "memory_rss_mb": round(mem_mb, 1),
         }
