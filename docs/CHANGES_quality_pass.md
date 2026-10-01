@@ -23,6 +23,8 @@ Each documented behaviour below was checked against the code before anything was
 | M9 | Package layout | README directory tree: `src/satsa/core/  # Ingestion, validation, pseudonymisation, scoring` | No `core/` package; that work lives in `ingest/`, `scoring/`, `validate/` | **Doc was wrong.** Tree line corrected. |
 | M10 | Audit hash algorithm | README §10 and admin diagram: "SHA-256 tamper-evident log chain", "Chained SHA-256 prev_hash"; CLI reference: "verify the SHA-256 audit log hash chain" | New entries are SHA3-256; legacy SHA-256 entries still verify (`store/sqlite.py::compute_chain_hash`) | **Doc was stale.** Wording now says SHA3-256 with legacy SHA-256. |
 | M11 | Report file names vs Windows path limit | EVIDENCE.md: the suite had to be run "from a short path" | Reproduced: from a 181-character root, 4 PDF-route tests fail (`reports/SAT-SA_CSE_<entity>_Report_<full run id>.pdf.tmp` > 260 characters) and `test_bundle` fails (the offline bundle mirrors the source tree under `dist/satsa_offline_bundle/`) | **Code fixed for the reports** (`satsa/report/naming.py`; see Phase 1). The bundle depth is recorded as an open item. |
+| M12 | Submitted entity profile | `docs/data_requirements.md` and the UI: the entity's submitted name, sector, size band and SOC model are what the tool shows and what peer cohorts are built from | On a fresh store, ingest appended a default record ("<id> Operations", "General Infrastructure", "Medium", "inhouse") **after** the submitted rows, and the entity table keeps the newest non-null value per column, so every submitted profile was overwritten. Reproduced by ingesting `data/generated` (the seed-42 demo) with the pre-fix `src` (`git archive` of `37b9bd4`, the commit before the fix): all 10 CSEs came out as "CSE-xx Operations / General Infrastructure / Medium / inhouse"; with the fix, "Northern Power Grid Ltd / power / large / inhouse" etc. Every entity therefore fell into one peer cohort. | **Code bug, fixed** in Phase 4 (`ingest/pipeline.py`: defaults first). Regression tests in `tests/test_entity_profile_ingest.py` fail without the fix. Found because the independent generator gives entities distinct sectors and sizes; the original generator's checks did not depend on cohort membership, and the primary and stress results were the same before and after the fix (21/21, 3/3). |
+| M13 | Canonical schema page | `docs/data_requirements.md` §1.1, §1.5: `soc_model` values `internal`/`hybrid`/`managed_mssp`; criticality 1-5; `declared_kpi(metric_name, declared_value)`; `external_report(report_id, case_id, regulatory_body)`; no `soc_provider`, `comment_len`, `detection_rule`, `remediation`, `sla_policy` | `satsa.models.canonical`: `inhouse`/`hybrid`/`mssp`; criticality 1-4; `declared_kpi(metric, value)`; `external_report(incident_id, reported_to)`; `soc_provider`, `closure.comment_len`, and the three tables exist and are read by rules | **Doc was wrong.** Corrected. Found by writing the independent generator from that page: CSVs built to the page did not load as documented. |
 
 ## Process note: another session edited the same working tree
 
@@ -184,3 +186,59 @@ already implemented an unsigned, hand-copied checkpoint (`SQLiteStore.audit_head
   host being checked could be made to report anything; the examiner verifies on their own machine.
 - A passphrase on the private key: possible hardening; the key is protected by owner-only
   permissions and by being kept off the host.
+
+### Phase 4: validation rigour
+
+- `src/satsa/synth/independent.py` (`independent/1`): a second synthetic generator, written from
+  README.md, `docs/analytics_methodology.md` §3 and `docs/data_requirements.md`. It uses the
+  standard library only and imports nothing from `satsa` (an AST test enforces this). Per
+  seed: 15 entities `ORG-A`..`ORG-O` covering every sector and size band, lognormal volumes,
+  its own analyst naming and timing. Each rule's defect is built 1.08-1.9x over the documented
+  threshold, most rules get a decoy just under it, and there is a systemic group plus a
+  two-entity systemic decoy. For EG05, EG11 and NS03 the generator computes the documented
+  criterion on what it built and labels the ground truth by it. EG11 is built in both of its
+  documented forms (no true positives, or a skewed rate with 1-2.5% true positives). The first
+  version built only the first form, so the robust-z branch was tested only by chance cases;
+  this was found while writing the threshold rationale and fixed before the reported run.
+- `src/satsa/validate/baselines.py`: three one-line baselines (`fast_closure`,
+  `short_comment`, `no_escalation`).
+- `src/satsa/validate/independent.py` and `satsa validate-independent`: per seed, generate,
+  ingest and assess, then score the engine against the baselines with Wilson 95% intervals.
+  It also runs an ablation (without EG, without NS; the systemic detector reported on its
+  own) and a ±20% sweep of every tunable threshold (reusing the harness).
+- `docs/validation_independent_report.md`, from `uv run satsa validate-independent --seeds 20
+  --start-seed 1`, run 2026-10-01 in 10 min 50 s:
+  - recall 487/487, precision 487/487 and decoys flagged 0/245;
+  - clean entities flagged 0/57;
+  - baselines lose on precision to the matching rule (20/23, 20/26, 20/300);
+  - baseline entity ranking precision@k is 81.8% against the engine's 100%;
+  - without EG recall is 198/487, and without NS it is 289/487.
+  The report has a "what this does and does not prove" section.
+- `docs/threshold_rationale.md` and `scripts/threshold_probe.py`. The probe computes each
+  rule's statistic per entity with the rule's own SQL, counts flags at candidate values, and
+  reproduces the engine at every current value. The rationale covers EG04, EG05, EG07, NS05,
+  NS08 and EG11, and makes **proposals only**. No change was made to `config/`.
+- Two defects found by the independent set and fixed (see M12 and M13 above):
+  - the entity-profile overwrite at ingest, with regression tests in
+    `tests/test_entity_profile_ingest.py`;
+  - the schema page in `docs/data_requirements.md`.
+- Tests: `tests/test_validate_independent.py` (12 tests: generator independence, documented
+  defaults, determinism, ground-truth consistency, decoys under threshold, formulas,
+  precision@k ties, one seed end to end, EG11 built both ways).
+- `docs/validation_hard_report.md` was re-run (`uv run python scripts/validate_hard.py --out
+  docs/validation_hard_report.md`, 11 min), because its earlier figures were produced while M12
+  put every entity in one peer cohort. Every result is unchanged; only the date and the
+  per-run seconds differ. The 4 known STRESS-03:EG05 false positives (seeds 3, 10, 14 and 15)
+  are the same ones as before.
+
+**Not done:**
+- The structural proposals in the threshold rationale (EG04 group size relative to volume,
+  peer-relative EG07, NS05 excluding new rules) are not evaluated, because each needs a code
+  change.
+- NS03's `min_spread` was not probed, although 8 entities met its criterion by chance.
+- The independent generator was written in a session that had read the rule code. The report
+  states this.
+- Open item, observed while verifying: some web tests (for example
+  `tests/test_shadow_pilot.py`) use the working tree's `data/satsa.db`. A `satsa validate` run
+  after the suite therefore reports their shadow workpaper in place of the stand-in one. The
+  committed validation reports were not regenerated in this phase.
