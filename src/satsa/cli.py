@@ -930,11 +930,19 @@ def audit_verify_cmd(
     checkpoint_head: str | None = typer.Option(
         None, "--checkpoint-head", help="Head hash recorded earlier by `satsa audit head`"
     ),
+    checkpoint_file: str | None = typer.Option(
+        None, "--checkpoint", help="Signed checkpoint file from `satsa audit checkpoint --sign`"
+    ),
+    pubkey: str | None = typer.Option(
+        None, "--pubkey", help="Public key that signed the checkpoint (from `satsa audit keygen`)"
+    ),
 ) -> None:
     """Verify the audit hash chain (each row checked with its own recorded algorithm).
 
-    The chain alone cannot detect deletion of its newest rows; pass a checkpoint
-    recorded off-box with `satsa audit head` to detect that too.
+    The chain alone cannot detect deletion of its newest rows or a full recomputation of the
+    chain. A signed checkpoint (--checkpoint FILE --pubkey KEY) or a recorded head
+    (--checkpoint-count N --checkpoint-head H) detects both: the live chain must match or
+    extend the recorded head. Tamper-evident, not tamper-proof (DECISIONS.md ADR-005, ADR-008).
     """
     from satsa.store.sqlite import SQLiteStore
 
@@ -942,6 +950,15 @@ def audit_verify_cmd(
     if (checkpoint_count is None) != (checkpoint_head is None):
         console.print("[bold red][!] --checkpoint-count and --checkpoint-head go together.[/bold red]")
         raise typer.Exit(code=2)
+    if checkpoint_file and checkpoint_count is not None:
+        console.print("[bold red][!] Use either --checkpoint FILE or --checkpoint-count/--checkpoint-head.[/bold red]")
+        raise typer.Exit(code=2)
+    if checkpoint_file and not pubkey:
+        console.print("[bold red][!] --checkpoint needs --pubkey: the signature is always checked.[/bold red]")
+        raise typer.Exit(code=2)
+    if checkpoint_file:
+        _verify_signed_checkpoint(db_path, checkpoint_file, str(pubkey))
+        return
     store = SQLiteStore(db_path)
     try:
         if checkpoint_count is not None and checkpoint_head is not None:
@@ -992,6 +1009,111 @@ def audit_head_cmd(
         f"[dim]Verify later with: satsa audit verify --chain {chain} "
         f"--checkpoint-count {head.count} --checkpoint-head {head.head_hash}[/dim]"
     )
+
+
+def _verify_signed_checkpoint(db_path: str, checkpoint_file: str, pubkey: str) -> None:
+    from satsa.audit import checkpoint as cp
+    from satsa.audit.keys import load_verifier
+    from satsa.audit.signing import AlgorithmUnavailableError, KeyFormatError, UnknownAlgorithmError
+    from satsa.store.sqlite import SQLiteStore
+
+    try:
+        payload = cp.load(checkpoint_file)
+        sig = payload.get("signature")
+        algorithm = sig.get("alg") if isinstance(sig, dict) else None
+        if not algorithm:
+            raise cp.CheckpointError("checkpoint is not signed")
+        verifier = load_verifier(pubkey, algorithm=str(algorithm))
+    except (cp.CheckpointError, KeyFormatError, UnknownAlgorithmError, AlgorithmUnavailableError, OSError) as exc:
+        console.print(f"[bold red][!] Checkpoint not verified:[/bold red] {exc}")
+        raise typer.Exit(code=1) from None
+    store = SQLiteStore(db_path)
+    try:
+        result = cp.verify_checkpoint_file(store, checkpoint_file, verifier)
+    finally:
+        store.close()
+    if result.ok:
+        console.print(f"[bold green][+] Signed checkpoint verified:[/bold green] {result.message}")
+    else:
+        console.print(f"[bold red][!] Checkpoint not verified:[/bold red] {result.message}")
+        raise typer.Exit(code=1)
+
+
+@audit_app.command("keygen")
+def audit_keygen_cmd(
+    out_dir: str = typer.Option("audit-keys", "--out-dir", "-o", help="Directory for the key pair"),
+    algorithm: str = typer.Option("ed25519", "--alg", help="Signature algorithm (only ed25519 is implemented)"),
+    force: bool = typer.Option(False, "--force", help="Replace an existing key pair"),
+) -> None:
+    """Create a signing key pair for audit checkpoints, readable by its owner only.
+
+    Keep the private key OFF the supervisory host (removable media held by the examiner) and
+    give the public key to whoever verifies checkpoints. See DECISIONS.md ADR-008.
+    """
+    from satsa.audit.keys import KeyPermissionError, generate_keypair
+    from satsa.audit.signing import AlgorithmUnavailableError, UnknownAlgorithmError
+
+    try:
+        private_path, public_path = generate_keypair(out_dir, algorithm=algorithm, force=force)
+    except (UnknownAlgorithmError, AlgorithmUnavailableError, FileExistsError, KeyPermissionError) as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    console.print(f"[bold green][+] Private key:[/bold green] {private_path} (owner-only; keep it off-box)")
+    console.print(f"[bold green][+] Public key:[/bold green]  {public_path}")
+
+
+@audit_app.command("checkpoint")
+def audit_checkpoint_cmd(
+    db_path: str = typer.Option("data/satsa.db", "--db-path", help="Path to SQLite database"),
+    chain: str = typer.Option("audit", "--chain", help="Which chain: 'audit' (SAT-SA) or 'admin'"),
+    sign: bool = typer.Option(False, "--sign", help="Sign the checkpoint (needs --key)"),
+    key: str | None = typer.Option(None, "--key", help="Private key from `satsa audit keygen`"),
+    algorithm: str = typer.Option("ed25519", "--alg", help="Signature algorithm (only ed25519 is implemented)"),
+    out: str | None = typer.Option(None, "--out", "-o", help="Write the checkpoint here (default: print it)"),
+) -> None:
+    """Emit a JSON checkpoint of the chain head (entry count, head hash, time, tool version).
+
+    Store it OFF-BOX. With --sign --key it is signed, and `satsa audit verify --checkpoint FILE
+    --pubkey KEY` later checks the signature and that the live chain matches or extends it.
+    """
+    from pathlib import Path
+
+    from satsa.audit import checkpoint as cp
+    from satsa.audit.keys import KeyPermissionError, load_signer
+    from satsa.audit.signing import AlgorithmUnavailableError, KeyFormatError, UnknownAlgorithmError
+    from satsa.store.sqlite import SQLiteStore
+
+    if sign != bool(key):
+        console.print("[bold red][!] --sign and --key go together.[/bold red]")
+        raise typer.Exit(code=2)
+    _chain_table(chain)
+    signer = None
+    if sign:
+        try:
+            signer = load_signer(str(key), algorithm=algorithm)
+        except (KeyPermissionError, KeyFormatError, UnknownAlgorithmError, AlgorithmUnavailableError, OSError) as exc:
+            console.print(f"[bold red][!] {exc}[/bold red]")
+            raise typer.Exit(code=1) from None
+    store = SQLiteStore(db_path)
+    try:
+        payload = cp.build_checkpoint(store, chain=chain)
+    except cp.CheckpointError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    finally:
+        store.close()
+    if signer is not None:
+        payload = cp.sign_checkpoint(payload, signer)
+    text = cp.dumps(payload)
+    if out:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(text, encoding="utf-8")
+        console.print(
+            f"[bold green][+] Checkpoint written:[/bold green] {out} ({payload['entries']} entries, "
+            f"{'signed' if signer else 'UNSIGNED'}). Copy it off-box."
+        )
+    else:
+        typer.echo(text, nl=False)
 
 
 if __name__ == "__main__":

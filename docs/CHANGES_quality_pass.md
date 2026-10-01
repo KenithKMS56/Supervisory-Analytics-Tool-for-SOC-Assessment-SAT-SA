@@ -41,6 +41,11 @@ these commits. Consequences, stated plainly:
   the file contents being committed, with its own `data/` directory. The files are written to
   the index from those contents, never with `git add` on the shared working tree.
 
+**Repair after Phase 2 (at the user's request):** the main checkout was moved, unchanged, to a
+new branch `feat/anomaly-scan-wip` for the other session's uncommitted work, and the quality pass
+continues in its own git worktree (`satsa-quality`, branch `quality/10of10`) with its own `data/`.
+The other session was told by message. Its ADR keeps the number 007; this pass uses ADR-008.
+
 ## Phase log
 
 ### Phase 0: baseline
@@ -127,3 +132,49 @@ reports describes the design, which `tests/test_offline_hardening.py` exercises.
 
 Verification (clean copy, see the process note): full suite, `satsa validate`, `satsa
 validate-stress`, `ruff check .`, `mypy src`; results in the Phase 2 commit message.
+
+### Phase 3: signed, verifiable audit checkpoints
+
+Verified first: `satsa audit head` and `satsa audit verify --checkpoint-count/--checkpoint-head`
+already implemented an unsigned, hand-copied checkpoint (`SQLiteStore.audit_head`,
+`verify_checkpoint`), and ADR-005 stated its limits correctly. They were kept and reused.
+
+- `src/satsa/audit/signing.py`: `Signer`/`Verifier` interface and an algorithm registry.
+  `ed25519` implemented with `cryptography`; `ml-dsa-44/65/87` reserved (raise "not
+  implemented"); any other name rejected (`UnknownAlgorithmError`).
+- `src/satsa/audit/keys.py`: `satsa audit keygen` writes the key pair owner-only (0600 on POSIX;
+  on Windows `icacls /inheritance:r /grant:r <user>:(F)`); signing refuses a private key that
+  other accounts can read (POSIX group/other bits; Windows: an Allow-read entry for Everyone,
+  Anonymous, Authenticated Users, Users or Guests, checked by SID so the display language does
+  not matter).
+- `src/satsa/audit/checkpoint.py`: `satsa audit checkpoint [--sign --key K] [--out F]` emits
+  `satsa-audit-checkpoint/1` JSON (chain, table, entries, head hash, hash algorithm, UTC time,
+  tool version) with a detached Ed25519 signature over its canonical encoding; it refuses to
+  checkpoint a chain that does not verify. `satsa audit verify --checkpoint F --pubkey P`
+  checks the signature, then that the live chain matches or extends the checkpoint.
+- `tests/test_audit_tamper_matrix.py`, one test per case. Result:
+
+| Case | Chain alone | With a signed checkpoint |
+|---|---|---|
+| 1 Edit a middle entry | detected (row 5) | detected |
+| 2 Insert an entry | detected (row 6) | detected |
+| 3 Delete a middle entry | detected (row 5) | detected |
+| 4 Reorder two entries | detected (row 4) | detected |
+| 5 Truncate the newest 3 entries | **not detected** (documented limit) | detected ("truncated") |
+| 6 Recompute the whole chain after an edit | **not detected** (documented limit) | detected ("history rewritten") |
+| 7 Verify with the wrong public key (and with the right key id copied in) | n/a | rejected |
+| 8 Modified checkpoint (entries, head hash, time, version; flipped signature bits) | n/a | rejected |
+
+  Also tested: appended entries extend a checkpoint; an unsigned checkpoint, a checkpoint of a
+  broken chain and an unknown algorithm in a checkpoint are refused; ML-DSA is reserved, not
+  implemented; keygen never overwrites without `--force`; a world-readable key is refused by
+  the API and the CLI; the CLI catches truncation end to end.
+- DECISIONS.md ADR-008 (new; "tamper-evident, not tamper-proof"; key custody stated as the
+  condition the guarantee rests on); ADR-005 points to it. `docs/deployment_ops.md`, README,
+  `docs/architecture.md` and `docs/slides_outline.md` describe the signed checkpoint.
+- New dependency `cryptography` (50.0.2, with `cffi`, `pycparser`): justified in ADR-008; prebuilt
+  wheels for Windows and Linux, no network use at run time.
+
+**Not done:** an ML-DSA signer (only the interface and the reserved names); encrypting the
+private key with a passphrase (it is protected by file permissions and by being kept off-box);
+any change to the web UI's audit page, which still verifies the chain alone.
