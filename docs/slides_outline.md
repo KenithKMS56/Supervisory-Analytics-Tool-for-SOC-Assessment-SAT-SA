@@ -13,7 +13,7 @@
 
 ## Slide 2: Architectural Foundation & "No AI/ML" Commitment
 - **Zero Black-Box Risk:** 100% deterministic execution. Zero LLMs, zero neural networks, zero generative hallucinations. Explainable by design.
-- **Air-Gapped & Offline Security:** Default binding to `127.0.0.1`, zero external CDN dependencies, vendored Apache ECharts, and socket-level outbound blocking.
+- **Air-Gapped & Offline Security:** Default binding to `127.0.0.1`, zero external CDN dependencies, vendored Apache ECharts, and a best-effort in-process egress guard (loopback-only Python socket connections; does not cover native code or DNS).
 - **Data Minimization & Privacy:** HMAC-SHA256 pseudonymisation of human analyst handles and regex redaction of sensitive internal network IPs and PII.
 - **Cryptographic Auditability:** Hash-chained audit log (SHA3-256) that exposes edits, insertions and deletions within the chain; off-box `satsa audit head` checkpoints catch truncation of the newest entries. Limits stated in ADR-005.
 

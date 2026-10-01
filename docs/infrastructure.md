@@ -50,7 +50,7 @@ The problem statement asks for "analysis of large datasets spanning multiple ent
 
 ### 3.1 Scaling Analysis & Linear Columnar Complexity
 1. **Partition Pruning:** Alerts are partitioned physically by `entity_id` and indexed by timestamp. Each rule query scans only relevant column projections (e.g. `[entity_id, alert_id, severity_final, created_at, closed_at]`), reducing I/O bandwidth by >85% compared to full-row scans.
-2. **Columnar Vectorization:** As proven in the 1M alert benchmark, DuckDB executes multi-threaded SIMD vectorized scans at over **10.6 million rows/second**.
+2. **Columnar Vectorization:** DuckDB executes vectorized columnar scans, but SAT-SA pins it to **one thread** (`PRAGMA threads=1`, `store/duckdb.py`) so that floating-point aggregates are reproducible; see `docs/architecture.md` Section 3. (Corrected in the quality pass: this line used to claim multi-threaded scans.)
 3. **Measured at 5,000,000 alerts** (50 entities x 100,000 alerts, 21.4M rows across all tables; 4-core / 8-thread laptop CPU, 23.7 GB RAM; `docs/benchmarks.md`): ingest 603 s with a 13.2 GB peak, assessment 310 s with a 3.3 GB peak, about 15 minutes end to end. An earlier version of this section divided 5,000,000 by the throughput of a 5,650-alert run and promised 10.1 minutes, "comfortably" 6 to 8 on 8 cores. That was an extrapolation and it was optimistic: assessment time grows faster than linearly with volume (16 s at 0.5M alerts, 105 s at 2.5M, 310 s at 5M), and DuckDB is pinned to one thread for reproducibility, so more cores do not shorten it.
 
 ---

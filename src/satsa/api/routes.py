@@ -41,8 +41,10 @@ from satsa.explain.finding_card import FindingCard
 from satsa.ingest.pipeline import IngestionPipeline, default_entity_record
 from satsa.models.canonical import Entity
 from satsa.models.outputs import ExaminerFeedback
+from satsa.netguard import install_egress_guard, uninstall_egress_guard
 from satsa.peers.grouping import PeerResolver
 from satsa.report.generator import ReportGenerator, ReportNotFoundError
+from satsa.report.naming import entity_pdf_name, finding_pdf_name, portfolio_pdf_name
 from satsa.rules.negative_space import REVIEW_PERIOD_MONTHS_RANGE
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
@@ -78,15 +80,21 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    """At start, require a passphrase change on seeded accounts still using their default."""
-    store = SQLiteStore("data/satsa.db")
+    """At start, install the egress guard and require a passphrase change on seeded accounts
+    still using their default. The guard is removed again at shutdown."""
+    guarded = install_egress_guard()
     try:
-        for username in store.flag_unrotated_default_accounts():
-            logger.warning("Account %r still uses its published default passphrase; "
-                           "a new one must be set at first login.", username)
+        store = SQLiteStore("data/satsa.db")
+        try:
+            for username in store.flag_unrotated_default_accounts():
+                logger.warning("Account %r still uses its published default passphrase; "
+                               "a new one must be set at first login.", username)
+        finally:
+            store.close()
+        yield
     finally:
-        store.close()
-    yield
+        if guarded:
+            uninstall_egress_guard()
 
 
 app = FastAPI(
@@ -2461,7 +2469,7 @@ async def download_entity_pdf(
     def prepare(rep: ReportGenerator) -> tuple[str, Callable[[Path], Path]]:
         meta = rep.resolve_run(run_id)
         return (
-            f"SAT-SA_CSE_{entity_id}_Report_{meta.run_id}.pdf",
+            entity_pdf_name(entity_id, meta.run_id),
             lambda path: rep.generate_entity_pdf(entity_id, path, meta.run_id),
         )
 
@@ -2475,7 +2483,7 @@ async def download_portfolio_pdf(request: Request, run_id: str | None = None) ->
     def prepare(rep: ReportGenerator) -> tuple[str, Callable[[Path], Path]]:
         meta = rep.resolve_run(run_id)
         return (
-            f"SAT-SA_Portfolio_Report_{meta.run_id}.pdf",
+            portfolio_pdf_name(meta.run_id),
             lambda path: rep.generate_portfolio_pdf(path, meta.run_id),
         )
 
@@ -2493,14 +2501,14 @@ async def download_finding_pdf(request: Request, finding_id: str) -> FileRespons
 
     def prepare(rep: ReportGenerator) -> tuple[str, Callable[[Path], Path]]:
         row = rep.sqlite_store.conn.execute(
-            "SELECT entity_id FROM findings WHERE finding_id = ?", (finding_id,)
+            "SELECT entity_id, rule_id FROM findings WHERE finding_id = ?", (finding_id,)
         ).fetchone()
         if row is None:
             raise ReportNotFoundError("Finding")
         if identity:
             require_cse_access(row["entity_id"], identity)
         return (
-            f"SAT-SA_Finding_{finding_id}.pdf",
+            finding_pdf_name(finding_id, row["rule_id"], row["entity_id"]),
             lambda path: rep.generate_finding_pdf(finding_id, path),
         )
 
