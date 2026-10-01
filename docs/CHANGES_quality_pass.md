@@ -25,6 +25,8 @@ Each documented behaviour below was checked against the code before anything was
 | M11 | Report file names vs Windows path limit | EVIDENCE.md: the suite had to be run "from a short path" | Reproduced: from a 181-character root, 4 PDF-route tests fail (`reports/SAT-SA_CSE_<entity>_Report_<full run id>.pdf.tmp` > 260 characters) and `test_bundle` fails (the offline bundle mirrors the source tree under `dist/satsa_offline_bundle/`) | **Code fixed for the reports** (`satsa/report/naming.py`; see Phase 1). The bundle depth is recorded as an open item. |
 | M12 | Submitted entity profile | `docs/data_requirements.md` and the UI: the entity's submitted name, sector, size band and SOC model are what the tool shows and what peer cohorts are built from | On a fresh store, ingest appended a default record ("<id> Operations", "General Infrastructure", "Medium", "inhouse") **after** the submitted rows, and the entity table keeps the newest non-null value per column, so every submitted profile was overwritten. Reproduced by ingesting `data/generated` (the seed-42 demo) with the pre-fix `src` (`git archive` of `37b9bd4`, the commit before the fix): all 10 CSEs came out as "CSE-xx Operations / General Infrastructure / Medium / inhouse"; with the fix, "Northern Power Grid Ltd / power / large / inhouse" etc. Every entity therefore fell into one peer cohort. | **Code bug, fixed** in Phase 4 (`ingest/pipeline.py`: defaults first). Regression tests in `tests/test_entity_profile_ingest.py` fail without the fix. Found because the independent generator gives entities distinct sectors and sizes; the original generator's checks did not depend on cohort membership, and the primary and stress results were the same before and after the fix (21/21, 3/3). |
 | M13 | Canonical schema page | `docs/data_requirements.md` §1.1, §1.5: `soc_model` values `internal`/`hybrid`/`managed_mssp`; criticality 1-5; `declared_kpi(metric_name, declared_value)`; `external_report(report_id, case_id, regulatory_body)`; no `soc_provider`, `comment_len`, `detection_rule`, `remediation`, `sla_policy` | `satsa.models.canonical`: `inhouse`/`hybrid`/`mssp`; criticality 1-4; `declared_kpi(metric, value)`; `external_report(incident_id, reported_to)`; `soc_provider`, `closure.comment_len`, and the three tables exist and are read by rules | **Doc was wrong.** Corrected. Found by writing the independent generator from that page: CSVs built to the page did not load as documented. |
+| M14 | Deterministic output | DECISIONS.md ADR-001: analytics are "strictly deterministic", with "byte-identical reproducibility"; README: "deterministic analytical tool" | Findings, scores and counts were reproducible, but the **evidence records** of EG01, EG02, EG04, EG05, EG08, EG09, NS04 and NS05 were the first rows of a query with no (or no complete) ORDER BY, so they depended on the order rows happened to be stored in. That order changes on a re-ingest (Parquet merge with `unique()`). Reproduced: seed 42 ingested twice, then assessed, in two fresh stores gave different evidence alerts for CSE-03 EG01 (9 of the 10 differed) and therefore different review queues. | **Code fixed** in Phase 5: each of those queries now has a total order (`rules/execution_gaps.py`, `rules/negative_space.py`; EG09 lists the oldest stale case first, the rest by record id). No threshold, count or score changed. `tests/test_golden_findings.py::test_findings_do_not_depend_on_the_order_of_submitted_rows` (same submission, rows shuffled) fails without the fix. Found by the Phase 5 golden test, which failed against its own snapshot before any optimisation. |
+| M15 | Close-before-create DQ check | `docs/validation_summary.md`: alerts closed before they were created "are already reported by the `close_before_create` data-quality check"; `docs/architecture.md` listed the check among those ingest runs | `DQValidator.check_timestamp_logic` compares only values that are Python `datetime`s. Timestamps in a CSV or JSON submission arrive as text, so for those submissions the check never runs; it works for product exports through a mapping, whose timestamps are parsed. Reproduced on the pre-Phase 5 code: a CSV alert closed one day before it was created gave no `close_before_create` issue. EG01 and EG10 still exclude such alerts in SQL, so findings are not affected. | **Open item, not fixed.** Fixing it changes DQ output, so it is kept out of the Phase 5 performance change and raised for decision. `docs/architecture.md` now states the limit. |
 
 ## Process note: another session edited the same working tree
 
@@ -242,3 +244,92 @@ already implemented an unsigned, hand-copied checkpoint (`SQLiteStore.audit_head
   `tests/test_shadow_pilot.py`) use the working tree's `data/satsa.db`. A `satsa validate` run
   after the suite therefore reports their shadow workpaper in place of the stand-in one. The
   committed validation reports were not regenerated in this phase.
+
+### Phase 5: ingest performance
+
+**Golden test first.** `tests/test_golden_findings.py` ingests and assesses four scenarios:
+- the original generator (seed 42), ingested twice;
+- the independent generator (seed 7);
+- the Splunk and TheHive sample exports through their mappings.
+
+For each scenario it compares the outputs with `tests/golden/golden_findings.json`:
+- every canonical table (row count and SHA-256 of the sorted rows);
+- the DQ issues;
+- the findings, including a hash of their text and evidence;
+- the entity scores, the review queue and the systemic findings.
+
+**Finding before any change (M14).** The first snapshot did not match a second run of the
+unchanged code. The cause was that evidence samples depended on storage row order. This was
+fixed first, in the rules, and the snapshot was then taken on the code before any
+optimisation (SHA-256 `e470c0d9dcaa713f…`).
+
+That snapshot passes on both versions:
+- **The pre-optimisation source** (commit `b371788` plus the M14 fix, run with `PYTHONPATH`
+  pointing at a copy of it): 6 passed.
+- **The current code:** 6 passed.
+
+**Profile** (`uv run python scripts/profile_ingest.py --entities 10 --alerts 50000`, cProfile,
+121.8 s under the profiler; 58.4 s without it, 1,837 MiB peak):
+
+| Cost | Cumulative under cProfile |
+|---|---|
+| Row-wise column normalisation (`normalize_row_columns`, 2.17 million calls) | 54.8 s (45%) |
+| Row hygiene (`_apply_row_hygiene`; 1.47 million HMAC pseudonymisations) | 21.8 s (18%) |
+| Rebuilding canonical rows and frames from dicts | about 15 s |
+| `to_dicts` for chunks and per-entity DQ checks | 9.5 s |
+| Parquet write | 4.3 s |
+
+**Changes:**
+- `src/satsa/ingest/columnar.py`: a canonical CSV table is normalised column by column.
+  - It covers column aliases, header case and trimming (with Python's own whitespace set), the
+    default entity, rejection of rows without a valid entity, pseudonymisation, taxonomy
+    mapping and comment redaction.
+  - Per-value functions run once per distinct value.
+  - Where exact equivalence is not certain, it declines and the row path runs as before. This
+    covers mixed-type columns, two alias columns for one field, JSON, and product mappings.
+- `src/satsa/ingest/dq_checks.py` `FrameDQ`: the DQ checks on columns, with the same counts,
+  samples (in row order) and text as `DQValidator`. Non-text columns go through the
+  dict-based logic.
+- `src/satsa/ingest/pipeline.py`:
+  - Each entity's rows are found by position instead of copying every table per entity.
+  - Field coverage is counted for all columns of a table together, in 500,000-row slices.
+  - Each table's frame is released once written.
+  - The written tables are reloaded into DuckDB after all are written (new
+    `DuckDBStore.deferred_reload()`). A failed reload still counts as a failed store.
+- `scripts/profile_ingest.py`: new. `scripts/benchmark_scale.py` now labels sizes MiB, which
+  is what it measured all along.
+
+**Equivalence tests** (`tests/test_columnar_ingest.py`, 56 tests):
+- Messy submissions are ingested with the columnar path on and off. Every stored table, the
+  ingest result and every DQ issue must be identical, and the test asserts that the columnar
+  path really ran. The submissions mix:
+  - alias columns and odd headers;
+  - Python-only whitespace;
+  - raw comments with e-mail addresses and IPs;
+  - invalid and missing entity IDs, and a default entity.
+- `FrameDQ` is compared with `DQValidator` on 40 random frames and on non-text columns.
+- Column counts are compared with the per-column formula.
+- Two deliberately planted bugs were each caught:
+  1. a wrong default closer type;
+  2. using the regex engine's whitespace instead of Python's.
+
+**Results.** `python scripts/benchmark_scale.py --configs 10x50000,50x100000`, before and after,
+on the same machine and interpreter on 2026-10-01. Details are in `docs/benchmarks.md`.
+
+| Alerts | Ingest before | Ingest after | Peak before | Peak after |
+|---|---:|---:|---:|---:|
+| 500,000 | 55.1 s | 6.5 s (8.5x) | 1,855 MiB | 1,155 MiB |
+| 5,000,000 | 529.7 s | 54.2 s (9.8x) | 13,339 MiB | 5,716 MiB |
+
+**Targets:**
+- **At least 3x faster:** met.
+- **Under 6 GB at 5,000,000 alerts:** met, narrowly. 5,716 MiB is 5.99 GB. The peak comes
+  while the 938 MiB workflow-event CSV is read; none of the Polars readers tried (default,
+  low-memory, batched, streaming) was lower.
+
+**Not done:**
+- Assessment speed. It was not in scope, and its before and after figures differ by 7%.
+- The first web page after a run still reloads every table (about 20 s at 5,000,000 alerts).
+- README, `docs/infrastructure.md` and EVIDENCE.md still carry the 2026-09-30 figures,
+  labelled with that date. They are refreshed in Phase 8, as agreed.
+- M15 (close-before-create never runs for CSV/JSON timestamps) is recorded, not fixed.

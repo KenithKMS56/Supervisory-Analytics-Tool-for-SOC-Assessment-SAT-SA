@@ -2,6 +2,8 @@
 
 import os
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -223,8 +225,22 @@ class DuckDBStore:
         for stmt in ddl_statements:
             self.conn.execute(stmt)
 
+    @contextmanager
+    def deferred_reload(self) -> Iterator[None]:
+        """Within the block, write_partitioned_parquet does not reload the table into DuckDB.
+
+        For a caller writing several tables (ingest), which reloads them itself once all are
+        written, so a submission is not held as frames and as DuckDB tables at the same time.
+        """
+        self._defer_reload = True
+        try:
+            yield
+        finally:
+            self._defer_reload = False
+
     def write_partitioned_parquet(self, table_name: str, df: pl.DataFrame) -> None:
-        """Write DataFrame to Parquet partitioned by entity_id where applicable."""
+        """Write DataFrame to Parquet partitioned by entity_id where applicable, then reload it
+        into DuckDB (unless inside `deferred_reload`)."""
         if df.is_empty():
             return
 
@@ -272,7 +288,8 @@ class DuckDBStore:
                 df.write_parquet(file_path)
 
         # Refresh DuckDB in-memory table/view
-        self.load_table_from_parquet(table_name)
+        if not getattr(self, "_defer_reload", False):
+            self.load_table_from_parquet(table_name)
 
     def table_columns(self, table_name: str) -> list[str]:
         """Column names of a canonical table, in schema order (empty for an unknown table)."""

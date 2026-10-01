@@ -360,6 +360,7 @@ class NS04MissingRecords(BaseRule):
         LEFT JOIN case_alert_link l ON a.entity_id = l.entity_id AND a.alert_id = l.alert_id
         WHERE a.entity_id = ? AND a.disposition = 'true_positive' AND a.severity_final IN ('high', 'critical')
           AND l.case_id IS NULL
+        ORDER BY a.alert_id
         """
         df_tp = store.query(sql_tp, [entity_id])
         tp_without_case = df_tp.shape[0] if not df_tp.is_empty() else 0
@@ -437,6 +438,7 @@ class NS05RuleCoverageGaps(BaseRule):
         LEFT JOIN alert a ON r.entity_id = a.entity_id AND r.rule_id = a.rule_id
         WHERE r.entity_id = ? AND r.enabled = true
         GROUP BY r.rule_id
+        ORDER BY r.rule_id
         """
         df = store.query(sql, [entity_id])
         if df.is_empty():
