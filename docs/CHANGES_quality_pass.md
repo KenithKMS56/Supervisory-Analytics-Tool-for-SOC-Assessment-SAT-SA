@@ -24,6 +24,23 @@ Each documented behaviour below was checked against the code before anything was
 | M10 | Audit hash algorithm | README §10 and admin diagram: "SHA-256 tamper-evident log chain", "Chained SHA-256 prev_hash"; CLI reference: "verify the SHA-256 audit log hash chain" | New entries are SHA3-256; legacy SHA-256 entries still verify (`store/sqlite.py::compute_chain_hash`) | **Doc was stale.** Wording now says SHA3-256 with legacy SHA-256. |
 | M11 | Report file names vs Windows path limit | EVIDENCE.md: the suite had to be run "from a short path" | Reproduced: from a 181-character root, 4 PDF-route tests fail (`reports/SAT-SA_CSE_<entity>_Report_<full run id>.pdf.tmp` > 260 characters) and `test_bundle` fails (the offline bundle mirrors the source tree under `dist/satsa_offline_bundle/`) | **Code fixed for the reports** (`satsa/report/naming.py`; see Phase 1). The bundle depth is recorded as an open item. |
 
+## Process note: another session edited the same working tree
+
+While Phases 1 and 2 ran, at least one other Claude Code session worked in this checkout on a
+separate feature (an exploratory anomaly scan, control/process priorities, SQLite and REST
+ingest, and an ADR it numbered ADR-007). Its changes were left untouched and are **not** part of
+these commits. Consequences, stated plainly:
+
+- The Phase 1 commit first picked up one of its `src/satsa/api/routes.py` hunks (12 lines that
+  call functions it had not yet committed), written between this session's check and `git add`.
+  The commit was local and unpushed; it was **amended** so that it holds only Phase 1's changes.
+- Two Phase 1 test failures (`tests/test_config_drift.py::test_tuning_preview_shows_the_effect_and_persists_nothing`,
+  `tests/test_trends.py::test_seed_historical_periods_produces_real_distinct_runs`) were
+  off-by-one row counts in the shared `data/satsa.db`; both pass when rerun alone.
+- From Phase 2 on, each phase is verified on a **clean copy**: `git archive HEAD` plus exactly
+  the file contents being committed, with its own `data/` directory. The files are written to
+  the index from those contents, never with `git add` on the shared working tree.
+
 ## Phase log
 
 ### Phase 0: baseline
@@ -60,3 +77,53 @@ ruff and mypy clean. Matches EVIDENCE.md, so no pause.
 - **Docs corrected** for M2-M10: `docs/architecture.md` Sections 1-5 rewritten from the code;
   DECISIONS.md ADR-002; `docs/infrastructure.md` thread claim; README tree and hash wording.
 
+
+### Phase 2: honest performance claims
+
+Measured in this phase (2026-10-01):
+
+```bash
+uv run satsa benchmark      # scan: 7,570,338 rows/s at 1,000,000 rows, one thread;
+                            # demo assessment: 16,253 alerts in 2.038 s
+uv run satsa validate --output-md <scratch>.md    # lift: top 25 19.47x, top 50 11.98x, whole queue 5.19x
+```
+
+Code changes:
+
+- `satsa benchmark` (`bench/benchmark.py`): the scan query ran on DuckDB's default
+  multi-threaded connection, unlike SAT-SA's store (one thread), so its figure overstated how
+  the tool runs DuckDB. It is now pinned to one thread, labelled as one in-memory query, and
+  the command says scan figures are not assessment times.
+- `satsa benchmark` printed an **"Extrapolated 5M time"** (5,000,000 divided by the demo
+  run's throughput). Removed: the 5M figure is measured by `scripts/benchmark_scale.py`.
+
+**Claims removed or softened** (file: before -> after):
+
+| File | Before | After |
+|---|---|---|
+| README.md §4 | "Extreme Columnar Analytics Performance ... scan speeds exceeding **10.6 Million rows/second** ... multi-gigabyte submissions to be evaluated in seconds" | Measured 5M-alert ingest 603 s / 13.2 GB and assessment 310 s / 3.3 GB on the named laptop (recorded 2026-09-30); single-query scan 7.6M rows/s (one thread, 2026-10-01); "scan speed is not end-to-end time" |
+| README.md results table | "DuckDB Scan Throughput 10,623,549 rows/second ... target >= 1,000,000, exceeds target" | 7,570,338 rows/s, one in-memory query, one thread, not an assessment time; no self-set target |
+| README.md | "20 Production Rules" | "20 Detection Rules" |
+| README.md | "Method 1: One-Click Docker Deployment (Production & Demo -- Recommended)" | "(Demo; the image has not been built in this project's recorded evidence)" (EVIDENCE.md open item 7: Docker was never run) |
+| README.md | "air-gapped, fully deterministic analytical tool and sovereign identity management platform"; "engineered to meet strict regulatory and forensic standards"; "SOVEREIGN BACKEND"; "Sovereign Identity Control"; "Sovereign PBKDF2 identity store" | "offline, deterministic analytical tool with its own identity management"; "built around explainability, auditability and offline operation"; "LOCAL"; "Identity Control"; "Local PBKDF2" |
+| README.md | "100% Air-Gapped & Sovereign Data Security"; "irreversibly pseudonymised" | "Offline Operation & Data Minimisation"; pseudonymised with HMAC-SHA256 under a local salt, and anyone holding the salt can re-derive a known name's pseudonym |
+| docs/infrastructure.md §2.1 | 10,623,549 rows/s (multi-threaded) | re-measured on one thread, with the "not end-to-end" statement |
+| docs/infrastructure.md §2.2 | 0.686 s on an old 5,650-alert dataset | 2.038 s on the current 16,253-alert dataset, measured 2026-10-01 |
+| docs/infrastructure.md §3.1 | "partition pruning ... reducing I/O bandwidth by >85%"; "multi-threaded SIMD ... over 10.6 million rows/second" | removed (wrong for this code, M6 and M3); measured scale table |
+| docs/infrastructure.md §4 | unmeasured storage estimates; "ideal for self-contained air-gapped forensic laptops and low-profile appliances" | measured CSV and Parquet sizes only |
+| docs/infrastructure.md §1 | "Recommended Production (10 CSEs, 5M Alerts)" with 8 cores / 16 threads | "Suggested for about 5,000,000 alerts", RAM taken from the measured 13.2 GB peak, and a note that extra cores do not shorten the single-threaded assessment |
+| docs/demo_script.md | "about twenty-one times ... the whole queue about six times" (stale) | "about nineteen times ... about five times (19.47x and 5.19x, `satsa validate`, 2026-10-01)" |
+| docs/demo_script.md | "confirms the entire supervisory audit chain is intact and untampered" | says what the chain does and does not detect: "tamper-evident, not tamper-proof" |
+| docs/data_requirements.md | "SAT-SA's air-gapped guarantee" | "SAT-SA's offline design" |
+| UI: `runs_audit.html` | "Immutable chronological journal items" | "Hash-chained (tamper-evident) journal entries" |
+| UI: `dq_coverage.html` | "All uploaded SOC submission data strictly satisfies canonical schema and temporal constraints." | "The ingest data-quality checks found no issue in the uploaded submission data." |
+| `admin_overview.html` (comment) | "guarantee 100% sync" | "fallback in case WebSocket messages are missed" |
+
+Searched and left as they are, because they are accurate: "Disposition Extremes" (a rule
+name), "extreme outliers" in the statistics text, "Fully Deterministic" (no rule reads the
+clock or a random source; reproducibility is tested), "zero false positives" and "100%
+accurate" (no occurrence in the repository). The "Fully Offline / Air-Gapped Engine" footer on
+reports describes the design, which `tests/test_offline_hardening.py` exercises.
+
+Verification (clean copy, see the process note): full suite, `satsa validate`, `satsa
+validate-stress`, `ruff check .`, `mypy src`; results in the Phase 2 commit message.

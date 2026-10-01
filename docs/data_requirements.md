@@ -18,7 +18,7 @@ list (CSV/JSON/DB exports and APIs):
   **local** REST endpoint only. `endpoint_config["url"]` is validated against an allow-list of
   loopback hostnames (`127.0.0.1`, `localhost`, `::1`) and the call is refused with `ValueError`
   before any socket opens if it resolves to anything else -- this is what keeps the adapter
-  consistent with SAT-SA's air-gapped guarantee (`tests/test_offline.py`). In a real deployment,
+  consistent with SAT-SA's offline design (`tests/test_offline.py`). In a real deployment,
   `url` would point at an entity's own on-prem/local API reachable within the air-gapped network
   boundary (e.g. a self-hosted ticketing system's REST interface on the entity's internal LAN), never
   at the public internet. For tests and offline demos, `endpoint_config["fixture_path"]` reads a
