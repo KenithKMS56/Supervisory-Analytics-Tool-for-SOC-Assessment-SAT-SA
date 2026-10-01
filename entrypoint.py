@@ -164,4 +164,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Best-effort, loopback-only egress guard for this launcher process (its only connections
+    # are the loopback healthcheck); each portal process installs its own through its FastAPI
+    # lifespan. See satsa.netguard.
+    from satsa.netguard import install_egress_guard
+
+    install_egress_guard()
     main()
