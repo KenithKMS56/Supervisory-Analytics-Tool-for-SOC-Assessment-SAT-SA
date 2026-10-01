@@ -177,12 +177,21 @@ satsa audit verify --db-path data/satsa.db --chain admin   # Admin Portal chain
   entries, SHA-256 for legacy ones). If an entry in the chain was edited, inserted, deleted or
   reordered outside the application, the command fails and reports the first affected row.
 - **Limit:** removing the newest entries, or recomputing the entire chain, cannot be detected by
-  the chain alone (DECISIONS.md ADR-005). Record a checkpoint off-box at each examination and
-  compare against it later:
+  the chain alone (DECISIONS.md ADR-005). Record a **signed checkpoint** off-box at each
+  examination and verify against it later (DECISIONS.md ADR-008):
   ```bash
-  satsa audit head                      # note entries + head_hash on paper / a separate system
-  satsa audit verify --checkpoint-count <entries> --checkpoint-head <head_hash>
+  # once, on the examiner's own machine or removable media (never leave the private key on the host)
+  satsa audit keygen --out-dir E:/satsa-keys
+  # at each examination
+  satsa audit checkpoint --sign --key E:/satsa-keys/satsa_audit_ed25519.key --out E:/checkpoints/2026-10-01.json
+  # later, by anyone holding the public key
+  satsa audit verify --checkpoint E:/checkpoints/2026-10-01.json --pubkey satsa_audit_ed25519.pub
   ```
+  Verification checks the signature, then that the live chain matches or extends the
+  checkpoint. A key readable by other accounts is refused. Without a key pair, `satsa audit
+  head` prints the entry count and head hash to copy by hand, checked with
+  `satsa audit verify --checkpoint-count <entries> --checkpoint-head <head_hash>`. Either way
+  the trail is tamper-evident, not tamper-proof.
 
 ### Backup & Disaster Recovery
 To back up the complete supervisory state:

@@ -35,7 +35,7 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is bu
 2. **Offline Operation & Data Minimisation:**
    Binds to loopback (`127.0.0.1`) by default. No CDN dependencies or external script calls; Apache ECharts is vendored. SAT-SA makes no outbound network calls, and as **best-effort defence in depth** each portal installs an in-process egress guard (`satsa/netguard.py`) that refuses Python socket connections to anything but loopback. It does not cover native code that bypasses Python sockets and does not block DNS lookups; the host firewall and the air gap remain the real controls. Ingested analyst identities are pseudonymised with HMAC-SHA256 under a local secret salt (`.satsa_salt`; anyone holding the salt can re-derive a known name's pseudonym), and IP addresses, e-mail addresses and host names are masked by deterministic regexes.
 3. **Cryptographic Tamper-Evidence:**
-   Every batch upload, schema validation, assessment run, rule configuration change, administrative provisioning action, and human examiner disposition is recorded into append-only SQLite logs hash-chained (SHA3-256 for new entries; legacy SHA-256 entries still verify). Editing, inserting, deleting or reordering an entry in the middle of the chain breaks verification; removal of the newest entries or a full recomputation of the chain is only caught by comparing against a checkpoint recorded off-box with `satsa audit head` (see DECISIONS.md ADR-005).
+   Every batch upload, schema validation, assessment run, rule configuration change, administrative provisioning action, and human examiner disposition is recorded into append-only SQLite logs hash-chained (SHA3-256 for new entries; legacy SHA-256 entries still verify). Editing, inserting, deleting or reordering an entry in the middle of the chain breaks verification; removal of the newest entries or a full recomputation is only caught against an off-box checkpoint, signed with Ed25519 by `satsa audit checkpoint --sign` (DECISIONS.md ADR-005, ADR-008). Tamper-evident, not tamper-proof.
 4. **Columnar Analytics, Measured at Scale:**
    DuckDB over Parquet, no database server. On one 4-core / 8-thread laptop (AMD Ryzen 5 7235HS, 23.7 GB RAM) with uniform synthetic data, 5,000,000 alerts (21.4M rows) took **603 s to ingest** (13.2 GB peak memory) and **310 s to assess** (3.3 GB peak), recorded 2026-09-30 in [`docs/benchmarks.md`](docs/benchmarks.md). A single in-memory aggregation query is much faster than that (7.6M rows/s at 1M rows, `satsa benchmark`), but scan speed is not end-to-end time.
 5. **Cognitive Bias Mitigation (Blinded Review Studio):**
@@ -195,7 +195,7 @@ The **NCIIPC Administration Portal** (`http://localhost:8000`) is a dedicated su
 
 4. **Independent Administrative Audit Log (`/audit`)**:
    - Append-only log recording every administrative action (`USER_CREATED`, `ROLE_CHANGED`, `CSE_CHANGED`, `ACCOUNT_BLOCKED`, `PASSWORD_RESET`, `ORGANISATION_CREATED`, etc.).
-   - Hash-chained (`prev_hash`; SHA3-256 for new entries) and verifiable on demand via the UI; `satsa audit head` records an off-box checkpoint that also catches removal of the newest entries.
+   - Hash-chained (`prev_hash`; SHA3-256 for new entries) and verifiable on demand via the UI; a signed off-box checkpoint (`satsa audit checkpoint`) also catches removal of the newest entries.
 
 5. **Modern Government Aesthetic & Floating Navigation Bar**:
    - Orange accent palette (`#ea580c`), glassmorphism card surfaces, and 0xZenith national cyber defense branding.
@@ -416,7 +416,7 @@ Commands:
   validate        Run the detector-implementation correctness harness (primary dataset).
   validate-stress Run the harder stress-scenario validation (borderline/ambiguous/noisy).
   benchmark       Benchmark DuckDB columnar scan throughput and query latency.
-  audit verify    Verify the audit log hash chain (optionally against a checkpoint).
+  audit keygen / checkpoint / verify   Key pair; signed chain checkpoint; verify chain (+ checkpoint).
   offline-bundle  Package self-contained offline distribution archive.
   rules export    Export and sign versioned rule-pack archive (.tar.gz).
   rules import    Verify cryptographic signature and import rule-pack.
