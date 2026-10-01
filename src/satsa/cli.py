@@ -297,6 +297,28 @@ def _serving_config_or_exit(
     return config
 
 
+def _run_uvicorn_guarded(app_path: str, config, port: int) -> None:
+    """Run uvicorn with the best-effort, loopback-only egress guard installed for the whole
+    process lifetime (the app's lifespan also installs it; installs are reference-counted)."""
+    import uvicorn
+
+    from satsa.netguard import install_egress_guard, uninstall_egress_guard
+
+    guarded = install_egress_guard()
+    try:
+        uvicorn.run(
+            app_path,
+            host=config.host,
+            port=port,
+            log_level="info",
+            ssl_certfile=config.certfile,
+            ssl_keyfile=config.keyfile,
+        )
+    finally:
+        if guarded:
+            uninstall_egress_guard()
+
+
 @app.command("serve")
 def serve_cmd(
     host: str = typer.Option(
@@ -307,21 +329,12 @@ def serve_cmd(
     ssl_keyfile: str = typer.Option(None, "--ssl-keyfile", help="TLS private key (default: SATSA_TLS_KEY)"),
 ) -> None:
     """Launch local offline server-rendered UI and REST API."""
-    import uvicorn
-
     config = _serving_config_or_exit(host, ssl_certfile, ssl_keyfile)
     console.print(
         f"[bold green][+] Launching SAT-SA offline dashboard at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
     )
     console.print("[dim]Fully offline, air-gapped server. Press Ctrl+C to exit.[/dim]")
-    uvicorn.run(
-        "satsa.api:app",
-        host=config.host,
-        port=port,
-        log_level="info",
-        ssl_certfile=config.certfile,
-        ssl_keyfile=config.keyfile,
-    )
+    _run_uvicorn_guarded("satsa.api:app", config, port)
 
 
 @app.command("admin")
@@ -334,21 +347,12 @@ def admin_cmd(
     ssl_keyfile: str = typer.Option(None, "--ssl-keyfile", help="TLS private key (default: SATSA_TLS_KEY)"),
 ) -> None:
     """Launch NCIIPC Administration Portal control plane."""
-    import uvicorn
-
     config = _serving_config_or_exit(host, ssl_certfile, ssl_keyfile)
     console.print(
         f"[bold green][+] Launching NCIIPC Administration Portal at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
     )
     console.print("[dim]Administrative identity and control console. Press Ctrl+C to exit.[/dim]")
-    uvicorn.run(
-        "satsa.admin.app:app",
-        host=config.host,
-        port=port,
-        log_level="info",
-        ssl_certfile=config.certfile,
-        ssl_keyfile=config.keyfile,
-    )
+    _run_uvicorn_guarded("satsa.admin.app:app", config, port)
 
 
 @app.command("tls-cert")
@@ -422,9 +426,11 @@ def report_cmd(
 
     # Portfolio PDF
     if (entity == "all" or entity.lower() == "portfolio") and fmt in ("pdf", "all"):
+        from satsa.report.naming import portfolio_pdf_name
+
         run_id = rep_gen.resolve_run().run_id
         generated.append(
-            rep_gen.generate_portfolio_pdf(out_path / f"SAT-SA_Portfolio_Report_{run_id}.pdf")
+            rep_gen.generate_portfolio_pdf(out_path / portfolio_pdf_name(run_id))
         )
 
     # Entity-specific or all entities HTML & PDF

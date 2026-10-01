@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from satsa.admin.routes import AdminAuthRequired, AdminPasswordChangeRequired
 from satsa.admin.routes import router as admin_router
+from satsa.netguard import install_egress_guard, uninstall_egress_guard
 from satsa.store.sqlite import SQLiteStore
 
 _ADMIN_DIR = Path(__file__).resolve().parent
@@ -24,17 +25,23 @@ _STATIC_DIR = _ADMIN_DIR / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Initialize SQLite database connection, run seed migrations, and close on shutdown."""
-    db_path = "data/satsa.db"
-    store = SQLiteStore(db_path)
-    # Ensure default organisations, CSEs, and admin account are seeded
-    store.seed_default_organisations_and_cses()
-    store.seed_default_admin()
-    # A database seeded before first-login rotation was enforced is covered here.
-    store.flag_unrotated_default_accounts()
-    app.state.store = store
-    yield
-    store.close()
+    """Install the egress guard, open the SQLite database and run seed migrations; undo both
+    on shutdown."""
+    guarded = install_egress_guard()
+    try:
+        db_path = "data/satsa.db"
+        store = SQLiteStore(db_path)
+        # Ensure default organisations, CSEs, and admin account are seeded
+        store.seed_default_organisations_and_cses()
+        store.seed_default_admin()
+        # A database seeded before first-login rotation was enforced is covered here.
+        store.flag_unrotated_default_accounts()
+        app.state.store = store
+        yield
+        store.close()
+    finally:
+        if guarded:
+            uninstall_egress_guard()
 
 
 app = FastAPI(

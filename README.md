@@ -32,8 +32,8 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is en
 
 1. **Authoritative Identity & Governance Layer:**
    Centralized administrative control plane where users cannot self-register or select their own role, organisation, or scoped CSE. All identities are authoritatively provisioned by NCIIPC administrators before credentials are issued.
-2. **100% Air-Gapped & Sovereign Data Security:**
-   Binds strictly to local interfaces. Zero CDN dependencies, zero external script calls, and locally vendored Apache ECharts. Socket-level egress is blocked. Ingested analyst identities are irreversibly pseudonymised using HMAC-SHA256 (`.satsa_salt`), and IP addresses/PII are redacted using deterministic regex masks.
+2. **Offline Operation & Data Minimisation:**
+   Binds to loopback (`127.0.0.1`) by default. No CDN dependencies or external script calls; Apache ECharts is vendored. SAT-SA makes no outbound network calls, and as **best-effort defence in depth** each portal installs an in-process egress guard (`satsa/netguard.py`) that refuses Python socket connections to anything but loopback. It does not cover native code that bypasses Python sockets and does not block DNS lookups; the host firewall and the air gap remain the real controls. Ingested analyst identities are irreversibly pseudonymised using HMAC-SHA256 (`.satsa_salt`), and IP addresses/PII are redacted using deterministic regex masks.
 3. **Cryptographic Tamper-Evidence:**
    Every batch upload, schema validation, assessment run, rule configuration change, administrative provisioning action, and human examiner disposition is recorded into append-only SQLite logs hash-chained (SHA3-256 for new entries; legacy SHA-256 entries still verify). Editing, inserting, deleting or reordering an entry in the middle of the chain breaks verification; removal of the newest entries or a full recomputation of the chain is only caught by comparing against a checkpoint recorded off-box with `satsa audit head` (see DECISIONS.md ADR-005).
 4. **Extreme Columnar Analytics Performance:**
@@ -129,7 +129,7 @@ The application provides a fully server-rendered, responsive web interface:
 9. **Transparent Finding Card (`/finding/{finding_id}`)**:
    - Full explainability card displaying rule rationale, exact parameter values, benign explanations, suggested examiner interview questions, and evidentiary drill-down tables.
 10. **Audit Trail & Cryptographic Verification (`/audit`)**:
-    - Live cryptographic verification of the SHA-256 tamper-evident log chain.
+    - Live verification of the tamper-evident audit hash chain (SHA3-256; legacy SHA-256 entries still verify).
     - Run history, configuration hashes, record counts, and execution metrics.
 
 ---
@@ -173,7 +173,7 @@ The **NCIIPC Administration Portal** (`http://localhost:8000`) is a dedicated su
      ├── Users Table (PBKDF2-HMAC-SHA256, Scoped Org & CSE, Status: ACTIVE/BLOCKED)
      ├── Critical Sector Organisation Registry (Sector classification, Status)
      ├── Critical Sector Entity (CSE) Registry (Parent Org mapping)
-     ├── Administrative Cryptographic Audit Log (Chained SHA-256 prev_hash)
+     ├── Administrative Audit Log (hash-chained prev_hash, SHA3-256)
      └── Admin Activity Feed (Operator Session Monitor) & Remote Session Revocation
 ```
 
@@ -416,7 +416,7 @@ Commands:
   validate        Run the detector-implementation correctness harness (primary dataset).
   validate-stress Run the harder stress-scenario validation (borderline/ambiguous/noisy).
   benchmark       Benchmark DuckDB columnar scan throughput and query latency.
-  audit verify    Cryptographically verify the SHA-256 audit log hash chain.
+  audit verify    Verify the audit log hash chain (optionally against a checkpoint).
   offline-bundle  Package self-contained offline distribution archive.
   rules export    Export and sign versioned rule-pack archive (.tar.gz).
   rules import    Verify cryptographic signature and import rule-pack.
@@ -475,7 +475,7 @@ satsa/
 │   ├── api/routes.py            # SAT-SA Supervisory Tool (:8001) endpoints
 │   ├── auth/                    # Sovereign PBKDF2 identity store & session tokens
 │   ├── cli.py                   # Typer CLI application entry point
-│   ├── core/                    # Ingestion, validation, pseudonymisation, scoring
+│   ├── ingest/ scoring/ validate/ # Ingestion & pseudonymisation; scoring; validation harness
 │   ├── rules/                   # Deterministic DuckDB SQL rule definitions (EG/NS)
 │   ├── store/                   # DuckDB columnar engine & SQLite store (autocommit + WAL)
 │   └── ui/                      # Server-rendered Jinja2 templates & static assets

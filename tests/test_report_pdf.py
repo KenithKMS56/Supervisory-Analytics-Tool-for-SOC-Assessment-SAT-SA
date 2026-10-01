@@ -17,6 +17,12 @@ from reportlab.platypus import Flowable
 import satsa.api.routes as satsa_routes
 from satsa.api.routes import app as satsa_app
 from satsa.report.generator import ReportGenerator, ReportNotFoundError
+from satsa.report.naming import (
+    entity_pdf_name,
+    finding_pdf_name,
+    portfolio_pdf_name,
+    short_run_label,
+)
 from satsa.report.pdf_layout import RunMeta, build_pdf
 from satsa.report.plain_language import (
     HEADLINES,
@@ -312,7 +318,7 @@ def admin_client():
 def real_ids():
     s = SQLiteStore("data/satsa.db")
     row = s.conn.execute(
-        "SELECT finding_id, entity_id, run_id FROM findings ORDER BY rowid DESC LIMIT 1"
+        "SELECT finding_id, entity_id, rule_id, run_id FROM findings ORDER BY rowid DESC LIMIT 1"
     ).fetchone()
     s.close()
     return dict(row)
@@ -328,17 +334,19 @@ def test_pdf_routes_serve_named_pdfs(admin_client, real_ids):
     run_id = real_ids["run_id"]
     r = admin_client.get("/reports/portfolio/pdf", params={"run_id": run_id})
     assert r.status_code == 200 and r.content.startswith(b"%PDF")
-    assert f"SAT-SA_Portfolio_Report_{run_id}.pdf" in r.headers["content-disposition"]
+    assert portfolio_pdf_name(run_id) in r.headers["content-disposition"]
 
     eid = real_ids["entity_id"]
     r = admin_client.get(f"/reports/entity/{eid}/pdf", params={"run_id": run_id})
     assert r.status_code == 200 and r.content.startswith(b"%PDF")
-    assert f"SAT-SA_CSE_{eid}_Report_{run_id}.pdf" in r.headers["content-disposition"]
+    assert entity_pdf_name(eid, run_id) in r.headers["content-disposition"]
 
     fid = real_ids["finding_id"]
     r = admin_client.get(f"/reports/finding/{fid}/pdf")
     assert r.status_code == 200 and r.content.startswith(b"%PDF")
-    assert f"SAT-SA_Finding_{fid}.pdf" in r.headers["content-disposition"]
+    assert finding_pdf_name(fid, real_ids["rule_id"], real_ids["entity_id"]) in r.headers[
+        "content-disposition"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -402,7 +410,7 @@ def test_generation_failure_is_a_clean_500_without_partial_file(
     admin_client, real_ids, monkeypatch
 ):
     run_id = real_ids["run_id"]
-    target = Path("reports") / f"SAT-SA_Portfolio_Report_{run_id}.pdf"
+    target = Path("reports") / portfolio_pdf_name(run_id)
     target.unlink(missing_ok=True)
 
     def boom(*_args, **_kwargs):
@@ -415,3 +423,20 @@ def test_generation_failure_is_a_clean_500_without_partial_file(
     assert "renderer exploded" not in r.text
     assert not target.exists()
     assert not list(Path("reports").glob("*.tmp"))
+
+
+def test_report_file_names_are_short_and_readable():
+    """Windows cannot create a path over 260 characters: the names stay short and keep the
+    report kind, entity, rule and run date readable (docs/baseline_before.md Section 4)."""
+    run_id = "RUN-20261001092757137058-ea12a0fc"
+    finding_id = f"FND-EG10-CSE-02-{run_id}"
+    assert short_run_label(run_id) == "20261001-ea12a0fc"
+    assert portfolio_pdf_name(run_id) == "SATSA_Portfolio_20261001-ea12a0fc.pdf"
+    assert entity_pdf_name("CSE-03", run_id) == "SATSA_CSE-03_20261001-ea12a0fc.pdf"
+    name = finding_pdf_name(finding_id, "EG10", "CSE-02")
+    assert re.fullmatch(r"SATSA_Finding_EG10_CSE-02_[0-9a-f]{8}\.pdf", name)
+    assert name != finding_pdf_name("FND-EG10-CSE-02-RUN-20261002000000000000-00000000", "EG10", "CSE-02")
+    for n in (portfolio_pdf_name(run_id), entity_pdf_name("CSE-03", run_id), name):
+        assert len(n) <= 40 and run_id not in n
+    # An ID in another format still yields a short, path-safe name.
+    assert re.fullmatch(r"SATSA_Portfolio_[0-9a-f]{12}\.pdf", portfolio_pdf_name("RUN-custom"))

@@ -332,6 +332,11 @@ rules**. It is still synthetic data built by people who knew the thresholds.
 15. **Tests share one working database** and sign in with the seeded passphrases; the
     first-login flag is lifted for them in `tests/conftest.py`.
 16. **Nothing has been pushed.** The branch is local.
+17. **Offline bundle under a deep path (quality pass).** From a 181-character working directory,
+    `tests/test_bundle.py::test_offline_packager` fails on Windows: `satsa offline-bundle` copies
+    the source tree under `dist/satsa_offline_bundle/`, which pushes the deepest file past 260
+    characters. The four PDF-route tests that failed the same way are fixed (shorter report
+    names, `docs/CHANGES_quality_pass.md` Phase 1); this one is not.
 
 ## Suggested re-rating
 
