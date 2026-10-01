@@ -143,6 +143,43 @@
     </table>
   </div>
 </div>
+
+<div class="card" id="anomaly-leads">
+  <div class="card-title">
+    <span>
+      Exploratory Leads: Indicators No Rule Tests ({{ anomaly_leads|length }})
+      <span class="tooltip-hint">❓
+        <span class="tooltip-text">A fixed catalogue of about 40 operational rates is computed for every entity. A peer outlier is a rate at least 3.5 robust standard deviations from the entity's peer cohort; a time shift is a sustained change inside the entity's own period found by a CUSUM chart over its monthly values. Leads are not findings: they carry no severity, are not part of the risk index and do not enter the review queue. Every value behind them is stored with the run.</span>
+      </span>
+    </span>
+    <span style="font-size: 0.82rem; color: var(--text-secondary);">Not scored &bull; ask the entity what explains each one</span>
+  </div>
+  {% if anomaly_leads %}
+  <div class="table-responsive">
+    <table id="anomalyLeadsTable">
+      <thead>
+        <tr><th>Kind</th><th>Indicator</th><th>Domain</th><th>Entity value</th><th>Baseline</th><th>Strength</th><th>Related rule</th><th>Why it was flagged</th></tr>
+      </thead>
+      <tbody>
+        {% for a in anomaly_leads %}
+        <tr>
+          <td><span class="badge" style="background-color: var(--bg-hover);">{{ 'Peer outlier' if a.kind == 'peer_outlier' else 'Time shift' }}</span></td>
+          <td>{{ a.label }}</td>
+          <td>{{ a.domain }}</td>
+          <td><strong>{{ a.value_display }}</strong></td>
+          <td>{{ a.baseline_display }}{% if a.kind == 'peer_outlier' %} <span style="color: var(--text-muted);">(peer median, {{ a.n_peers }} peers)</span>{% else %} <span style="color: var(--text-muted);">(before {{ a.detail.shift_from }})</span>{% endif %}</td>
+          <td style="font-family: var(--font-mono);">{{ '%.1f' % (a.z|abs) }}{{ ' SD' if a.kind == 'peer_outlier' else ' CUSUM' }} {{ a.direction }}</td>
+          <td>{% if a.related_rule %}<code>{{ a.related_rule }}</code>{% else %}<span style="color: var(--text-muted);">none</span>{% endif %}</td>
+          <td style="font-size: 0.82rem; max-width: 420px; color: var(--text-secondary);">{{ a.rationale }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div style="padding: 1rem; color: var(--text-secondary); font-size: 0.9rem;">No rate at this entity stands out from its peers or shifted within the period.</div>
+  {% endif %}
+</div>
 {% endblock %}
 
 {% block scripts %}

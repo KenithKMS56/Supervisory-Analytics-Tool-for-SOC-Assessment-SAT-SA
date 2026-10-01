@@ -103,8 +103,18 @@ def ingest_cmd(
     entity: str = typer.Option(
         None, "--entity", "-e", help="Entity the files belong to (required with --source / --mapping)"
     ),
+    api_config: str = typer.Option(
+        None,
+        "--api-config",
+        help="YAML of local REST endpoints to fetch the submission from (instead of --data-dir)",
+    ),
 ) -> None:
-    """Ingest datasets, execute DQ checks, pseudonymise actors, redact PII, and store partitioned Parquet."""
+    """Ingest datasets, execute DQ checks, pseudonymise actors, redact PII, and store partitioned Parquet.
+
+    --data-dir reads CSV, JSON/NDJSON and SQLite database exports (.db/.sqlite/.sqlite3, one
+    table per canonical table). --api-config fetches the tables from local REST endpoints first.
+    """
+    import tempfile
     from pathlib import Path
 
     from satsa.ingest.mapper import MappingError, SourceMapping
@@ -131,14 +141,35 @@ def ingest_cmd(
             console.print(f"[bold red][!] {exc}[/bold red]")
             raise typer.Exit(code=2) from None
 
-    console.print(f"[bold blue]Starting ingestion from:[/bold blue] [cyan]{data_dir}[/cyan]")
+    staging = None
+    if api_config:
+        from satsa.ingest.adapters import stage_api_submission
+
+        staging = tempfile.TemporaryDirectory(prefix="satsa-api-")
+        try:
+            counts = stage_api_submission(api_config, staging.name)
+        except (OSError, ValueError, TypeError) as exc:
+            staging.cleanup()
+            console.print(f"[bold red][!] API submission could not be fetched: {exc}[/bold red]")
+            raise typer.Exit(code=2) from None
+        console.print(
+            "[bold blue]Fetched from local API:[/bold blue] "
+            + ", ".join(f"{t} ({n})" for t, n in sorted(counts.items()))
+        )
+        data_dir = staging.name
+
+    console.print(f"[bold blue]Starting ingestion from:[/bold blue] [cyan]{api_config or data_dir}[/cyan]")
     duckdb_store = DuckDBStore(parquet_dir)
     sqlite_store = SQLiteStore(db_path)
     pipeline = IngestionPipeline(duckdb_store, sqlite_store)
 
-    result = pipeline.ingest_directory(Path(data_dir), default_entity_id=entity, mapping=mapping)
-    duckdb_store.close()
-    sqlite_store.close()
+    try:
+        result = pipeline.ingest_directory(Path(data_dir), default_entity_id=entity, mapping=mapping)
+    finally:
+        duckdb_store.close()
+        sqlite_store.close()
+        if staging is not None:
+            staging.cleanup()
 
     if result.get("status") == "partial":
         console.print(
@@ -210,6 +241,9 @@ def run_cmd(
         console.print(f"  * Config Hash: [cyan]{res.get('config_hash')}[/cyan]")
         console.print(f"  * Total Findings Flagged: [yellow]{res.get('findings_count')}[/yellow]")
         console.print(f"  * Review Queue Items Generated: [cyan]{res.get('queue_count')}[/cyan]")
+        console.print(
+            f"  * Exploratory Leads (not scored): [cyan]{res.get('anomaly_signals_count', 0)}[/cyan]"
+        )
         console.print("\n[bold]Entity Supervisory Risk Summary:[/bold]")
         for ent, data in res.get("entity_scores", {}).items():
             color = (

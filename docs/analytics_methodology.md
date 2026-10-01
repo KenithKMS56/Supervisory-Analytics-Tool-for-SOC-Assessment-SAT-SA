@@ -48,13 +48,14 @@ and the rest to "all other entities"; genuine sector cohorts need a larger portf
 
 ## 2. Statistical Process Control (SPC): CUSUM & EWMA
 
-To detect abrupt operational regime shifts, weekend/holiday volume collapses, or sudden drop-offs in logging velocity, SAT-SA uses deterministic SPC formulations.
+`satsa.peers.spc` implements both charts. **CUSUM is used** by the exploratory anomaly scan's time-shift test (Section 3B); **EWMA is implemented and unit-tested but not used** by any rule, score or scan. (Correction: this paragraph used to say SAT-SA uses SPC to detect regime shifts when neither chart was called anywhere.)
 
 ### 2.1 Tabular Cumulative Sum (CUSUM)
 Given daily metric sequence $y_t$ with baseline mean $\mu_0$ and standard deviation $\sigma$:
 $$C_t^+ = \max(0, C_{t-1}^+ + (y_t - \mu_0 - k\sigma))$$
 $$C_t^- = \max(0, C_{t-1}^- - (y_t - \mu_0 + k\sigma))$$
 - Default allowance $k = 0.5$, decision boundary $h = 4.0\sigma$. A shift is flagged when $C_t^+ > h$ or $C_t^- > h$.
+- As implemented, $y_t$ is standardised robustly: $z_t = (y_t - \text{median}) / \max(1.4826 \cdot \text{MAD}, s_{\min})$, with the median and MAD taken from a **reference period** when one is given (phase I / phase II), so a shift that lasts half the series is not absorbed into its own baseline. The floor $s_{\min}$ stops a near-constant reference from making a trivial change look infinite.
 
 ### 2.2 Exponentially Weighted Moving Average (EWMA)
 $$Z_t = \lambda y_t + (1 - \lambda) Z_{t-1}$$
@@ -225,6 +226,22 @@ runs once per assessment, AFTER all per-entity rules, and looks ACROSS the whole
 
 ---
 
+## 3B. Exploratory Anomaly Scan (indicators no rule tests)
+
+`satsa.peers.anomaly_scan.AnomalyScanner` runs once per assessment, after the rules. Its output is a **lead**, not a finding: no severity, no score, not part of the risk index or the review queue (DECISIONS.md ADR-007). Configuration: `config/anomaly.yaml`; its hash is recorded in the run manifest.
+
+**Metric catalogue.** About 40 rates per entity, fixed in code (`METRICS`) and spread across all eight capability domains: disposition, severity and category mix; severity downgrades during triage; automation share; night and weekend share; median time to acknowledge and close; SLA breach share; workflow events per alert; share closed with no investigate step; distinct closure comments per closure; escalations per true positive; Tier-2 acknowledgement time; true positives linked to a case; critical case closure time; the busiest analyst's share of closures; analysts per 1,000 closures; alerts per monitored asset; monitored assets that ever alerted; critical assets not monitored; log coverage of monitored asset-days; remediation tickets per 1,000 alerts; detection rules mapped to MITRE; disabled detection rules; playbook use. Each metric names its population (the records it was computed on) and the tables it reads; a metric whose table the entity never submitted is not computed for it, as with the rules.
+
+**Peer outlier.** For entity $e$ and metric $m$ with value $x$ (log10$(x+1)$ for durations and per-unit rates), against the values $P$ of the entity's peer cohort (Section 1.4, the entity excluded):
+$$z = \frac{x - \text{median}(P)}{\max(1.4826 \cdot \text{MAD}(P),\ s_m)}$$
+flagged when $|z| \geq 3.5$, with at least 3 peer values and at least 30 records behind each value. $s_m$ is the metric's spread floor (5 percentage points for most shares; 0.15 on log10, about a 1.4x ratio, for durations).
+
+**Time shift.** For five monthly series per entity (alerts per covered day, true-positive share, automation share, night share, median high/critical close time), the first three months are the reference and a two-sided CUSUM ($k = 0.5$, $h = 4$, Section 2.1) tests each later month against them. The lead reports the month the shift began (the chart last left zero), the alarm month, and the medians before and after. Alerts per day divides by the days of each month the entity's submission covers, so a part month at either end is not read as a drop. A month with fewer than 20 alerts is left out of the share and timing series.
+
+**Limits.** At most 10 leads per entity are kept (the most extreme; the rest are counted). A change that starts inside the reference months is not seen by the time-shift test. On the synthetic dataset the scan raises leads only on entities with injected defects, and none on the three clean ones (`tests/test_anomaly_scan.py`); that shows restraint on clean synthetic data, not a false-positive rate on real submissions, which only the shadow pilot (`docs/shadow_pilot_runbook.md`) can measure.
+
+---
+
 ## 4. Scoring, Aggregation & Prioritization Mathematics
 
 ### 4.1 Rule Score (0–100)
@@ -251,3 +268,10 @@ Per entity, up to `queue_size_per_entity` (30) items (`review_queue` in `config/
 2. **Random controls:** the remainder of the size (9 of 30), sampled from the entity's other alerts and stratified by severity, with a fixed seed.
 
 The 70/30 split is an upper bound on cited records, not the actual mix: rules cite only a few example records, and entity-level findings cite none, so an entity with few cited records gets a shorter, mostly random queue (a clean entity gets only the 9 controls). In the synthetic run the queue is 57 cited records and 90 random controls.
+
+### 4.5 Controls and Processes to Prioritise
+`satsa.scoring.control_priorities` ranks the two remaining things the problem statement asks to prioritise, from the stored results of a run (nothing is recomputed, so the ranking always agrees with the findings shown):
+- **Controls** (one per rule): by number of entities failing it, then worst severity, then summed finding score. The number of entities for which the control could not be assessed (table never submitted) is shown beside it.
+- **Processes** (the eight capability domains): by number of entities whose domain score is 50 or more, then the portfolio median domain score, then the worst score. The leads (Section 3B) in each domain are counted beside it.
+
+Shown on the portfolio page ("Controls & Processes to Prioritise") and served by `GET /api/v1/priorities`.

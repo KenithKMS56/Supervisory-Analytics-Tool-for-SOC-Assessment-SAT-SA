@@ -71,6 +71,8 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("GET", "/api/v1/entities"): (SUP_READ, False),
     ("GET", "/api/v1/findings"): (SUP_READ, False),
     ("GET", "/api/v1/queue"): (SUP_READ, False),
+    ("GET", "/api/v1/anomalies"): (SUP_READ, False),
+    ("GET", "/api/v1/priorities"): (SUP_READ, False),
     ("GET", "/api/v1/audit/verify"): (ANALYST, False),
     ("GET", "/api/v1/export/queue.csv"): (ANALYST, False),
     ("GET", "/reports/portfolio/html"): (SUP_READ, False),

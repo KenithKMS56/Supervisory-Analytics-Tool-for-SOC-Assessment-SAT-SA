@@ -86,6 +86,28 @@ third-party SOC provider all trigger the identical rule in the same run, that is
 "systemic gap, possible shared-vendor issue" finding on the portfolio dashboard, separate from any
 individual entity's finding cards. See [`docs/analytics_methodology.md`](docs/analytics_methodology.md) Section 3A.
 
+### Exploratory Leads: indicators no rule tests
+The rules find what someone anticipated. To surface what nobody wrote a rule for,
+`satsa.peers.anomaly_scan` computes about 40 operational rates per entity, covering all eight
+capability domains (severity downgrades during triage, the busiest analyst's share of closures,
+critical assets left unmonitored, detection rules with no MITRE mapping, and more). It flags:
+
+- **Peer outliers:** a rate at least 3.5 robust standard deviations from the entity's peer cohort.
+- **Time shifts:** a sustained change inside the period, found by a CUSUM chart that tests each
+  month against the entity's own first three months.
+
+Each lead states the entity's value, the baseline, how far apart they are, and which rule (if any)
+tests something related. Leads are shown on the entity profile (*Exploratory Leads*), counted on
+the portfolio and served by `GET /api/v1/anomalies`. They are **not scored**: no severity, no effect
+on the risk index or the review queue, because unlike the rules they have not been validated
+against a known defect (DECISIONS.md ADR-007). On the synthetic dataset the scan raises leads only
+on entities with injected defects and none on the three clean ones. Thresholds: `config/anomaly.yaml`.
+
+### Controls & Processes to Prioritise
+Besides ranking entities and sampling alerts, the portfolio page ranks **controls** (each rule, by
+how many entities failed it, then severity) and **processes** (the eight capability domains, by how
+many entities score 50 or more), with the entities behind each. Also `GET /api/v1/priorities`.
+
 ---
 
 ## Interactive Dashboard Views
@@ -127,7 +149,7 @@ The application provides a fully server-rendered, responsive web interface:
    - Radar capability chart contrasting the entity against the national peer median.
    - Self-declared vs. empirically computed KPI reconciliation tables.
 9. **Transparent Finding Card (`/finding/{finding_id}`)**:
-   - Full explainability card displaying rule rationale, exact parameter values, benign explanations, suggested examiner interview questions, and evidentiary drill-down tables.
+   - Full explainability card displaying rule rationale, exact parameter values, benign explanations, a suggested examiner check (what to verify or request from the entity), and evidentiary drill-down tables.
 10. **Audit Trail & Cryptographic Verification (`/audit`)**:
     - Live verification of the tamper-evident audit hash chain (SHA3-256; legacy SHA-256 entries still verify).
     - Run history, configuration hashes, record counts, and execution metrics.
@@ -405,7 +427,7 @@ Usage: satsa [OPTIONS] COMMAND [ARGS]...
 
 Commands:
   generate-data   Generate a synthetic periodic SOC submission with ground-truth defects.
-  ingest          Ingest CSVs, apply HMAC masking, and build Parquet stores
+  ingest          Ingest CSV/JSON/SQLite exports (or --api-config local APIs), apply HMAC masking, build Parquet
                   (--source splunk|servicenow|thehive --entity <id> for a product export).
   run             Execute the supervisory assessment across all entities.
   seed-history    Seed genuine multi-period historical runs for the trend chart.

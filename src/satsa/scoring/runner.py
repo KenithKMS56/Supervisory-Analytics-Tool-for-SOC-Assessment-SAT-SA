@@ -16,6 +16,7 @@ from satsa.models.outputs import (
     ReviewQueueItem,
     Run,
 )
+from satsa.peers.anomaly_scan import AnomalyScanner
 from satsa.peers.grouping import PeerResolver
 from satsa.rules.base import data_reference_date
 from satsa.rules.registry import RuleRegistry, rule_tables
@@ -38,6 +39,7 @@ class AssessmentRunner:
         scoring_config_path: Path | str = "config/scoring.yaml",
         peers_config_path: Path | str = "config/peers.yaml",
         systemic_config_path: Path | str = "config/systemic.yaml",
+        anomaly_config_path: Path | str = "config/anomaly.yaml",
     ):
         self.duckdb_store = duckdb_store
         self.sqlite_store = sqlite_store
@@ -51,6 +53,7 @@ class AssessmentRunner:
         )
         self.queue_size_per_entity = int(queue_cfg.get("queue_size_per_entity", 30))
         self.systemic_detector = SystemicCorrelationDetector(systemic_config_path)
+        self.anomaly_scanner = AnomalyScanner(anomaly_config_path)
 
     def _report_empty_dependencies(
         self, entity_ids: list[str], submitted: dict[str, set[str]], record: bool = True
@@ -198,9 +201,10 @@ class AssessmentRunner:
         all_entity_scores: list[EntityScore] = []
         all_queue_items: list[ReviewQueueItem] = []
 
+        submitted = self.sqlite_store.get_submitted_tables()
         not_assessed = self._report_empty_dependencies(
             [e.entity_id for e in entities],
-            self.sqlite_store.get_submitted_tables(),
+            submitted,
             record=record_data_gaps and not dry_run,
         )
 
@@ -256,6 +260,7 @@ class AssessmentRunner:
             "entities_skipped_invalid_id": skipped_entity_ids,
             "total_findings": len(all_findings),
             "total_queue_items": len(all_queue_items),
+            "anomaly_config_hash": self.anomaly_scanner.config_hash,
         }
         run_obj = Run(
             run_id=run_id,
@@ -271,6 +276,12 @@ class AssessmentRunner:
         # findings just computed, not within any single entity's data.
         systemic_findings = self.systemic_detector.evaluate(entities, all_findings, run_id)
 
+        # Exploratory scan for indicators no rule tests: leads for the examiner, kept out of
+        # the scores and the queue (satsa.peers.anomaly_scan).
+        anomaly = self.anomaly_scanner.scan(run_id, entities, self.duckdb_store, self.peer_resolver, submitted)
+        manifest_dict["anomaly_signals"] = len(anomaly["signals"])
+        run_obj.manifest_json = json.dumps(manifest_dict)
+
         result: dict[str, Any] = {
             "status": "success",
             "run_id": run_id,
@@ -281,6 +292,7 @@ class AssessmentRunner:
             "findings_count": len(all_findings),
             "queue_count": len(all_queue_items),
             "systemic_findings_count": len(systemic_findings),
+            "anomaly_signals_count": len(anomaly["signals"]),
             "entity_scores": {
                 es.entity_id: {"risk_index": es.risk_index, "risk_band": es.risk_band}
                 for es in all_entity_scores
@@ -301,6 +313,8 @@ class AssessmentRunner:
         self.sqlite_store.save_review_queue(all_queue_items)
         if systemic_findings:
             self.sqlite_store.save_systemic_findings(systemic_findings)
+        self.sqlite_store.save_anomaly_signals(anomaly["signals"])
+        self.sqlite_store.save_metric_values(run_id, anomaly["metric_values"])
 
         # Append to Audit Log with hash chaining
         self.sqlite_store.append_audit(
@@ -313,6 +327,8 @@ class AssessmentRunner:
                 "findings_count": len(all_findings),
                 "entities_count": len(entities),
                 "systemic_findings_count": len(systemic_findings),
+                "anomaly_signals_count": len(anomaly["signals"]),
+                "anomaly_config_hash": self.anomaly_scanner.config_hash,
             },
         )
 
