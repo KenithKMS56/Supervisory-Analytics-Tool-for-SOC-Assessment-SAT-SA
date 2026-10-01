@@ -175,6 +175,12 @@ already implemented an unsigned, hand-copied checkpoint (`SQLiteStore.audit_head
 - New dependency `cryptography` (50.0.2, with `cffi`, `pycparser`): justified in ADR-008; prebuilt
   wheels for Windows and Linux, no network use at run time.
 
-**Not done:** an ML-DSA signer (only the interface and the reserved names); encrypting the
-private key with a passphrase (it is protected by file permissions and by being kept off-box);
-any change to the web UI's audit page, which still verifies the chain alone.
+**Not done, by decision** (each recorded in ADR-008):
+- An ML-DSA signer: only the interface and the reserved names, as the Phase 3 scope said. It
+  needs no new dependency: the pinned `cryptography` 50.0.2 already provides ML-DSA keys.
+  (Correction: the first version of this commit said an optional dependency would be needed;
+  checking the installed library showed otherwise.)
+- Checkpoint verification in the web app: deliberately CLI-only, because a page served by the
+  host being checked could be made to report anything; the examiner verifies on their own machine.
+- A passphrase on the private key: possible hardening; the key is protected by owner-only
+  permissions and by being kept off the host.

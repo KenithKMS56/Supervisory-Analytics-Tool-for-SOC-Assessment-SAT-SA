@@ -8,8 +8,9 @@ without touching the checkpoint format or the CLI:
   network).
 * ``ml-dsa-44`` / ``ml-dsa-65`` / ``ml-dsa-87`` -- **reserved** names for a post-quantum signer
   (FIPS 204). Not implemented: asking for one raises `AlgorithmUnavailableError`. Adding it
-  means one `SignatureBackend` subclass registered in `_BACKENDS`, behind an optional
-  dependency so the default install stays as it is.
+  means one `SignatureBackend` subclass registered in `_BACKENDS`; the `cryptography` version
+  this project pins (50.0.2) already provides ML-DSA keys
+  (`cryptography.hazmat.primitives.asymmetric.mldsa`), so no new dependency is needed.
 * Any other name raises `UnknownAlgorithmError`.
 """
 
@@ -150,7 +151,7 @@ def get_backend(algorithm: str) -> SignatureBackend:
     if name in RESERVED_ALGORITHMS:
         raise AlgorithmUnavailableError(
             f"{name!r} is reserved for a post-quantum (ML-DSA) signer, which is not implemented "
-            f"in this version and needs an optional dependency. Available: {available_algorithms()}."
+            f"in this version. Available: {available_algorithms()}."
         )
     raise UnknownAlgorithmError(
         f"unknown signature algorithm {algorithm!r}; available: {available_algorithms()}"
