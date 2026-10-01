@@ -216,6 +216,33 @@ class SQLiteStore:
                 )
                 """
             )
+            # Exploratory anomaly scan (satsa.peers.anomaly_scan): leads, kept apart from findings.
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS anomaly_signals (
+                    signal_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    metric TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    value REAL NOT NULL,
+                    baseline REAL NOT NULL,
+                    z REAL NOT NULL,
+                    direction TEXT NOT NULL,
+                    n INTEGER NOT NULL,
+                    rationale TEXT NOT NULL,
+                    related_rule TEXT,
+                    cohort TEXT,
+                    n_peers INTEGER NOT NULL DEFAULT 0,
+                    detail_json TEXT NOT NULL
+                )
+                """
+            )
+            self.conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_anomaly_signals_run_entity ON anomaly_signals (run_id, entity_id)"
+            )
         if "identities" in tables:
             self._migrate_supervisor_to_analyst()
 
@@ -972,6 +999,47 @@ class SQLiteStore:
         for r in rows:
             r["entity_ids"] = json.loads(r.pop("entity_ids_json"))
         return rows
+
+    # --- Exploratory anomaly signals and the metric values behind them ---
+
+    def save_anomaly_signals(self, signals: list[dict[str, Any]]) -> None:
+        with self.conn:
+            self.conn.executemany(
+                """
+                INSERT OR REPLACE INTO anomaly_signals (
+                    signal_id, run_id, entity_id, kind, metric, label, domain, value, baseline, z,
+                    direction, n, rationale, related_rule, cohort, n_peers, detail_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        s["signal_id"], s["run_id"], s["entity_id"], s["kind"], s["metric"], s["label"],
+                        s["domain"], s["value"], s["baseline"], s["z"], s["direction"], s["n"],
+                        s["rationale"], s.get("related_rule"), s.get("cohort"), s.get("n_peers", 0),
+                        json.dumps(s.get("detail", {}), sort_keys=True),
+                    )
+                    for s in signals
+                ],
+            )
+
+    def get_anomaly_signals(self, run_id: str, entity_id: str | None = None) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM anomaly_signals WHERE run_id = ?"
+        params: list[Any] = [run_id]
+        if entity_id is not None:
+            sql += " AND entity_id = ?"
+            params.append(entity_id)
+        rows = [dict(r) for r in self.conn.execute(sql + " ORDER BY entity_id, abs(z) DESC, metric", params)]
+        for r in rows:
+            r["detail"] = json.loads(r.pop("detail_json") or "{}")
+        return rows
+
+    def save_metric_values(self, run_id: str, rows: list[dict[str, Any]]) -> None:
+        with self.conn:
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO metric_values (run_id, entity_id, period, metric, value, n) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(run_id, r["entity_id"], r["period"], r["metric"], r["value"], r["n"]) for r in rows],
+            )
 
     # --- Persistence Helpers ---
 
