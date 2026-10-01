@@ -422,9 +422,9 @@ def render(results: list[dict], specs: dict[str, str], command: str) -> str:
     for r in results:
         ingest, assess = r.get("ingest"), r.get("assess")
         lines.append(
-            f"| {r['entities']} x {r['alerts_per_entity']:,} | {r['alerts']:,} | {r['rows']:,} | {r['csv_mb']:,.0f} MB | "
-            f"{r['parquet_mb']:,.0f} MB | {_cell(ingest, 'seconds', ',.1f')} s | {_cell(ingest, 'peak_mb', ',.0f')} MB | "
-            f"{_cell(assess, 'seconds', ',.1f')} s | {_cell(assess, 'peak_mb', ',.0f')} MB | {_cell(assess, 'findings', ',d')} |"
+            f"| {r['entities']} x {r['alerts_per_entity']:,} | {r['alerts']:,} | {r['rows']:,} | {r['csv_mb']:,.0f} MiB | "
+            f"{r['parquet_mb']:,.0f} MiB | {_cell(ingest, 'seconds', ',.1f')} s | {_cell(ingest, 'peak_mb', ',.0f')} MiB | "
+            f"{_cell(assess, 'seconds', ',.1f')} s | {_cell(assess, 'peak_mb', ',.0f')} MiB | {_cell(assess, 'findings', ',d')} |"
         )
     lines += [
         "",
@@ -447,14 +447,14 @@ def render(results: list[dict], specs: dict[str, str], command: str) -> str:
             lines.append(
                 f"| {label if i == 0 else ''} | {format(pages['reload_seconds'], ',.2f') + ' s' if i == 0 else ''} | `{page}` | "
                 f"{t['first'] * 1000:,.0f} ms | {t['repeat_median'] * 1000:,.0f} ms | "
-                f"{format(pages['peak_mb'], ',.0f') + ' MB' if i == 0 else ''} |"
+                f"{format(pages['peak_mb'], ',.0f') + ' MiB' if i == 0 else ''} |"
             )
         lines.append(
             f"| | | *{pages['requests']} requests caused {pages['table_loads']} table load(s)* | | | |"
         )
     failures = [
         f"- **{r['entities']} x {r['alerts_per_entity']:,}, {stage}:** {r[stage]['error']} "
-        f"(after {r[stage].get('wall_seconds', 0):,.0f} s, peak {r[stage].get('peak_mb', 0):,.0f} MB)"
+        f"(after {r[stage].get('wall_seconds', 0):,.0f} s, peak {r[stage].get('peak_mb', 0):,.0f} MiB)"
         for r in results
         for stage in ("ingest", "assess", "pages")
         if stage in r and not r[stage].get("ok")

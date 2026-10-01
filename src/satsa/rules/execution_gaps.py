@@ -88,7 +88,8 @@ class EG01FastClosure(BaseRule):
               AND a.closed_at >= a.created_at
             GROUP BY a.alert_id, a.severity_final, a.closed_by, a.closed_at, a.created_at
         )
-        SELECT * FROM alt_events
+        -- Ordered so the evidence sample does not depend on how rows happen to be stored.
+        SELECT * FROM alt_events ORDER BY alert_id
         """
         df = store.query(target_sql, [entity_id])
         if df.is_empty():
@@ -181,7 +182,8 @@ class EG02AckWithoutInvestigation(BaseRule):
             WHERE a.entity_id = ? AND a.closed_by_type = 'human' AND a.closed_at IS NOT NULL
             GROUP BY a.alert_id, c.comment_len
         )
-        SELECT * FROM alert_summary
+        -- Ordered so the evidence sample does not depend on how rows happen to be stored.
+        SELECT * FROM alert_summary ORDER BY alert_id, comment_len
         """
         df = store.query(sql, [entity_id])
         if df.is_empty():
@@ -340,7 +342,7 @@ class EG04TemplateDrivenInvestigations(BaseRule):
         WHERE a.entity_id = ? AND a.closed_by_type = 'human' AND a.closed_at IS NOT NULL
         GROUP BY c.comment_norm_hash
         HAVING count(*) >= ?
-        ORDER BY repeats DESC
+        ORDER BY repeats DESC, sample_alert, c.comment_norm_hash
         """
         df = store.query(sql, [entity_id, min_hash_group_size])
         if df.is_empty():
@@ -452,7 +454,7 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
         FROM pairs p
         LEFT JOIN remediated r ON p.asset_id = r.linked_asset_id AND p.rule_id = r.linked_rule_id
         WHERE r.linked_asset_id IS NULL
-        ORDER BY p.pair_count DESC
+        ORDER BY p.pair_count DESC, p.asset_id, p.rule_id
         """
         df = store.query(sql, [entity_id, effective_min_repeats, entity_id])
         if df.is_empty():
@@ -696,6 +698,7 @@ class EG08EscalationWithoutFollowThrough(BaseRule):
         SELECT esc_id, ref_id
         FROM escalation
         WHERE entity_id = ? AND acknowledged_at IS NULL
+        ORDER BY esc_id
         """
         df = store.query(sql, [entity_id])
         if df.is_empty():
@@ -772,6 +775,7 @@ class EG09BacklogAndAging(BaseRule):
         FROM "case"
         WHERE entity_id = ? AND status = 'open'
           AND epoch(CAST(? AS TIMESTAMP)) - epoch(opened_at) > ? * 86400
+        ORDER BY opened_at, case_id
         """
         df = store.query(sql, [entity_id, as_of, stale_case_days])
         if df.is_empty():
