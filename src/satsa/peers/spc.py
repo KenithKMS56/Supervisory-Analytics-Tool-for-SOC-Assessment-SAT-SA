@@ -10,23 +10,40 @@ class SPCDetector:
 
     @staticmethod
     def cusum(
-        series: Sequence[float], slack_k: float = 0.5, threshold_h: float = 4.0
+        series: Sequence[float],
+        slack_k: float = 0.5,
+        threshold_h: float = 4.0,
+        min_scale: float = 0.0,
+        reference: Sequence[float] | None = None,
     ) -> tuple[list[float], list[float], list[int]]:
         """
         Two-sided tabular CUSUM control chart on standardized values.
         Returns (s_high, s_low, shift_indices).
+
+        Without `reference` the centre and spread come from `series` itself (at least 5
+        values). With `reference` (an in-control period, "phase I") they come from those
+        values instead and every value of `series` is tested against them, so a shift that
+        lasts half the series is not absorbed into its own baseline.
+
+        With `min_scale` > 0 each value is standardised as (x - median) / max(1.4826 * MAD,
+        min_scale), so values that are nearly identical cannot turn a trivial difference
+        into an infinite score. With the default 0 the scale is the MAD alone.
         """
-        if len(series) < 5:
+        base = list(reference) if reference is not None else list(series)
+        if not series or not base or (reference is None and len(series) < 5):
             return [], [], []
 
-        med = RobustStats.median(series)
-        mad = RobustStats.mad(series)
+        med = RobustStats.median(base)
+        mad = RobustStats.mad(base)
         s_high: list[float] = [0.0]
         s_low: list[float] = [0.0]
         alarms: list[int] = []
 
         for idx, val in enumerate(series):
-            z = RobustStats.robust_z_score(val, median=med, mad=mad)
+            if min_scale > 0:
+                z = (val - med) / max(1.4826 * mad, min_scale)
+            else:
+                z = RobustStats.robust_z_score(val, median=med, mad=mad)
             sh = max(0.0, s_high[-1] + z - slack_k)
             sl = max(0.0, s_low[-1] - z - slack_k)
             s_high.append(sh)

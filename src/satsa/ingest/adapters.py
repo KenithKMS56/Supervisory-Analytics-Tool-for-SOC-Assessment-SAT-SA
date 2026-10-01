@@ -59,6 +59,22 @@ class SourceAdapter:
         return records
 
     @staticmethod
+    def list_sqlite_tables(file_path: Path | str) -> list[str]:
+        """User tables of an SQLite database export, in name order (SQLite's own are skipped).
+
+        The file is opened read-only, so reading a submission can never modify it.
+        """
+        uri = Path(file_path).resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        finally:
+            conn.close()
+        return [r[0] for r in rows]
+
+    @staticmethod
     def read_sqlite(file_path: Path | str, table_name: str) -> list[dict[str, Any]]:
         """Read table from an SQLite database export."""
         path = Path(file_path)
@@ -142,3 +158,41 @@ class SourceAdapter:
         if not isinstance(payload, list):
             return []
         return payload
+
+
+def stage_api_submission(config_path: Path | str, out_dir: Path | str) -> dict[str, int]:
+    """Fetch a submission from local REST endpoints and stage it as JSON files for ingest.
+
+    `config_path` is a YAML file:
+
+        endpoints:
+          alert: {url: "http://127.0.0.1:9000/api/alerts", records_key: items}
+          case: {url: "http://127.0.0.1:9000/api/cases"}
+          escalation: {fixture_path: "tests/fixtures/escalations.json"}
+
+    Each key names the table (a canonical name or any name the ingest pipeline recognises) and
+    each value is a `SourceAdapter.read_api` config, so the loopback-only rule applies to every
+    endpoint. Every table is written to `<out_dir>/<key>.json`; staging the records as files means
+    an API submission goes through exactly the checks a file upload does (data quality,
+    pseudonymisation, redaction, submission manifest). An endpoint that returns no records still
+    writes an empty file, declaring the table submitted and empty. Returns key -> record count.
+    """
+    import yaml
+
+    cfg = yaml.safe_load(Path(config_path).read_text(encoding="utf-8")) or {}
+    endpoints = cfg.get("endpoints") or {}
+    if not isinstance(endpoints, dict) or not endpoints:
+        raise ValueError(f"{config_path}: no 'endpoints' mapping of table name to endpoint config.")
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    counts: dict[str, int] = {}
+    for key, endpoint in endpoints.items():
+        name = str(key)
+        if not name.replace("_", "").isalnum():
+            raise ValueError(f"{config_path}: table name '{name}' must be letters, digits and underscores.")
+        if not isinstance(endpoint, dict):
+            raise TypeError(f"{config_path}: endpoint '{name}' must be a mapping.")
+        records = SourceAdapter.read_api(endpoint)
+        (out / f"{name}.json").write_text(json.dumps(records, default=str), encoding="utf-8")
+        counts[name] = len(records)
+    return counts

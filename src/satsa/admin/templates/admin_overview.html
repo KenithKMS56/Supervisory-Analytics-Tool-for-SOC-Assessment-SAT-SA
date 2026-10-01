@@ -501,7 +501,7 @@
       setInterval(pollStream, 1500);
     }
 
-    // Also run quick poll every 2.5 seconds to guarantee 100% sync
+    // Also poll every 2.5 seconds as a fallback in case WebSocket messages are missed
     setInterval(pollStream, 2500);
   })();
 </script>

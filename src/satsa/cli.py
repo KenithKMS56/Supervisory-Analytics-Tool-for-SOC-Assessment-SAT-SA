@@ -103,8 +103,18 @@ def ingest_cmd(
     entity: str = typer.Option(
         None, "--entity", "-e", help="Entity the files belong to (required with --source / --mapping)"
     ),
+    api_config: str = typer.Option(
+        None,
+        "--api-config",
+        help="YAML of local REST endpoints to fetch the submission from (instead of --data-dir)",
+    ),
 ) -> None:
-    """Ingest datasets, execute DQ checks, pseudonymise actors, redact PII, and store partitioned Parquet."""
+    """Ingest datasets, execute DQ checks, pseudonymise actors, redact PII, and store partitioned Parquet.
+
+    --data-dir reads CSV, JSON/NDJSON and SQLite database exports (.db/.sqlite/.sqlite3, one
+    table per canonical table). --api-config fetches the tables from local REST endpoints first.
+    """
+    import tempfile
     from pathlib import Path
 
     from satsa.ingest.mapper import MappingError, SourceMapping
@@ -131,14 +141,35 @@ def ingest_cmd(
             console.print(f"[bold red][!] {exc}[/bold red]")
             raise typer.Exit(code=2) from None
 
-    console.print(f"[bold blue]Starting ingestion from:[/bold blue] [cyan]{data_dir}[/cyan]")
+    staging = None
+    if api_config:
+        from satsa.ingest.adapters import stage_api_submission
+
+        staging = tempfile.TemporaryDirectory(prefix="satsa-api-")
+        try:
+            counts = stage_api_submission(api_config, staging.name)
+        except (OSError, ValueError, TypeError) as exc:
+            staging.cleanup()
+            console.print(f"[bold red][!] API submission could not be fetched: {exc}[/bold red]")
+            raise typer.Exit(code=2) from None
+        console.print(
+            "[bold blue]Fetched from local API:[/bold blue] "
+            + ", ".join(f"{t} ({n})" for t, n in sorted(counts.items()))
+        )
+        data_dir = staging.name
+
+    console.print(f"[bold blue]Starting ingestion from:[/bold blue] [cyan]{api_config or data_dir}[/cyan]")
     duckdb_store = DuckDBStore(parquet_dir)
     sqlite_store = SQLiteStore(db_path)
     pipeline = IngestionPipeline(duckdb_store, sqlite_store)
 
-    result = pipeline.ingest_directory(Path(data_dir), default_entity_id=entity, mapping=mapping)
-    duckdb_store.close()
-    sqlite_store.close()
+    try:
+        result = pipeline.ingest_directory(Path(data_dir), default_entity_id=entity, mapping=mapping)
+    finally:
+        duckdb_store.close()
+        sqlite_store.close()
+        if staging is not None:
+            staging.cleanup()
 
     if result.get("status") == "partial":
         console.print(
@@ -210,6 +241,9 @@ def run_cmd(
         console.print(f"  * Config Hash: [cyan]{res.get('config_hash')}[/cyan]")
         console.print(f"  * Total Findings Flagged: [yellow]{res.get('findings_count')}[/yellow]")
         console.print(f"  * Review Queue Items Generated: [cyan]{res.get('queue_count')}[/cyan]")
+        console.print(
+            f"  * Exploratory Leads (not scored): [cyan]{res.get('anomaly_signals_count', 0)}[/cyan]"
+        )
         console.print("\n[bold]Entity Supervisory Risk Summary:[/bold]")
         for ent, data in res.get("entity_scores", {}).items():
             color = (
@@ -297,6 +331,28 @@ def _serving_config_or_exit(
     return config
 
 
+def _run_uvicorn_guarded(app_path: str, config, port: int) -> None:
+    """Run uvicorn with the best-effort, loopback-only egress guard installed for the whole
+    process lifetime (the app's lifespan also installs it; installs are reference-counted)."""
+    import uvicorn
+
+    from satsa.netguard import install_egress_guard, uninstall_egress_guard
+
+    guarded = install_egress_guard()
+    try:
+        uvicorn.run(
+            app_path,
+            host=config.host,
+            port=port,
+            log_level="info",
+            ssl_certfile=config.certfile,
+            ssl_keyfile=config.keyfile,
+        )
+    finally:
+        if guarded:
+            uninstall_egress_guard()
+
+
 @app.command("serve")
 def serve_cmd(
     host: str = typer.Option(
@@ -307,21 +363,12 @@ def serve_cmd(
     ssl_keyfile: str = typer.Option(None, "--ssl-keyfile", help="TLS private key (default: SATSA_TLS_KEY)"),
 ) -> None:
     """Launch local offline server-rendered UI and REST API."""
-    import uvicorn
-
     config = _serving_config_or_exit(host, ssl_certfile, ssl_keyfile)
     console.print(
         f"[bold green][+] Launching SAT-SA offline dashboard at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
     )
     console.print("[dim]Fully offline, air-gapped server. Press Ctrl+C to exit.[/dim]")
-    uvicorn.run(
-        "satsa.api:app",
-        host=config.host,
-        port=port,
-        log_level="info",
-        ssl_certfile=config.certfile,
-        ssl_keyfile=config.keyfile,
-    )
+    _run_uvicorn_guarded("satsa.api:app", config, port)
 
 
 @app.command("admin")
@@ -334,21 +381,12 @@ def admin_cmd(
     ssl_keyfile: str = typer.Option(None, "--ssl-keyfile", help="TLS private key (default: SATSA_TLS_KEY)"),
 ) -> None:
     """Launch NCIIPC Administration Portal control plane."""
-    import uvicorn
-
     config = _serving_config_or_exit(host, ssl_certfile, ssl_keyfile)
     console.print(
         f"[bold green][+] Launching NCIIPC Administration Portal at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
     )
     console.print("[dim]Administrative identity and control console. Press Ctrl+C to exit.[/dim]")
-    uvicorn.run(
-        "satsa.admin.app:app",
-        host=config.host,
-        port=port,
-        log_level="info",
-        ssl_certfile=config.certfile,
-        ssl_keyfile=config.keyfile,
-    )
+    _run_uvicorn_guarded("satsa.admin.app:app", config, port)
 
 
 @app.command("tls-cert")
@@ -422,9 +460,11 @@ def report_cmd(
 
     # Portfolio PDF
     if (entity == "all" or entity.lower() == "portfolio") and fmt in ("pdf", "all"):
+        from satsa.report.naming import portfolio_pdf_name
+
         run_id = rep_gen.resolve_run().run_id
         generated.append(
-            rep_gen.generate_portfolio_pdf(out_path / f"SAT-SA_Portfolio_Report_{run_id}.pdf")
+            rep_gen.generate_portfolio_pdf(out_path / portfolio_pdf_name(run_id))
         )
 
     # Entity-specific or all entities HTML & PDF
@@ -764,7 +804,7 @@ def benchmark_cmd(
     console.print("[bold blue]Executing SAT-SA performance benchmark...[/bold blue]")
     bench = BenchmarkRunner(data_dir)
 
-    console.print("\n[bold]1. Columnar Parquet Scan & Aggregation Benchmark:[/bold]")
+    console.print("\n[bold]1. One in-memory DuckDB aggregation query (one thread, generated table):[/bold]")
     col_results = bench.run_columnar_scan_benchmark([50_000, 200_000, 1_000_000])
     for r in col_results:
         console.print(
@@ -780,7 +820,9 @@ def benchmark_cmd(
         f"  * Assessment throughput: [bold green]{e2e['throughput_alerts_per_sec']:,.1f} alerts/s[/bold green]"
     )
     console.print(
-        f"  * Extrapolated 5M time:  [bold yellow]{e2e['extrapolated_5m_runtime_minutes']:.1f} minutes[/bold yellow]"
+        "[dim]Scan figures time one in-memory query (DuckDB pinned to one thread); they are not "
+        "assessment times. Scale is measured, not extrapolated, by scripts/benchmark_scale.py "
+        "(docs/benchmarks.md).[/dim]"
     )
 
 

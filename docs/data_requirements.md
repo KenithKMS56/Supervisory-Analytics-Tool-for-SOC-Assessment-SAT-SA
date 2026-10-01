@@ -18,13 +18,36 @@ list (CSV/JSON/DB exports and APIs):
   **local** REST endpoint only. `endpoint_config["url"]` is validated against an allow-list of
   loopback hostnames (`127.0.0.1`, `localhost`, `::1`) and the call is refused with `ValueError`
   before any socket opens if it resolves to anything else -- this is what keeps the adapter
-  consistent with SAT-SA's air-gapped guarantee (`tests/test_offline.py`). In a real deployment,
+  consistent with SAT-SA's offline design (`tests/test_offline.py`). In a real deployment,
   `url` would point at an entity's own on-prem/local API reachable within the air-gapped network
   boundary (e.g. a self-hosted ticketing system's REST interface on the entity's internal LAN), never
   at the public internet. For tests and offline demos, `endpoint_config["fixture_path"]` reads a
   local JSON file that simulates the API's response body instead, exercising the identical parsing
   path with zero network I/O. See `config/mappings/cse_api_ticketing.yaml` for a worked example
   mapping a REST-exposed ticketing system's fields to the canonical `case_record` schema.
+
+All four reach the ingest pipeline, so each gets the same data-quality checks, pseudonymisation,
+redaction and submission manifest:
+
+- **SQLite database exports.** A `.db`, `.sqlite` or `.sqlite3` file in the submission directory
+  (or in an uploaded `.zip`) is opened read-only, and each table in it is read as if it were a
+  file named after the table (`alert`, `case`, `escalation`, ...). A file with one of those
+  extensions that is not a SQLite database is reported as unreadable, not skipped silently.
+- **Local REST APIs.** `satsa ingest --api-config endpoints.yaml` fetches each table from the
+  endpoint listed for it (same loopback-only rule), stages the records as `<table>.json`, then
+  ingests them as a file submission would be ingested. The YAML is:
+
+  ```yaml
+  endpoints:
+    alert: {url: "http://127.0.0.1:9000/api/alerts", records_key: items}
+    case: {url: "http://127.0.0.1:9000/api/cases"}
+  ```
+
+  An endpoint that returns no records declares the table submitted and empty.
+
+Both paths are tested in `tests/test_anomaly_scan.py` (a SQLite export of the synthetic dataset
+ingests to the same row counts as its CSV files; an API submission staged from fixture responses
+ingests; a non-loopback endpoint is refused).
 
 ---
 
