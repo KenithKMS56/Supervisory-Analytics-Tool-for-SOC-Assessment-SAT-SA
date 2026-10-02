@@ -9,6 +9,11 @@ This guide provides operational procedures for deploying, maintaining, updating,
 ## 1. Installation Procedures
 
 ### 1.1 Air-Gapped Python Environment
+The bundle must be built with a wheelhouse for the target's OS and Python version
+(`scripts/build_wheelhouse.sh`, then `satsa offline-bundle --wheelhouse wheelhouse`). The install
+scripts take every package from that wheelhouse and never fall back to downloading; without one
+they stop with an error. Full procedure and its limits: [offline_install.md](offline_install.md).
+
 1. Extract the offline distribution archive:
    ```bash
    tar -xzf dist/satsa_offline_bundle.tar.gz
@@ -24,7 +29,9 @@ This guide provides operational procedures for deploying, maintaining, updating,
    ```
 
 ### 1.2 Containerized OCI Deployment (Podman / Docker)
-Build and deploy using the self-contained production `Containerfile`:
+Build and deploy using the `Containerfile` in the bundle. It installs from the bundled
+`wheelhouse/`, which for a container must hold Linux wheels for Python 3.11, and the
+`python:3.11-slim` base image must already be loaded on the host ([offline_install.md](offline_install.md) §5):
 ```bash
 # Build local container image without network
 podman build -t satsa:latest -f Containerfile .

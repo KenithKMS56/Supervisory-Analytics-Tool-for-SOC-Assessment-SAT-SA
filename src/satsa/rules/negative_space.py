@@ -44,6 +44,7 @@ class NS01SilentCriticalAssets(BaseRule):
         WHERE l.entity_id = ? AND a.criticality >= ? AND a.monitored_flag = true
         GROUP BY l.asset_id
         HAVING count(CASE WHEN l.event_count = 0 THEN 1 END) >= ?
+        ORDER BY l.asset_id
         """
         df = store.query(sql, [entity_id, min_asset_criticality, min_silent_days])
         if df.is_empty():
@@ -521,6 +522,7 @@ class NS06InventoryVsTelemetry(BaseRule):
         WHERE a.entity_id = ?
         GROUP BY a.asset_id
         HAVING count(alt.alert_id) = 0 AND (count(l.event_count) = 0 OR sum(l.event_count) = 0)
+        ORDER BY a.asset_id
         """
         df = store.query(sql, [entity_id])
         if df.is_empty():
@@ -594,6 +596,7 @@ class NS07AbsentExternalReporting(BaseRule):
         FROM "case" c
         LEFT JOIN external_report r ON c.entity_id = r.entity_id AND c.case_id = r.incident_id
         WHERE c.entity_id = ? AND c.severity = 'critical' AND r.incident_id IS NULL
+        ORDER BY c.case_id
         """
         df = store.query(sql, [entity_id])
         if df.is_empty():

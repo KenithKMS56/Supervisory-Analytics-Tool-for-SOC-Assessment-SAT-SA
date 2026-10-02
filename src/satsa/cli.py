@@ -797,17 +797,31 @@ def validate_independent_cmd(
 @app.command("offline-bundle")
 def offline_bundle_cmd(
     output_dir: str = typer.Option("dist", "--output-dir", "-o", help="Output directory"),
+    wheelhouse: str | None = typer.Option(
+        None,
+        "--wheelhouse",
+        help="Wheelhouse from scripts/build_wheelhouse.sh to include (default: ./wheelhouse if present)",
+    ),
 ) -> None:
-    """Package SAT-SA for air-gapped installation: sources, configs, containerfiles, and scripts."""
-    from satsa.bundle.packager import OfflinePackager
+    """Package SAT-SA for air-gapped installation: sources, configs, wheelhouse, containerfiles, and scripts."""
+    from satsa.bundle.packager import OfflinePackager, WheelhouseError
 
     console.print("[bold blue]Building SAT-SA offline deployment bundle...[/bold blue]")
-    packager = OfflinePackager()
-    archive = packager.create_bundle(output_tar=True)
+    packager = OfflinePackager(dist_dir=output_dir, wheelhouse=wheelhouse)
+    try:
+        archive = packager.create_bundle(output_tar=True)
+    except WheelhouseError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
     console.print(
         f"[bold green][+] Offline bundle successfully packaged:[/bold green] [cyan]{archive}[/cyan]"
     )
     console.print(f"  * Bundle directory: [dim]{packager.bundle_dir}[/dim]")
+    if packager.wheelhouse is None:
+        console.print(
+            "[bold yellow][!] No wheelhouse included: install_offline will refuse to run until the bundle "
+            "is rebuilt with one (scripts/build_wheelhouse.sh, docs/offline_install.md).[/bold yellow]"
+        )
     console.print("  * Deployment instructions: [dim]README_OFFLINE.md inside bundle[/dim]")
 
 

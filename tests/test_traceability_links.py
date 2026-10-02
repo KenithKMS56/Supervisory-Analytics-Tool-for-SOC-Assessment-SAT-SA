@@ -67,3 +67,11 @@ def test_the_checker_catches_a_missing_file_and_a_missing_test():
     ]
     assert not (REPO / "src/satsa/no_such_module.py").exists()
     assert not re.search(r"^def no_such_test\(", (REPO / "tests/test_api.py").read_text(encoding="utf-8"), re.MULTILINE)
+
+
+def test_every_cited_decision_record_exists():
+    decisions = (REPO / "DECISIONS.md").read_text(encoding="utf-8")
+    headings = set(re.findall(r"^## (ADR-\d{3}):", decisions, re.MULTILINE))
+    cited = set(re.findall(r"ADR-\d{3}", MATRIX.read_text(encoding="utf-8")))
+    assert cited, "the matrix cites no decision record"
+    assert cited <= headings, sorted(cited - headings)

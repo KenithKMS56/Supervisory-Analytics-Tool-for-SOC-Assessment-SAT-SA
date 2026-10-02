@@ -302,6 +302,40 @@ rules**. It is still synthetic data built by people who knew the thresholds.
 
 ---
 
+## Quality pass, Phase 7: coverage, property tests, offline install (2 October 2026)
+
+Branch `quality/10of10`, same machine, run from the worktree (the suite now copies its inputs
+to a temporary directory and bootstraps its own data, `tests/conftest.py`):
+
+```bash
+uv run coverage run --branch --source=src/satsa -m pytest tests -q -p no:cacheprovider
+uv run coverage report --precision=1
+```
+
+| Measure | Result |
+|---|---|
+| Tests | 1,104 passed, 33 skipped, 0 failed (995.6 s under coverage) |
+| Coverage, statements and branches | **89.2%** (9,157 statements, 809 missed; 2,550 branches, 304 partial) |
+| Lowest modules | `cli.py` 42%, `validate/independent.py` 44%, `audit/keys.py` 75% |
+
+Subprocesses are not measured (subprocess coverage is not enabled), so code that tests reach
+only through `python -m satsa.cli` (the suite's data bootstrap, some CLI tests) counts as
+missed; that is most of why `cli.py` is low. Branch coverage of 89.2% says which lines ran, not
+that their results were checked.
+
+Three property tests (EG06, NS01, NS06) were added after that coverage run. The final suite
+for this phase, `uv run pytest tests -q -p no:cacheprovider`, gave **1,107 passed, 33 skipped,
+0 failed** (866.5 s), with `data/`, `reports/` and `.satsa_salt` hashing the same before and
+after; `satsa validate` 21/21, `satsa validate-stress` 3/3, `satsa audit verify` OK (388
+entries), `ruff check .` clean, `mypy src` clean (73 files).
+
+Property tests (`tests/test_property_rules.py`, `tests/test_property_ingest.py`) and the
+offline install are described in `docs/CHANGES_quality_pass.md` (Phase 7) and
+`docs/offline_install.md`. The CI workflow gained a coverage upload and a no-network install
+job; **no CI run was executed** from this machine.
+
+---
+
 ## Open items
 
 1. **No real data.** No real SOC submission and no real examiner finding has been run through
