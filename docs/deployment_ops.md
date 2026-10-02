@@ -221,3 +221,6 @@ tar -czf backup/parquet_$(date +%Y%m%d).tar.gz data/parquet/
 | Examiner Finding Review | Each assessment cycle (e.g. quarterly) | ~2 hours per entity | Supervisory Examiner |
 | Rule Calibration & Update | Bi-annually | ~4 hours | Lead Regulatory Specialist |
 | Audit Chain Verification | Weekly | < 1 minute (automated CLI) | Security Auditor |
+
+The effort column is a planning estimate of staff time, not a measurement: no examiner session
+has been timed (`docs/usability_protocol.md`). Measured machine times are in `docs/benchmarks.md`.

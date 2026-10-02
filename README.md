@@ -37,7 +37,7 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is bu
 3. **Cryptographic Tamper-Evidence:**
    Every batch upload, schema validation, assessment run, rule configuration change, administrative provisioning action, and human examiner disposition is recorded into append-only SQLite logs hash-chained (SHA3-256 for new entries; legacy SHA-256 entries still verify). Editing, inserting, deleting or reordering an entry in the middle of the chain breaks verification; removal of the newest entries or a full recomputation is only caught against an off-box checkpoint, signed with Ed25519 by `satsa audit checkpoint --sign` (DECISIONS.md ADR-005, ADR-008). Tamper-evident, not tamper-proof.
 4. **Columnar Analytics, Measured at Scale:**
-   DuckDB over Parquet, no database server. On one 4-core / 8-thread laptop (AMD Ryzen 5 7235HS, 23.7 GB RAM) with uniform synthetic data, 5,000,000 alerts (21.4M rows) took **603 s to ingest** (13.2 GB peak memory) and **310 s to assess** (3.3 GB peak), recorded 2026-09-30 in [`docs/benchmarks.md`](docs/benchmarks.md). A single in-memory aggregation query is much faster than that (7.6M rows/s at 1M rows, `satsa benchmark`), but scan speed is not end-to-end time.
+   DuckDB over Parquet, no database server. On one 4-core / 8-thread laptop (AMD Ryzen 5 7235HS, 23.7 GB RAM) with uniform synthetic data, 5,000,000 alerts (21.4M rows) took **54.5 s to ingest** (5.7 GB peak memory) and **107 s to assess** (3.5 GB peak; this varied from 106 to 191 s between runs), recorded 2026-10-02 in [`docs/benchmarks.md`](docs/benchmarks.md). A single in-memory aggregation query is much faster than that (7.6M rows/s at 1M rows, `satsa benchmark`), but scan speed is not end-to-end time.
 5. **Cognitive Bias Mitigation (Blinded Review Studio):**
    Includes a double-blind supervisory mode that presents raw operational metrics without showing pre-calculated risk scores, helping examiners reach unbiased conclusions before revealing inter-rater concordance.
 6. **Admin Activity Feed (Operator Session Monitor):**
@@ -197,10 +197,6 @@ The **NCIIPC Administration Portal** (`http://localhost:8000`) is a dedicated su
    - Append-only log recording every administrative action (`USER_CREATED`, `ROLE_CHANGED`, `CSE_CHANGED`, `ACCOUNT_BLOCKED`, `PASSWORD_RESET`, `ORGANISATION_CREATED`, etc.).
    - Hash-chained (`prev_hash`; SHA3-256 for new entries) and verifiable on demand via the UI; a signed off-box checkpoint (`satsa audit checkpoint`) also catches removal of the newest entries.
 
-5. **Modern Government Aesthetic & Floating Navigation Bar**:
-   - Orange accent palette (`#ea580c`), glassmorphism card surfaces, and 0xZenith national cyber defense branding.
-   - Fixed floating bottom navigation bar matching the SAT-SA ergonomics with integrated dark/light theme switching.
-
 ---
 
 ## Admin Activity Feed / Operator Session Monitor (`:8000` ↔ `:8001`)
@@ -252,12 +248,13 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 | **Defect Precision** (primary, unambiguous dataset; every finding counted) | **100.0%** (21 of 21 findings; 0 false positives on any entity) | $\ge 85.0\%$ | Meets target |
 | **Stress Scenario Defect Precision** (borderline/ambiguous/noisy, synthetic) | **100.0%** (3 of 3 findings) on the published seed | n/a -- reported for transparency | Synthetic; thresholds known when built |
 | **Hard set** (8 other seeds x 3 volumes, and the stress scenario under 20 seeds; `docs/validation_hard_report.md`) | Portfolio: recall **100%** (503/503), precision **100%** (503/503), 0 of 72 clean entities flagged (before three generator faults were fixed: 99.6% and 98.0%). Stress: recall 60/60, precision **93.8%** (60/64); the noisy clean entity trips EG05 in 4 of 20 seeds. | n/a -- reported for transparency | Synthetic. Shows what one seed hides; see `docs/validation_summary.md` |
+| **Independent generator** (20 seeds, decoys just under each threshold; `docs/validation_independent_report.md`) | Recall **100%** (487/487), precision **100%**, 0 of 245 decoys flagged; one-line baselines: 6.7-87% precision on the same data | n/a -- reported for transparency | Synthetic; same authors, who knew the thresholds |
 | **Review-Effort Lift** (primary dataset) | **19.5x** for the top 25 queue alerts, **12.0x** for the top 50, **5.19x** for the whole 130-alert queue, vs random sampling. (Every 1%/2%/5% budget exceeds the queue, so those all equal 5.19x.) *See docs/validation_report.md Section 4.* | $\ge 5.00x$ | Meets target |
 | **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations) | $\ge 0.8500$ | Meets target |
 | **Rule Threshold Sensitivity** (primary dataset) | **4 of 66** single-threshold ±20% moves change an outcome, all injected defects built just over their threshold (EG05 pairs, EG07, NS05, NS08's review period). None creates a false alarm on a clean entity on this seed; across the hard set, lowering EG05's pair threshold does. | n/a -- reported for transparency | Margins are synthetic; real calibration needs the pilot |
 | **DuckDB Scan Throughput** (one in-memory query, one thread; not an assessment time) | **7,570,338 rows/second** at 1,000,000 rows (`satsa benchmark`, 2026-10-01) | n/a | Scan only; end-to-end figures in the next row |
-| **Scale, end to end** (`docs/benchmarks.md`, recorded 2026-09-30) | 5,000,000 alerts (50 entities, 21.4M rows): ingest **603 s** (13.2 GB peak), assessment **310 s** (3.3 GB peak); repeat page loads under 0.7 s | n/a | Measured on a 4-core / 24 GB laptop, uniform synthetic data |
-| **Automated Test Suite** | **871 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), from freshly generated data on Python 3.13 (Windows). Statement-and-branch coverage **89%** overall; rules 94-100%, scoring 83-100%, audit-chain store 91%. Not re-run on Python 3.11 or Linux in this pass. | 100% passing | Verified locally |
+| **Scale, end to end** (`docs/benchmarks.md`, recorded 2026-10-02) | 5,000,000 alerts (50 entities, 21.4M rows): ingest **54.5 s** (5.7 GB peak), assessment **107 s** (3.5 GB peak); first page after a run 15.4 s, repeats under 0.5 s | n/a | Measured on a 4-core / 24 GB laptop, uniform synthetic data |
+| **Automated Test Suite** | **1,107 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), incl. property-based tests, Python 3.11 (Windows), 2026-10-02. Statement-and-branch coverage **89.2%**; rules 94-100%, scoring 83-100%, audit-chain store 91%. Linux and CI not run. | 100% passing | Verified locally |
 
 ---
 
@@ -308,9 +305,9 @@ The easiest way to run the entire unified platform (NCIIPC Admin Portal + SAT-SA
 
 ---
 
-### Method 2: Fast Local Setup with `uv` (Under 1 Minute)
+### Method 2: Local Setup with [`uv`](https://github.com/astral-sh/uv)
 
-[`uv`](https://github.com/astral-sh/uv) is a fast Python package manager written in Rust.
+For an air-gapped machine, install from a wheelhouse instead: [`docs/offline_install.md`](docs/offline_install.md).
 
 1. **Install `uv` (if not already installed):**
    ```bash
@@ -345,10 +342,10 @@ The easiest way to run the entire unified platform (NCIIPC Admin Portal + SAT-SA
    uv run satsa run --period 2026-Q1
 
    # 4. Launch the web interface
-   uv run satsa serve --host 127.0.0.1 --port 8000
+   uv run satsa serve --host 127.0.0.1 --port 8001
    ```
 
-5. **Open your browser:** Navigate to [http://127.0.0.1:8000](http://127.0.0.1:8000).
+5. **Open your browser:** Navigate to [http://127.0.0.1:8001](http://127.0.0.1:8001).
 
 ---
 
@@ -415,6 +412,7 @@ Commands:
   report          Export supervisory dossiers (HTML, ReportLab PDF, and CSV).
   validate        Run the detector-implementation correctness harness (primary dataset).
   validate-stress Run the harder stress-scenario validation (borderline/ambiguous/noisy).
+  validate-independent  Validate on a separately written generator, many seeds, vs naive baselines.
   benchmark       Benchmark DuckDB columnar scan throughput and query latency.
   audit keygen / checkpoint / verify   Key pair; signed chain checkpoint; verify chain (+ checkpoint).
   offline-bundle  Package self-contained offline distribution archive.
@@ -462,7 +460,7 @@ satsa/
 │   ├── architecture.md          # System architecture, data flow, security model
 │   ├── analytics_methodology.md # Mathematical specs for all 20 rules & robust stats
 │   ├── data_requirements.md     # Canonical schemas & per-rule dependency matrix
-│   ├── infrastructure.md        # Hardware sizing, benchmark data, 5M alert projection
+│   ├── infrastructure.md        # Hardware sizing and measured scale figures
 │   ├── validation.md            # Empirical precision/recall & lift methodology
 │   └── deployment_ops.md        # Air-gapped operations, backup & rule update guide
 ├── src/satsa/                   # Core Python package
@@ -481,15 +479,7 @@ satsa/
 │   └── ui/                      # Server-rendered Jinja2 templates & static assets
 │       ├── static/              # SAT-SA CSS stylesheets and vendored echarts.min.js
 │       └── templates/           # Clean, responsive HTML templates for all 10 tabs
-├── tests/                       # pytest suite (871 passing tests)
-│   ├── test_admin_portal.py     # NCIIPC Admin Portal routes & CRUD verification
-│   ├── test_admin_satsa_integration.py # E2E Admin-to-SATSA provisioning & scoping
-│   ├── test_admin_activity_feed.py # Admin activity feed (operator session monitor) verification
-│   ├── test_api.py              # REST API and UI view testing
-│   ├── test_auth.py             # RBAC and session isolation testing
-│   ├── test_rules.py            # Rule predicate and execution testing
-│   ├── test_scoring.py          # CRI score & Noisy-OR logic verification
-│   └── test_offline.py          # Air-gap verification (zero outbound connections)
+├── tests/                       # pytest suite: rules, scoring, RBAC, audit, ingest, offline, property tests
 ├── pyproject.toml               # PEP 621 package metadata, CLI, & dependencies
 └── README.md                    # Standard repository readme
 ```
@@ -516,22 +506,20 @@ satsa/
 
 ## Project Documentation Index
 
-- [`docs/architecture.md`](file:///docs/architecture.md): 2-page system architecture with Mermaid diagrams, data flow, and security model.
-- [`docs/functional_design.md`](file:///docs/functional_design.md): Functional design, RBAC user roles, and examiner workflows.
-- [`docs/shadow_pilot_runbook.md`](docs/shadow_pilot_runbook.md): Step-by-step procedure for measuring real-world accuracy against historical examiner workpapers.
-- [`docs/analytics_methodology.md`](file:///docs/analytics_methodology.md): Mathematical specifications for all 20 rules plus the cross-entity systemic correlation detector, robust statistics, and SPC.
-- [`docs/data_requirements.md`](file:///docs/data_requirements.md): Canonical schemas, ingestion sources (CSV/JSON/DB/API), and per-rule data dependency matrix.
-- [`docs/infrastructure.md`](file:///docs/infrastructure.md): Hardware sizing and storage estimates (scale figures are measured in `docs/benchmarks.md`).
-- [`docs/validation.md`](file:///docs/validation.md): Detector-implementation correctness methodology, the harder "stress scenario," and shadow pilot adapter -- and what each does and does not prove.
-- [`docs/deployment_ops.md`](file:///docs/deployment_ops.md): Air-gapped deployment, signed rule-pack updates, and backup procedures.
-- [`docs/ps_traceability.md`](file:///docs/ps_traceability.md): PS SIH26157 functional-requirement-to-component traceability matrix.
-- [`docs/slides_outline.md`](file:///docs/slides_outline.md): 5-slide executive presentation outline.
-- [`docs/demo_script.md`](file:///docs/demo_script.md): 2-minute live examiner demonstration script.
-- [`EVIDENCE.md`](EVIDENCE.md): What was changed and measured in the feasibility pass, with commands, results, open items and ratings.
-- [`docs/validation_summary.md`](docs/validation_summary.md): What was tested, that it is all synthetic, what the numbers do and do not prove.
-- [`docs/validation_hard_report.md`](docs/validation_hard_report.md): Hard set: other seeds, lower volumes, stress under 20 seeds (`python scripts/validate_hard.py`).
-- [`docs/benchmarks.md`](docs/benchmarks.md): Measured ingest, assessment, page-load times and peak memory up to 5,000,000 alerts.
-- [`docs/connectors.md`](docs/connectors.md): Splunk ES, ServiceNow SIR and TheHive 5 exports: what maps, what does not, which rules each supports.
-- [`docs/legal_traceability.md`](docs/legal_traceability.md): Problem-statement requirements to component and test; statutory context and what needs legal review.
-- [`docs/validation_report.md`](file:///docs/validation_report.md): Output of the detector-implementation correctness run (`satsa validate`).
-- [`docs/validation_stress_report.md`](file:///docs/validation_stress_report.md): Output of the harder stress-scenario run (`satsa validate-stress`).
+**All validation data is synthetic; a real-data pilot is pending.** Start with [`docs/validation_summary.md`](docs/validation_summary.md).
+
+- [`docs/architecture.md`](docs/architecture.md): Components, data flow and security model.
+- [`docs/functional_design.md`](docs/functional_design.md): RBAC roles and examiner workflows.
+- [`docs/analytics_methodology.md`](docs/analytics_methodology.md): All 20 rules, the systemic detector, robust statistics.
+- [`docs/threshold_rationale.md`](docs/threshold_rationale.md): Why the most fragile thresholds sit where they do (proposals only; none changed).
+- [`docs/data_requirements.md`](docs/data_requirements.md): Canonical schemas, ingest sources, per-rule data needs.
+- [`docs/connectors.md`](docs/connectors.md): Splunk ES, ServiceNow SIR and TheHive 5 exports.
+- [`docs/validation.md`](docs/validation.md): Validation methodology and what each set does and does not prove.
+- Validation reports: [primary](docs/validation_report.md), [stress](docs/validation_stress_report.md), [hard set](docs/validation_hard_report.md), [independent generator](docs/validation_independent_report.md).
+- [`docs/shadow_pilot_runbook.md`](docs/shadow_pilot_runbook.md): Measuring accuracy against historical examiner workpapers.
+- [`docs/benchmarks.md`](docs/benchmarks.md) and [`docs/infrastructure.md`](docs/infrastructure.md): Measured ingest, assessment, page-load times and memory; hardware sizing.
+- [`docs/deployment_ops.md`](docs/deployment_ops.md) and [`docs/offline_install.md`](docs/offline_install.md): Air-gapped deployment, wheelhouse install, rule packs, backups.
+- [`docs/ps_traceability.md`](docs/ps_traceability.md) and [`docs/legal_traceability.md`](docs/legal_traceability.md): Requirement to code, test and evidence; statutory context for legal review.
+- [`docs/usability_protocol.md`](docs/usability_protocol.md): Timed examiner tasks (no session run yet).
+- [`docs/slides_outline.md`](docs/slides_outline.md), [`docs/demo_script.md`](docs/demo_script.md): Presentation outline and demo click-path.
+- [`EVIDENCE.md`](EVIDENCE.md) and [`docs/CHANGES_quality_pass.md`](docs/CHANGES_quality_pass.md): Commands and results, open items, doc/code mismatches found and fixed.

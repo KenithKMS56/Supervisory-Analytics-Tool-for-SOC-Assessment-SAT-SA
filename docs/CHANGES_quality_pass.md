@@ -31,6 +31,8 @@ Each documented behaviour below was checked against the code before anything was
 | M17 | Offline installation | `docs/deployment_ops.md` §1.1: the bundle's "automated air-gapped setup script"; `README_OFFLINE.md`: "No Internet or network access required"; `Containerfile`: "Air-Gapped OCI Container" | No step ever put a wheelhouse in the bundle, and `install_offline.sh`, `install_offline.bat` and the `Containerfile` all ended in a `pip install .` fallback when `wheelhouse/` was missing. So every bundle the tool built went to PyPI for all its runtime dependencies when installed: on an air-gapped machine that install cannot succeed, and on a connected one it took whatever versions PyPI offered that day, not the locked ones. | **Code fixed** in Phase 7. `scripts/build_wheelhouse.sh` / `.bat` build a hash-pinned wheelhouse from `uv.lock`; `satsa offline-bundle --wheelhouse` copies it into the bundle (and refuses a directory that is not one); both scripts and the `Containerfile` install with `--no-index --require-hashes` and stop with an error, without downloading, when it is missing. `tests/test_offline_bundle.py`; procedure in `docs/offline_install.md`. |
 | M18 | Deterministic output, continued | As M14 | M14 fixed eight rules found by the golden test. The Phase 7 property tests, which insert the same rows in shuffled order, found seven more whose evidence order depended on storage order: EG03, EG06, EG07, EG12, NS01, NS06, NS07. For EG07 it was also a wrong statement: the rationale names "the" analyst, taken from an unordered `unique()`, so with two analysts over the limit it could give one analyst's name with the other's hourly count. | **Code fixed** in Phase 7: a total ORDER BY on each query, and EG07 names the busiest analyst (ties by name). No threshold, count or score changed. `tests/test_property_rules.py`. |
 | M19 | `satsa offline-bundle --output-dir` | `satsa offline-bundle --help`: "Output directory" | The option was accepted and ignored; the bundle always went to `./dist`. | **Code fixed** in Phase 7 (`OfflinePackager(dist_dir=...)`); `tests/test_offline_bundle.py::test_offline_bundle_command_honours_output_dir_and_wheelhouse`. |
+| M20 | `scripts/benchmark_scale.py --workdir` | `--help`: "scratch directory" | Each stage process changes into its workspace and then uses the workspace path again, so a relative `--workdir` failed every ingest ("No supported data files found in build\bench\bench_10x50000\csv"). The default (the system temp directory, an absolute path) was not affected, which is why earlier runs worked. | **Code fixed** in Phase 8: the work directory is made absolute first. Found by the Phase 8 benchmark run, which failed this way before it was re-run. |
+| M21 | README | Documentation index linked `file:///docs/...` (12 links, which resolve to the root of the reader's disk, not the repository); "Method 2 ... (Under 1 Minute)", never measured; Method 2 served SAT-SA on `--port 8000`, the Admin Portal's port, while everything else says `:8001`; "871 passing tests" and the test row's Python 3.13 run, both from the baseline; `infrastructure.md` described as a "5M alert projection", withdrawn in Phase 2 | (docs only) | **Doc was wrong or stale.** Corrected in Phase 8; see the Phase 8 entry. |
 
 ## Process note: another session edited the same working tree
 
@@ -579,3 +581,82 @@ but **no CI run was executed** from this machine):
   checkpoints are ADR-008). Corrected, and `tests/test_traceability_links.py` now checks that
   every cited ADR exists.
 - `.hypothesis/` added to `.gitignore`.
+
+### Phase 8: final documentation and refreshed figures
+
+**Benchmark re-run on the final code** (commit `61d8d55` plus the fix below), 2026-10-02:
+`python scripts/benchmark_scale.py --configs 10x50000,50x100000 --workdir build/bench --out <file> --json <file>`.
+
+| Alerts | Ingest | Ingest peak | Assess | Assess peak | First page after a run |
+|---:|---:|---:|---:|---:|---:|
+| 500,000 | 7.1 s | 797 MiB | 9.8 s | 454 MiB | 1.8 s |
+| 5,000,000 | 54.5 s | 5,424 MiB | 107.3 s | 3,301 MiB | 15.4 s |
+
+The first attempt failed at every ingest stage: a relative `--workdir` did not survive the
+stage process's change of directory (M20). Fixed in `scripts/benchmark_scale.py` and re-run.
+These figures replace the 2026-09-30 ones (603 s ingest, 13.2 GB peak, 310 s assess) in the
+README, `docs/infrastructure.md` (rewritten Section 3, RAM guidance now 16 GB suggested
+instead of "16 GB at least, 32 GB suggested"), `docs/legal_traceability.md` F3 and EVIDENCE.md.
+`docs/benchmarks.md` gains a "Final code" section and keeps every earlier run with its date.
+Assessment time is reported as one measurement: the same code took 106 s to 191 s on this
+machine in different runs, so the fall from 310 s is not claimed as an improvement.
+
+**Independent validation re-run on the final code:**
+`satsa validate-independent --seeds 20 --start-seed 1` (409 s). Every result is identical to
+the 2026-10-01 run (recall and precision 487/487, 0 of 245 decoys, 0 of 57 clean entities, same
+baselines, ablation, sweep and relabelling); only the date and per-seed timings in
+`docs/validation_independent_report.md` changed. The rule ORDER BY changes of Phases 5 and 7
+change no detection, as expected.
+
+**Documentation:**
+- `docs/validation_summary.md`: the synthetic-only statement now opens the page; the
+  independent generator is in the "what was tested" table and has its own results section
+  (3.7), including the baselines, ablation, sweep and relabelling, and what it does not add
+  (independence of mind). `docs/validation.md` points to it.
+- README (M21): broken `file:///` links fixed and the documentation index regrouped, with links
+  to `offline_install.md`, `threshold_rationale.md`, `validation_independent_report.md`,
+  `usability_protocol.md` and this file; the synthetic-only statement leads the index; an
+  "Independent generator" row in the results table; the test row and scale rows refreshed;
+  `validate-independent` added to the CLI list; the unmeasured "Under 1 Minute" removed; Method 2
+  serves SAT-SA on `:8001`; a UI-styling paragraph and an 8-file test listing removed. README
+  size: 39,380 bytes at the baseline, 40,205 after Phase 3, **39,185** now.
+- `docs/deployment_ops.md` §5: the effort column is labelled a planning estimate of staff
+  time, not a measurement.
+- EVIDENCE.md: a Phase 8 section with every command and result; open items updated (CI and
+  Linux never run, scale limits, test isolation) and new ones (18-22: the independent
+  generator's limits, threshold proposals not applied, no usability session, checkpoint
+  signing limits, offline install not tried on a disconnected machine); ratings use the new
+  figures. The historical feasibility-pass sections are unchanged apart from a pointer to the
+  superseding figures.
+
+**Verified** (2026-10-02, Python 3.11.16, Windows 11):
+`uv run coverage run --branch --source=src/satsa -m pytest tests -q -p no:cacheprovider`:
+1,107 passed, 33 skipped, 0 failed (870.5 s); statement-and-branch coverage 89.2% (9,157
+statements, 809 missed; 2,550 branches, 305 partial); working data unchanged by the suite. `satsa validate` 21/21,
+`satsa validate-stress` 3/3, `satsa audit verify` OK, `ruff check .` and `mypy src` clean.
+
+**Not done:** no CI run; no Linux run; no Docker build; no real data; no usability session;
+the 25 x 100,000 size was not re-run (its 2026-09-30 figures stay, labelled).
+
+### Claims removed or softened in this pass (summary)
+
+Each is detailed in its phase entry above.
+
+- "Socket-level egress is blocked" (no guard existed) -> a real guard, described as best-effort
+  defence in depth that does not cover native code or DNS (M1).
+- "10.6 Million rows/second", "evaluated in seconds", "Extreme ... Performance" -> measured
+  end-to-end times with the machine and date (Phase 2, Phase 8).
+- "20 Production Rules" -> "20 Detection Rules" (Phase 2).
+- "Guarantees forensic immutability" -> tamper-evident, not tamper-proof; signed off-box
+  checkpoints for the cases a hash chain cannot catch (M7, Phase 3).
+- "multi-threaded SIMD", "partition-pruned scans", the Parquet layout and adapter class names
+  -> what the code does (M3-M6).
+- "byte-identical reproducibility" -> findings were reproducible, evidence was not: fifteen
+  rules' evidence depended on storage order and was fixed (M14, M18); the golden and property
+  tests now check row-order independence.
+- "No Internet or network access required" for the offline bundle -> was false (PyPI fallback);
+  holds now when the bundle carries a wheelhouse built for that OS and Python version (M17).
+- A projected 10.1-minute 5M-alert run, storage estimates, "ideal for ... appliances",
+  "Under 1 Minute" setup -> removed (Phase 2, Phase 8).
+- README test and coverage figures from the baseline (871 tests, Python 3.13) -> this
+  phase's run.

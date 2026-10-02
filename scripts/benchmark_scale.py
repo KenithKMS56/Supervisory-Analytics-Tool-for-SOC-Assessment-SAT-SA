@@ -481,7 +481,8 @@ def main() -> int:
         return 0
 
     configs = [tuple(int(x) for x in item.lower().split("x")) for item in args.configs.split(",")]
-    workdir = Path(args.workdir) if args.workdir else Path(tempfile.gettempdir()) / "satsa_bench"
+    # Absolute: each stage process changes into its workspace before using the path.
+    workdir = (Path(args.workdir) if args.workdir else Path(tempfile.gettempdir()) / "satsa_bench").resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     results = []
     for entities, alerts_per_entity in configs:
