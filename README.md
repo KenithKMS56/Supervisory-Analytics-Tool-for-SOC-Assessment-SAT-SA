@@ -106,7 +106,7 @@ The application provides a fully server-rendered, responsive web interface:
 2. **Supervisory Portfolio League (`/`)**:
    - Ranked national entity league table sorted by Composite Risk Index (CRI, 0–100).
    - Interactive filtering (e.g. click *"Entities Require Action"* to isolate outlier CSEs).
-   - 8-domain capability heatmap (Detection, Triage, Escalation, Hygiene, Compliance, etc.).
+   - 8-domain capability heatmap: the problem statement's eight capabilities (Threat Detection, Investigation, Escalation, Incident Response, Security Operations, Governance and Oversight, Operational Discipline, Cyber Resilience).
    - Instant HTML and PDF executive dossier export buttons.
 3. **National Alert Explorer (`/alerts`)**:
    - Server-side paginated browser of submitted alert records (25 records/page) handling thousands of alerts smoothly.
