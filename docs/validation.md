@@ -8,6 +8,8 @@ kind of evidence each result actually is.
 ---
 
 > **Current figures (30 September 2026).** The shortest accurate account is `docs/validation_summary.md`.
+> A second, separately written generator (20 seeds, decoys just under each threshold, naive baselines,
+> ablation) was added in the quality pass: `docs/validation_independent_report.md` (2026-10-02).
 > Since the sections below were written, NS03, NS05 and NS08 findings gained evidence records (a larger review
 > queue) and NS08's review period became a tunable threshold. Primary set now: 21/21 detected, 0 false positives,
 > sweep 4 of 66, lift 19.47x in the top 25 queue alerts and 5.19x over the 130-alert queue; stress 3/3, sweep 3 of 66.
