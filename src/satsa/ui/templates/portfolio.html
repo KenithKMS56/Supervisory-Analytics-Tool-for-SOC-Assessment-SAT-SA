@@ -232,6 +232,7 @@
           <th>Risk Index</th>
           <th>Risk Band</th>
           <th>Distinct Rules</th>
+          <th title="Exploratory anomaly signals: leads, not findings, and not part of the risk index">Leads</th>
           <th>Action</th>
         </tr>
       </thead>
@@ -260,8 +261,70 @@
             {% endif %}
           </td>
           <td>
+            {% if e.lead_count %}<a href="/entity/{{ e.entity_id }}#anomaly-leads" style="font-size: 0.85rem;">{{ e.lead_count }}</a>{% else %}<span style="color: var(--text-muted);">0</span>{% endif %}
+          </td>
+          <td>
             <a href="/entity/{{ e.entity_id }}" class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.8rem;">Profile</a>
           </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Controls and processes to prioritise (satsa.scoring.control_priorities) -->
+<div class="card">
+  <div class="card-title">
+    <span>
+      Controls &amp; Processes to Prioritise
+      <span class="tooltip-hint">❓
+        <span class="tooltip-text">Each rule tests one control: controls are ranked by how many entities failed them, then by severity and summed score. Processes are the eight capability domains, ranked by how many entities score 50 or more in them, then by the portfolio median. "Not assessed" counts entities that never submitted the table a control needs; "Leads" counts exploratory anomaly signals in that domain.</span>
+      </span>
+    </span>
+    <span style="font-size: 0.82rem; color: var(--text-secondary);">{{ priority_controls | length }} control(s) failed this run</span>
+  </div>
+  <div class="table-responsive">
+    <table id="controlPriorityTable">
+      <thead>
+        <tr><th>#</th><th>Control (rule)</th><th>Domain</th><th>Entities failing</th><th>Worst severity</th><th>Not assessed</th></tr>
+      </thead>
+      <tbody>
+        {% for c in priority_controls %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td><code>{{ c.rule_id }}</code> {{ c.title }}</td>
+          <td>{{ c.domain }}</td>
+          <td>
+            {% for eid in c.entity_ids %}<a href="/entity/{{ eid }}">{{ eid }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+            <span style="color: var(--text-muted);">({{ c.entities_failing }})</span>
+          </td>
+          <td><span class="badge badge-{{ 'crit' if c.max_severity in ('critical','high') else 'mod' }}">{{ c.max_severity | capitalize }}</span></td>
+          <td>{{ c.entities_not_assessed }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" style="color: var(--text-secondary);">No control failed in this run.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="table-responsive" style="margin-top: 1rem;">
+    <table id="processPriorityTable">
+      <thead>
+        <tr><th>#</th><th>Process (capability domain)</th><th>Entities of concern (score &ge; 50)</th><th>Portfolio median</th><th>Worst score</th><th>Leads</th></tr>
+      </thead>
+      <tbody>
+        {% for p in priority_processes %}
+        <tr>
+          <td>{{ loop.index }}</td>
+          <td>{{ p.domain }}</td>
+          <td>
+            {% for eid in p.entity_ids %}<a href="/entity/{{ eid }}">{{ eid }}</a>{% if not loop.last %}, {% endif %}{% endfor %}
+            <span style="color: var(--text-muted);">({{ p.entities_of_concern }})</span>
+          </td>
+          <td>{{ p.median_score }}</td>
+          <td>{{ p.max_score }}</td>
+          <td>{{ p.anomaly_leads }}</td>
         </tr>
         {% endfor %}
       </tbody>

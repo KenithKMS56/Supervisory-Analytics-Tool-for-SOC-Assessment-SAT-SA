@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,29 @@ def _alert_refs(frame: pl.DataFrame) -> pl.DataFrame:
         return frame.filter(pl.col("ref_type").fill_null("None") == "alert")
     return frame.filter(pl.Series([str(v) == "alert" for v in frame["ref_type"].to_list()], dtype=pl.Boolean))
 
+
+# Database exports: every table inside is read as if it were a file named after the table.
+DATABASE_SUFFIXES = (".db", ".sqlite", ".sqlite3")
+
+
+@dataclass(frozen=True)
+class DatabaseTable:
+    """One table of a SQLite database export, standing in for a file named after the table."""
+
+    db_path: Path
+    table: str
+
+    @property
+    def name(self) -> str:
+        return f"{self.db_path.name}:{self.table}"
+
+    @property
+    def stem(self) -> str:
+        return self.table
+
+    @property
+    def suffix(self) -> str:
+        return ".table"
 
 # Child tables whose rows must reference an alert in the same submission:
 # (table, foreign-key column, which rows the check applies to).
@@ -413,7 +437,7 @@ class IngestionPipeline:
         return "alert"  # Default fallback
 
     @classmethod
-    def table_for_empty_file(cls, path: Path) -> str | None:
+    def table_for_empty_file(cls, path: Path | DatabaseTable) -> str | None:
         """Table a file with no data rows stands for, or None if it cannot be identified.
 
         A header-only file declares "this table is submitted and empty" (see the submission
@@ -422,7 +446,7 @@ class IngestionPipeline:
         alert table, so that default is accepted only when the name or headers really say alert.
         """
         headers: list[str] = []
-        if path.suffix.lower() == ".csv":
+        if isinstance(path, Path) and path.suffix.lower() == ".csv":
             first_line = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()[:1]
             headers = [h.strip().strip('"') for h in first_line[0].split(",")] if first_line else []
         table = cls.resolve_canonical_table(path.stem, headers)
@@ -536,12 +560,19 @@ class IngestionPipeline:
         if default_entity_id is not None:
             require_entity_id(default_entity_id)
         dir_path = Path(input_dir)
-        raw_files = (
-            list(dir_path.rglob("*.csv"))
-            + list(dir_path.rglob("*.json"))
-            + list(dir_path.rglob("*.ndjson"))
-        )
-        if not raw_files:
+        raw_files: list[Path | DatabaseTable] = [
+            *dir_path.rglob("*.csv"),
+            *dir_path.rglob("*.json"),
+            *dir_path.rglob("*.ndjson"),
+        ]
+        unreadable_files: list[str] = []
+        for db_file in sorted(f for f in dir_path.rglob("*") if f.suffix.lower() in DATABASE_SUFFIXES):
+            try:
+                raw_files.extend(DatabaseTable(db_file, t) for t in SourceAdapter.list_sqlite_tables(db_file))
+            except Exception:
+                logger.exception("Could not open database export %s", db_file.name)
+                unreadable_files.append(db_file.name)
+        if not raw_files and not unreadable_files:
             return {"status": "empty", "message": f"No supported data files found in {input_dir}"}
 
         # Rows are held as columnar frames, one list of chunks per table. A row is a Python
@@ -563,7 +594,6 @@ class IngestionPipeline:
         # Tables this submission includes, whether or not they hold rows: a header-only file
         # says "we submit this table and it is empty", which is different from not sending it.
         declared_tables: set[str] = set()
-        unreadable_files: list[str] = []
         unmapped_files: list[str] = []
         unused_source_columns: dict[str, list[str]] = {}
 
@@ -623,7 +653,9 @@ class IngestionPipeline:
                 row_counts[table] = row_counts.get(table, 0) + done.frame.height
             return True
 
-        def read(path: Path) -> pl.DataFrame | list[dict[str, Any]]:
+        def read(path: Path | DatabaseTable) -> pl.DataFrame | list[dict[str, Any]]:
+            if isinstance(path, DatabaseTable):
+                return SourceAdapter.read_sqlite(path.db_path, path.table)
             if path.suffix.lower() == ".csv":
                 return SourceAdapter.read_csv_frame(path)
             return SourceAdapter.read_json(path)
@@ -638,7 +670,7 @@ class IngestionPipeline:
 
         # A product export is read up front: one file may be needed to translate ids in
         # another. The canonical layout is read one file at a time.
-        preloaded: dict[Path, list[dict[str, Any]]] = {}
+        preloaded: dict[Path | DatabaseTable, list[dict[str, Any]]] = {}
         if mapping is not None:
             for f in raw_files:
                 try:
@@ -653,8 +685,8 @@ class IngestionPipeline:
         # else is held: reading a file briefly needs a few times its size, and at 5,000,000
         # alerts that read on top of the tables already held set the ingest's peak memory.
         # Files are still processed in their usual order, so nothing else changes.
-        read_early: dict[Path, pl.DataFrame | Exception] = {}
-        csv_files = [f for f in raw_files if f.suffix.lower() == ".csv"]
+        read_early: dict[Path | DatabaseTable, pl.DataFrame | Exception] = {}
+        csv_files = [f for f in raw_files if isinstance(f, Path) and f.suffix.lower() == ".csv"]
         if READ_LARGEST_FIRST and mapping is None and len(csv_files) > 1:
             largest = max(csv_files, key=lambda f: f.stat().st_size)
             try:
@@ -674,7 +706,7 @@ class IngestionPipeline:
                         continue
                     assert default_entity_id is not None
                     if raw_rows:
-                        processed_files.append(f)
+                        processed_files.append(f.db_path if isinstance(f, DatabaseTable) else f)
                         used = set().union(*(spec.source_columns() for spec in specs))
                         unused = sorted(set(raw_rows[0]) - used)
                         if unused:
@@ -694,7 +726,7 @@ class IngestionPipeline:
                         declared_tables.add(_store_table(empty_table))
                     continue
 
-                processed_files.append(f)
+                processed_files.append(f.db_path if isinstance(f, DatabaseTable) else f)
                 headers = data.columns if isinstance(data, pl.DataFrame) else list(data[0].keys())
                 canonical_table = self.resolve_canonical_table(f.stem, headers)
                 declared_tables.add(_store_table(canonical_table))
@@ -996,7 +1028,7 @@ class IngestionPipeline:
 
         # Build manifest and append to audit log
         batch, _manifest_dict = ManifestBuilder.build_manifest(
-            entity_id=primary_entity, files=processed_files, row_counts=row_counts
+            entity_id=primary_entity, files=list(dict.fromkeys(processed_files)), row_counts=row_counts
         )
         # Submission manifest: every entity in this batch submitted these tables. A table whose
         # file failed to store is not counted, so its rules are not assessed on missing data.
@@ -1041,7 +1073,7 @@ class IngestionPipeline:
             details={
                 "batch_id": batch.batch_id,
                 "entity_id": primary_entity,
-                "files_count": len(processed_files),
+                "files_count": len(set(processed_files)),
                 "row_counts": row_counts,
                 "entities_detected": sorted(entities_present),
                 "dq_issues_found": len(all_dq_issues),

@@ -1,0 +1,45 @@
+# SAT-SA Exploratory Anomaly Scan Configuration
+#
+# Governs satsa.peers.anomaly_scan.AnomalyScanner. The 20 rules test conditions someone
+# anticipated; this scan looks for indicators nobody wrote a rule for. It computes a fixed
+# catalogue of operational rates for every entity (the catalogue is in the module, so every
+# metric is reviewable code) and flags:
+#
+#   * peer outliers: a rate at least z_threshold robust standard deviations away from the
+#     entity's peer cohort (the cohort the rules use, the entity itself excluded);
+#   * time shifts: a sustained change inside the entity's own submission, found by a
+#     two-sided CUSUM over its monthly values (satsa.peers.spc).
+#
+# Signals are leads for an examiner, not findings: they carry no severity, do not enter the
+# risk index and do not reach the review queue.
+
+anomaly_scan:
+  enabled: true
+
+  # Robust z (median / 1.4826*MAD, with a per-metric spread floor) a rate must reach.
+  # 3.5 is the usual robust-outlier cut-off; about 40 metrics are tested per entity, so a
+  # lower value would flag ordinary variation.
+  z_threshold: 3.5
+
+  # Fewer comparable peer values than this and the metric is not compared for that entity.
+  min_peers: 3
+
+  # An entity rate computed on fewer records than this is not compared (too noisy).
+  min_population: 30
+
+  # Most extreme signals kept per entity (the total found is still reported).
+  max_signals_per_entity: 10
+
+  time_shift:
+    enabled: true
+    # The first months of an entity's submission set its own baseline; CUSUM tests every
+    # later month against it. A change starting inside these months is not seen here.
+    reference_months: 3
+    # Months of data an entity needs before its own trend is tested (at least
+    # reference_months + 2).
+    min_months: 5
+    # A month with fewer alerts than this is left out of the share and timing series.
+    min_month_population: 20
+    # CUSUM slack (k) and decision interval (h), in robust standard deviations.
+    cusum_k: 0.5
+    cusum_h: 4.0
