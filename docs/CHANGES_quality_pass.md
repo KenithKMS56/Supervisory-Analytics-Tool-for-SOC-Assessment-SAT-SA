@@ -34,6 +34,7 @@ Each documented behaviour below was checked against the code before anything was
 | M20 | `scripts/benchmark_scale.py --workdir` | `--help`: "scratch directory" | Each stage process changes into its workspace and then uses the workspace path again, so a relative `--workdir` failed every ingest ("No supported data files found in build\bench\bench_10x50000\csv"). The default (the system temp directory, an absolute path) was not affected, which is why earlier runs worked. | **Code fixed** in Phase 8: the work directory is made absolute first. Found by the Phase 8 benchmark run, which failed this way before it was re-run. |
 | M21 | README | Documentation index linked `file:///docs/...` (12 links, which resolve to the root of the reader's disk, not the repository); "Method 2 ... (Under 1 Minute)", never measured; Method 2 served SAT-SA on `--port 8000`, the Admin Portal's port, while everything else says `:8001`; "871 passing tests" and the test row's Python 3.13 run, both from the baseline; `infrastructure.md` described as a "5M alert projection", withdrawn in Phase 2 | (docs only) | **Doc was wrong or stale.** Corrected in Phase 8; see the Phase 8 entry. |
 | M22 | Capability domains | README portfolio view: "8-domain capability heatmap (Detection, Triage, Escalation, Hygiene, Compliance, etc.)" | `config/scoring.yaml` defines exactly the problem statement's eight capabilities: Threat Detection, Investigation, Escalation, Incident Response, Security Operations, Governance and Oversight, Operational Discipline, Cyber Resilience | **Doc was wrong.** README now names the eight domains as configured. Found in the requirement review after Phase 8, which also refreshed `docs/ps_traceability.md` F3 to the final benchmark. |
+| M23 | Installing with pip | README Method 3: `pip install -e ".[dev]"`, then `pytest` | `pyproject.toml` has no `dev` extra; the development tools are a PEP 735 dependency group (`[dependency-groups] dev`), so that command installs SAT-SA without pytest, ruff or mypy (pip only warns that the extra does not exist). Present since before the baseline. | **Doc was wrong.** README now uses `pip install -e . --group dev` (pip 25.1 or later). |
 
 ## Process note: another session edited the same working tree
 
@@ -661,3 +662,61 @@ Each is detailed in its phase entry above.
   "Under 1 Minute" setup -> removed (Phase 2, Phase 8).
 - README test and coverage figures from the baseline (871 tests, Python 3.13) -> this
   phase's run.
+
+### Requirement closure (after Phase 8): F2, F7, F8, F10
+
+A review of every problem-statement requirement against this branch found four still partial:
+database exports and APIs were not wired into ingest (F2); only 2 of 20 rules used an outlier
+statistic and nothing looked for "previously unknown indicators" (F7); only 4 of 20 rules
+compared against peers (F8); controls and processes were prioritised only through domain
+scores (F10). Another session had already built all four on `feat/anomaly-scan-wip`
+(commit `0ab62f2`, made on top of Phase 2). At the user's direction that commit was applied to
+this branch instead of being written again.
+
+**What it brings** (details in its own commit message and in DECISIONS.md ADR-007):
+- `satsa/peers/anomaly_scan.py`, `config/anomaly.yaml`: about 40 operational rates per entity
+  across the eight domains, flagged as peer outliers (robust z >= 3.5 against the cohort) or
+  time shifts (CUSUM against the entity's first three months). Leads are stored per run and
+  shown on the entity profile, the portfolio, the entity report and `GET /api/v1/anomalies`,
+  and are **not scored**.
+- `satsa/scoring/control_priorities.py`: controls (rules) and processes (domains) ranked for
+  review on the portfolio and at `GET /api/v1/priorities`.
+- `satsa ingest` reads SQLite database exports table by table; `--api-config` stages loopback
+  REST endpoints and ingests them through the same checks.
+- `tests/test_anomaly_scan.py` (15 tests).
+
+**Reconciled with Phases 3-8:** six conflicts, each two independent additions (imports in
+`api/routes.py` and `report/generator.py`; the database-table reader next to Phase 5's
+columnar path in `ingest/pipeline.py`; ADR-007 placed before ADR-008 and ADR-009; the two
+traceability tables, where the Phase 6 format was kept and rows F2, F7, F8, F10 rewritten).
+mypy then found that Phase 5's largest-CSV-first read was typed for files only; a database
+table now never enters it (`isinstance(f, Path)`), which was already true at run time because
+its suffix is `.table`. The README sections it added were condensed to one paragraph, so the
+README stays under its baseline size (39,366 bytes); the method is in
+`docs/analytics_methodology.md` Sections 3B and 4.5. `docs/architecture.md` gained the scan,
+the ranking and the new ingest paths.
+
+**Verified** (2026-10-02, Python 3.11.16, Windows 11):
+- `tests/test_golden_findings.py` passes: every stored row, DQ issue, finding, score,
+  review-queue item and systemic finding is identical to the snapshot taken before Phase 5.
+  The scan adds leads and changes nothing that was there.
+- `uv run coverage run --branch --source=src/satsa -m pytest tests -q -p no:cacheprovider`:
+  1,130 passed, 33 skipped, 0 failed (869.8 s); coverage 89.3% (9,576 statements, 832 missed;
+  2,688 branches, 319 partial; `anomaly_scan.py` 94.4%, `control_priorities.py` 100%); working data unchanged by the suite; `satsa validate` 21/21,
+  `satsa validate-stress` 3/3, `satsa audit verify` OK, `ruff check .` and `mypy src` clean.
+- `satsa validate-independent --seeds 20`: recall and precision 487/487, 0 of 245 decoys; every pooled result
+  identical to the run before the scan was added (only per-seed timings differ, so the committed
+  report was kept).
+- Benchmark (`docs/benchmarks.md`, "Final code"): at 5,000,000 alerts ingest 46.6 s
+  (5,425 MiB), assessment 124.0 s (3,751 MiB peak, against 3,301 MiB before the scan), 150
+  findings as before. README, `docs/infrastructure.md`, both traceability tables and
+  EVIDENCE.md now quote this run.
+
+**Also found:** README Method 3 installed with `pip install -e ".[dev]"`, an extra that has
+never existed (M23).
+
+**Requirement status now** (`docs/ps_traceability.md`): F1-F17, D1-D6, O1-O6 met, several on
+synthetic data only. Not closable in code: accuracy against real examiner findings (§8; the
+shadow-pilot method exists and has not been run on real data), usability measured with
+examiners (F14), trends over successive real submissions (F16), a built container image and a
+CI run.

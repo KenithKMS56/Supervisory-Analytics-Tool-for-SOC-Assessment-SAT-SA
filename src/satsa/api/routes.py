@@ -42,11 +42,13 @@ from satsa.ingest.pipeline import IngestionPipeline, default_entity_record
 from satsa.models.canonical import Entity
 from satsa.models.outputs import ExaminerFeedback
 from satsa.netguard import install_egress_guard, uninstall_egress_guard
+from satsa.peers.anomaly_scan import format_value as format_metric_value
 from satsa.peers.grouping import PeerResolver
 from satsa.report.generator import ReportGenerator, ReportNotFoundError
 from satsa.report.naming import entity_pdf_name, finding_pdf_name, portfolio_pdf_name
 from satsa.rules.negative_space import REVIEW_PERIOD_MONTHS_RANGE
 from satsa.rules.registry import RuleRegistry
+from satsa.scoring.control_priorities import rank_controls, rank_processes
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
 from satsa.scoring.scorer import ScoringEngine, band_tier, blind_review_concordance
@@ -714,6 +716,16 @@ async def view_portfolio(request: Request) -> Response:
     # not folded into any per-entity finding card. See satsa.rules.systemic.
     systemic_findings = sqlite_store.get_systemic_findings(run_id)
 
+    # Controls (rules) and processes (domains) to prioritise, plus exploratory leads per
+    # entity. See satsa.scoring.control_priorities and satsa.peers.anomaly_scan.
+    priority_controls = rank_controls(sqlite_store.conn, run_id)
+    priority_processes = rank_processes(sqlite_store.conn, run_id)
+    lead_counts: dict[str, int] = {}
+    for sig in sqlite_store.get_anomaly_signals(run_id):
+        lead_counts[sig["entity_id"]] = lead_counts.get(sig["entity_id"], 0) + 1
+    for e in ranked_entities:
+        e["lead_count"] = lead_counts.get(e["entity_id"], 0)
+
     duckdb_store.close()
     sqlite_store.close()
 
@@ -739,6 +751,8 @@ async def view_portfolio(request: Request) -> Response:
             "heatmap_domains": domains,
             "heatmap_data": heatmap_data,
             "systemic_findings": systemic_findings,
+            "priority_controls": priority_controls,
+            "priority_processes": priority_processes,
         },
     )
 
@@ -820,6 +834,7 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
     kpi_gap_threshold = float(
         _load_rules_config()["rules"].get("EG10", {}).get("params", {}).get("mttr_gap_ratio_threshold", 0.60)
     )
+    anomaly_leads = _display_signals(sqlite_store.get_anomaly_signals(run_id, entity_id))
 
     duckdb_store.close()
     sqlite_store.close()
@@ -839,8 +854,18 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
             "band_note": band_note,
             "kpi_comparison": kpi_comparison,
             "kpi_gap_threshold": kpi_gap_threshold,
+            "anomaly_leads": anomaly_leads,
         },
     )
+
+
+def _display_signals(signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Anomaly signals with their value and baseline formatted on the metric's own scale."""
+    for sig in signals:
+        scale = sig.get("detail", {}).get("scale", "per_unit")
+        sig["value_display"] = format_metric_value(sig["value"], scale)
+        sig["baseline_display"] = format_metric_value(sig["baseline"], scale)
+    return signals
 
 
 MIN_PEERS_FOR_MEDIAN = 3
@@ -1235,6 +1260,42 @@ async def api_list_findings(entity_id: str | None = None) -> list[dict[str, Any]
     rows = [{**dict(r), "supervisory_notice": FINDING_NOTICE} for r in cur.fetchall()]
     sqlite_store.close()
     return rows
+
+
+def _latest_run_id(sqlite_store: SQLiteStore) -> str:
+    row = sqlite_store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
+    return row["run_id"] if row else ""
+
+
+@app.get("/api/v1/anomalies", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
+async def api_list_anomalies(entity_id: str | None = None, run_id: str | None = None) -> list[dict[str, Any]]:
+    """Exploratory anomaly signals (leads, not findings) of a run, the latest by default."""
+    if entity_id:
+        require_valid_entity_id(entity_id)
+    sqlite_store = get_sqlite_store()
+    try:
+        signals = sqlite_store.get_anomaly_signals(run_id or _latest_run_id(sqlite_store), entity_id)
+    finally:
+        sqlite_store.close()
+    return [{**sig, "supervisory_notice": FINDING_NOTICE} for sig in signals]
+
+
+@app.get("/api/v1/priorities", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
+async def api_priorities(run_id: str | None = None) -> dict[str, Any]:
+    """Controls (rules) and processes (domains) ranked for manual review in a run."""
+    sqlite_store = get_sqlite_store()
+    try:
+        rid = run_id or _latest_run_id(sqlite_store)
+        controls = rank_controls(sqlite_store.conn, rid)
+        processes = rank_processes(sqlite_store.conn, rid)
+    finally:
+        sqlite_store.close()
+    return {
+        "run_id": rid,
+        "controls": [{**c, "supervisory_notice": FINDING_NOTICE} for c in controls],
+        "processes": [{**p, "supervisory_notice": FINDING_NOTICE} for p in processes],
+        "supervisory_notice": SUPERVISORY_NOTICE,
+    }
 
 
 @app.get("/api/v1/queue", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])

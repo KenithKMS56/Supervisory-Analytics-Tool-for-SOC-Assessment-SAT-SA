@@ -49,8 +49,9 @@ The Phase 5 tables are those runs' own output; the raw results of every run are 
 
 ## Final code (2026-10-02)
 
-The code at the end of the quality pass (commit `61d8d55`, Phase 7, plus only the benchmark
-script's `--workdir` fix), on the same machine and Python as the runs below:
+The code at the end of the quality pass, including the exploratory anomaly scan and the
+control/process ranking (which run inside every assessment), on the same machine and Python as
+the runs below:
 
 ```
 python scripts/benchmark_scale.py --configs 10x50000,50x100000 --workdir build/bench --out <file> --json <file>
@@ -58,35 +59,47 @@ python scripts/benchmark_scale.py --configs 10x50000,50x100000 --workdir build/b
 
 | Entities x alerts each | Alerts | Rows (all tables) | CSV | Parquet | Ingest | Ingest peak | Assess | Assess peak | Findings |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 10 x 50,000 | 500,000 | 2,171,868 | 226 MiB | 23 MiB | 7.1 s | 797 MiB | 9.8 s | 454 MiB | 30 |
-| 50 x 100,000 | 5,000,000 | 21,365,139 | 2,248 MiB | 221 MiB | 54.5 s | 5,424 MiB | 107.3 s | 3,301 MiB | 150 |
+| 10 x 50,000 | 500,000 | 2,171,868 | 226 MiB | 23 MiB | 6.5 s | 805 MiB | 10.6 s | 488 MiB | 30 |
+| 50 x 100,000 | 5,000,000 | 21,365,139 | 2,248 MiB | 221 MiB | 46.6 s | 5,425 MiB | 124.0 s | 3,751 MiB | 150 |
 
 Page loads (first request, and median of the next 5):
 
 | Entities x alerts each | Reload (old per-request cost) | Page | First request | Repeat (median of 5) | Pages peak |
 |---|---:|---|---:|---:|---:|
-| 10 x 50,000 | 1.65 s | `/portfolio` | 1,794 ms | 34 ms | 457 MiB |
-|  |  | `/alerts` | 100 ms | 72 ms |  |
-|  |  | `/entity/{entity}` | 71 ms | 63 ms |  |
-|  |  | `/queue` | 34 ms | 22 ms |  |
-|  |  | `/api/v1/entities` | 25 ms | 24 ms |  |
+| 10 x 50,000 | 1.77 s | `/portfolio` | 1,757 ms | 33 ms | 457 MiB |
+|  |  | `/alerts` | 87 ms | 69 ms |  |
+|  |  | `/entity/{entity}` | 76 ms | 63 ms |  |
+|  |  | `/queue` | 28 ms | 20 ms |  |
+|  |  | `/api/v1/entities` | 23 ms | 23 ms |  |
 | | | *30 requests caused 1 table load(s)* | | | |
-| 50 x 100,000 | 14.73 s | `/portfolio` | 15,421 ms | 77 ms | 3,284 MiB |
-|  |  | `/alerts` | 499 ms | 459 ms |  |
-|  |  | `/entity/{entity}` | 114 ms | 103 ms |  |
+| 50 x 100,000 | 15.03 s | `/portfolio` | 17,444 ms | 81 ms | 3,281 MiB |
+|  |  | `/alerts` | 475 ms | 458 ms |  |
+|  |  | `/entity/{entity}` | 125 ms | 106 ms |  |
 |  |  | `/queue` | 30 ms | 21 ms |  |
-|  |  | `/api/v1/entities` | 61 ms | 62 ms |  |
+|  |  | `/api/v1/entities` | 62 ms | 64 ms |  |
 | | | *30 requests caused 1 table load(s)* | | | |
 
+The same command on the code just before the anomaly scan was added (the Phase 8 code, commit `0c32b57`), earlier
+the same day:
+
+| Entities x alerts each | Alerts | Rows (all tables) | CSV | Parquet | Ingest | Ingest peak | Assess | Assess peak | Findings |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 x 50,000 | 500,000 | 2,171,868 | 226 MiB | 23 MiB | 7.1 s | 797 MiB | 9.8 s | 454 MiB | 30 |
+| 50 x 100,000 | 5,000,000 | 21,365,139 | 2,248 MiB | 221 MiB | 54.5 s | 5,424 MiB | 107.3 s | 3,301 MiB | 150 |
+
+With the scan, assessment at 5,000,000 alerts took 124.0 s instead of 107.3 s and peaked at
+3,751 MiB instead of 3,301 MiB; findings are identical (150). The time difference is within
+this machine's run-to-run spread for the same code (106 s to 191 s, sections below), so how
+much of it is the scan was not separated; the extra memory is consistent with the scan's
+metric tables. Ingest code did not change (46.6 s here against 54.5 s: run-to-run variation).
+
 Compared with the first run of this page on 2026-09-30 (Section "Earlier recorded run"), at
-5,000,000 alerts: ingest 603.0 s to 54.5 s, ingest peak 13,248 to 5,424 MiB, assessment 310.2 s
-to 107.3 s. That run used another Python and Windows build; the like-for-like comparison of the
-ingest change is the Phase 5 table below (529.7 s to 54.2 s). Only the ingest change is a code
-improvement. The assessment path changed since then only by ORDER BY clauses, finding-card text
-and how text timestamps are read at load (M16), and this machine's assessment time has varied
-from 106 s to 191 s between runs of the same code (sections below), so the assessment
-difference is not claimed as an improvement. The first page after a run or an ingest still
-reloads every table (15.4 s here; 22.7 to 27.0 s in earlier runs).
+5,000,000 alerts: ingest 603.0 s to 46.6 s, ingest peak 13,248 to 5,425 MiB. That run used
+another Python and Windows build; the like-for-like comparison of the ingest change is the
+Phase 5 table below (529.7 s to 54.2 s). Assessment is not compared as an improvement: its
+time varies widely between runs here, and the scan has since added work to it. The first page
+after a run or an ingest still reloads every table (17.4 s here; 15.4 s to 27.0 s in earlier
+runs).
 
 ## Ingest before and after the Phase 5 change
 
@@ -478,7 +491,7 @@ Before:
 ]
 ```
 
-Final code (2026-10-02):
+Before the anomaly scan was added (`0c32b57`, 2026-10-02):
 
 ```json
 [
@@ -591,6 +604,123 @@ Final code (2026-10-02):
    "wall_seconds": 37.93573589999869
   },
   "parquet_mb": 221.36109066009521
+ }
+]
+```
+
+Final code, with the anomaly scan (2026-10-02):
+
+```json
+[
+ {
+  "entities": 10,
+  "alerts_per_entity": 50000,
+  "alerts": 500000,
+  "rows": 2171868,
+  "csv_mb": 226.37182521820068,
+  "generate_seconds": 1.1681518999994296,
+  "ingest": {
+   "seconds": 6.519486799999868,
+   "rows": 2171878,
+   "dq_issues": 0,
+   "ok": true,
+   "peak_mb": 804.78515625,
+   "wall_seconds": 8.169195599999512
+  },
+  "assess": {
+   "seconds": 10.592153699999471,
+   "findings": 30,
+   "queue": 300,
+   "ok": true,
+   "peak_mb": 488.16796875,
+   "wall_seconds": 11.807548400000087
+  },
+  "pages": {
+   "reload_seconds": 1.7654299999994691,
+   "pages": {
+    "/portfolio": {
+     "first": 1.75749580000047,
+     "repeat_median": 0.03309209999861196
+    },
+    "/alerts": {
+     "first": 0.08695380000062869,
+     "repeat_median": 0.06851900000037858
+    },
+    "/entity/{entity}": {
+     "first": 0.0758322000001499,
+     "repeat_median": 0.06324829999903159
+    },
+    "/queue": {
+     "first": 0.028021199999784585,
+     "repeat_median": 0.019981399998869165
+    },
+    "/api/v1/entities": {
+     "first": 0.022831999998743413,
+     "repeat_median": 0.022611200000028475
+    }
+   },
+   "table_loads": 1,
+   "requests": 30,
+   "ok": true,
+   "peak_mb": 457.265625,
+   "wall_seconds": 6.814722399998573
+  },
+  "parquet_mb": 22.58732509613037
+ },
+ {
+  "entities": 50,
+  "alerts_per_entity": 100000,
+  "alerts": 5000000,
+  "rows": 21365139,
+  "csv_mb": 2248.088671684265,
+  "generate_seconds": 7.160080799998468,
+  "ingest": {
+   "seconds": 46.57715720000124,
+   "rows": 21365189,
+   "dq_issues": 0,
+   "ok": true,
+   "peak_mb": 5424.89453125,
+   "wall_seconds": 48.65939299999991
+  },
+  "assess": {
+   "seconds": 123.95488170000135,
+   "findings": 150,
+   "queue": 1500,
+   "ok": true,
+   "peak_mb": 3750.94921875,
+   "wall_seconds": 125.6879313999998
+  },
+  "pages": {
+   "reload_seconds": 15.028397800000675,
+   "pages": {
+    "/portfolio": {
+     "first": 17.444206699999995,
+     "repeat_median": 0.08050809999986086
+    },
+    "/alerts": {
+     "first": 0.47464530000070226,
+     "repeat_median": 0.4580017999996926
+    },
+    "/entity/{entity}": {
+     "first": 0.12525209999876097,
+     "repeat_median": 0.1055506000011519
+    },
+    "/queue": {
+     "first": 0.029784300000756048,
+     "repeat_median": 0.02077819999976782
+    },
+    "/api/v1/entities": {
+     "first": 0.06215729999894393,
+     "repeat_median": 0.0635061000011774
+    }
+   },
+   "table_loads": 1,
+   "requests": 30,
+   "ok": true,
+   "peak_mb": 3281.3203125,
+   "wall_seconds": 39.880950400000074
+  },
+  "parquet_mb": 221.36116313934326
  }
 ]
 ```

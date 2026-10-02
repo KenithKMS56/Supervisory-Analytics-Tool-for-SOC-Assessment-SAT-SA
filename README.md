@@ -37,7 +37,7 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is bu
 3. **Cryptographic Tamper-Evidence:**
    Every batch upload, schema validation, assessment run, rule configuration change, administrative provisioning action, and human examiner disposition is recorded into append-only SQLite logs hash-chained (SHA3-256 for new entries; legacy SHA-256 entries still verify). Editing, inserting, deleting or reordering an entry in the middle of the chain breaks verification; removal of the newest entries or a full recomputation is only caught against an off-box checkpoint, signed with Ed25519 by `satsa audit checkpoint --sign` (DECISIONS.md ADR-005, ADR-008). Tamper-evident, not tamper-proof.
 4. **Columnar Analytics, Measured at Scale:**
-   DuckDB over Parquet, no database server. On one 4-core / 8-thread laptop (AMD Ryzen 5 7235HS, 23.7 GB RAM) with uniform synthetic data, 5,000,000 alerts (21.4M rows) took **54.5 s to ingest** (5.7 GB peak memory) and **107 s to assess** (3.5 GB peak; this varied from 106 to 191 s between runs), recorded 2026-10-02 in [`docs/benchmarks.md`](docs/benchmarks.md). A single in-memory aggregation query is much faster than that (7.6M rows/s at 1M rows, `satsa benchmark`), but scan speed is not end-to-end time.
+   DuckDB over Parquet, no database server. On one 4-core / 8-thread laptop (AMD Ryzen 5 7235HS, 23.7 GB RAM) with uniform synthetic data, 5,000,000 alerts (21.4M rows) took **46.6 s to ingest** (5.7 GB peak memory) and **124 s to assess** (3.9 GB peak; assessment time varies widely between runs), recorded 2026-10-02 in [`docs/benchmarks.md`](docs/benchmarks.md). A single in-memory aggregation query is much faster than that (7.6M rows/s at 1M rows, `satsa benchmark`), but scan speed is not end-to-end time.
 5. **Cognitive Bias Mitigation (Blinded Review Studio):**
    Includes a double-blind supervisory mode that presents raw operational metrics without showing pre-calculated risk scores, helping examiners reach unbiased conclusions before revealing inter-rater concordance.
 6. **Admin Activity Feed (Operator Session Monitor):**
@@ -86,6 +86,9 @@ third-party SOC provider all trigger the identical rule in the same run, that is
 "systemic gap, possible shared-vendor issue" finding on the portfolio dashboard, separate from any
 individual entity's finding cards. See [`docs/analytics_methodology.md`](docs/analytics_methodology.md) Section 3A.
 
+### Exploratory Leads and Review Priorities (beyond the 20 rules)
+To surface indicators no rule tests, `satsa.peers.anomaly_scan` computes about 40 operational rates per entity across the eight domains and flags **peer outliers** (robust z $\ge 3.5$ against the peer cohort) and **time shifts** (CUSUM against the entity's first three months). Leads appear on the entity profile and portfolio and at `GET /api/v1/anomalies`; they are **not scored** (no severity, no effect on the risk index or review queue; DECISIONS.md ADR-007). The portfolio also ranks **controls** (rules) and **processes** (domains) for review (`GET /api/v1/priorities`). Method: [`docs/analytics_methodology.md`](docs/analytics_methodology.md) Sections 3B and 4.5.
+
 ---
 
 ## Interactive Dashboard Views
@@ -107,9 +110,9 @@ The application provides a fully server-rendered, responsive web interface:
    - Ranked national entity league table sorted by Composite Risk Index (CRI, 0–100).
    - Interactive filtering (e.g. click *"Entities Require Action"* to isolate outlier CSEs).
    - 8-domain capability heatmap: the problem statement's eight capabilities (Threat Detection, Investigation, Escalation, Incident Response, Security Operations, Governance and Oversight, Operational Discipline, Cyber Resilience).
-   - Instant HTML and PDF executive dossier export buttons.
+   - HTML and PDF executive dossier export.
 3. **National Alert Explorer (`/alerts`)**:
-   - Server-side paginated browser of submitted alert records (25 records/page) handling thousands of alerts smoothly.
+   - Server-side paginated browser of submitted alert records (25 records/page).
    - Cross-filtering by entity, severity, disposition, and search query with live duration tracking.
 4. **Blinded Review Studio (`/blind-review`)**:
    - Cognitive debiasing workspace: presents raw empirical metrics (MTTR, SOAR volume, true-positive rates) without scores.
@@ -127,7 +130,7 @@ The application provides a fully server-rendered, responsive web interface:
    - Radar capability chart contrasting the entity against the national peer median.
    - Self-declared vs. empirically computed KPI reconciliation tables.
 9. **Transparent Finding Card (`/finding/{finding_id}`)**:
-   - Full explainability card displaying rule rationale, exact parameter values, benign explanations, suggested examiner interview questions, and evidentiary drill-down tables.
+   - Full explainability card displaying rule rationale, exact parameter values, benign explanations, a suggested examiner check (what to verify or request from the entity), and evidentiary drill-down tables.
 10. **Audit Trail & Cryptographic Verification (`/audit`)**:
     - Live verification of the tamper-evident audit hash chain (SHA3-256; legacy SHA-256 entries still verify).
     - Run history, configuration hashes, record counts, and execution metrics.
@@ -253,8 +256,8 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 | **Ranking Stability ($\rho$)** (primary dataset) | Spearman $\rho = \mathbf{1.0000}$ ($\pm 20\%$ domain-weight perturbations) | $\ge 0.8500$ | Meets target |
 | **Rule Threshold Sensitivity** (primary dataset) | **4 of 66** single-threshold ±20% moves change an outcome, all injected defects built just over their threshold (EG05 pairs, EG07, NS05, NS08's review period). None creates a false alarm on a clean entity on this seed; across the hard set, lowering EG05's pair threshold does. | n/a -- reported for transparency | Margins are synthetic; real calibration needs the pilot |
 | **DuckDB Scan Throughput** (one in-memory query, one thread; not an assessment time) | **7,570,338 rows/second** at 1,000,000 rows (`satsa benchmark`, 2026-10-01) | n/a | Scan only; end-to-end figures in the next row |
-| **Scale, end to end** (`docs/benchmarks.md`, recorded 2026-10-02) | 5,000,000 alerts (50 entities, 21.4M rows): ingest **54.5 s** (5.7 GB peak), assessment **107 s** (3.5 GB peak); first page after a run 15.4 s, repeats under 0.5 s | n/a | Measured on a 4-core / 24 GB laptop, uniform synthetic data |
-| **Automated Test Suite** | **1,107 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), incl. property-based tests, Python 3.11 (Windows), 2026-10-02. Statement-and-branch coverage **89.2%**; rules 94-100%, scoring 83-100%, audit-chain store 91%. Linux and CI not run. | 100% passing | Verified locally |
+| **Scale, end to end** (`docs/benchmarks.md`, recorded 2026-10-02) | 5,000,000 alerts (50 entities, 21.4M rows): ingest **46.6 s** (5.7 GB peak), assessment **124 s** (3.9 GB peak); first page after a run 17.4 s, repeats under 0.5 s | n/a | Measured on a 4-core / 24 GB laptop, uniform synthetic data |
+| **Automated Test Suite** | **1,130 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), incl. property-based tests, Python 3.11 (Windows), 2026-10-02. Statement-and-branch coverage **89.3%**; rules 94-100%, scoring 83-100%, audit-chain store 91%. Linux and CI not run. | 100% passing | Verified locally |
 
 ---
 
@@ -262,13 +265,13 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 
 ### Prerequisites
 - Docker & Docker Compose (for containerized deployment) **OR** Python **`>=3.11`** (for local CLI development)
-- Modern web browser (Chrome, Firefox, Safari, Edge)
+- A current web browser
 
 ---
 
 ### Method 1: One-Click Docker Deployment (Demo; the image has not been built in this project's recorded evidence)
 
-The easiest way to run the entire unified platform (NCIIPC Admin Portal + SAT-SA + Shared RBAC + Admin Activity Feed) without configuring local Python environments:
+Runs both portals (Admin Portal and SAT-SA, shared RBAC and activity feed) without a local Python environment:
 
 1. **Start the platform:**
    - **Windows One-Click**:
@@ -293,7 +296,7 @@ The easiest way to run the entire unified platform (NCIIPC Admin Portal + SAT-SA
    | `analyst` | NCIIPC Analyst | `ChangeMe-Analyst#2026` | SAT-SA (`:8001`): technical operator workspace |
    | `examiner` | NCIIPC Examiner | `ChangeMe-Examiner#2026` | SAT-SA (`:8001`): executive review workspace |
 
-   > **Upgrading an existing database:** the former `supervisor` role is migrated to `analyst` automatically on startup. The untouched demo account `supervisor` / `ChangeMe-Supervisor#2026` becomes `analyst` / `ChangeMe-Analyst#2026`; an account whose passphrase was rotated keeps its username.
+   > **Upgrading:** the former `supervisor` role becomes `analyst` on startup; the untouched demo account `supervisor` is renamed `analyst` (`ChangeMe-Analyst#2026`), a rotated one keeps its name.
 
    > **First login:** every seeded account must choose a new passphrase the first time it signs in. Until it does, its session can open the change-password page and nothing else (pages redirect there; APIs and mutating requests return HTTP 403). The new passphrase must be at least 12 characters and cannot be one of the defaults above. Accounts an administrator creates or resets with "force password change" ticked are held to the same rule.
 
@@ -351,45 +354,15 @@ For an air-gapped machine, install from a wheelhouse instead: [`docs/offline_ins
 
 ### Method 3: Standard Python `pip` & `venv`
 
-If you prefer standard Python virtual environments:
-
-1. **Clone the repository:**
-   ```bash
-   git clone <your-repo-url> satsa
-   cd satsa
-   ```
-
-2. **Create and activate a virtual environment:**
-   ```bash
-   python3 -m venv .venv
-
-   # Linux / macOS:
-   source .venv/bin/activate
-
-   # Windows (PowerShell):
-   .venv\Scripts\Activate.ps1
-   # Windows (CMD):
-   .venv\Scripts\activate.bat
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   pip install --upgrade pip
-   pip install -e ".[dev]"
-   ```
-
-4. **Run the test suite:**
-   ```bash
-   pytest
-   ```
-
-5. **Initialize data and run:**
-   ```bash
-   satsa generate-data --output-dir data/generated --seed 42 --alerts 1500
-   satsa ingest --data-dir data/generated/csv --parquet-dir data --db-path data/satsa.db
-   satsa run --period 2026-Q1
-   satsa serve --host 127.0.0.1 --port 8001
-   ```
+```bash
+git clone <your-repo-url> satsa && cd satsa
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install --upgrade pip
+pip install -e . --group dev     # dev tools are a dependency group (pip >= 25.1)
+pytest
+```
+Then run the four commands of Method 2 without `uv run`.
 
 ---
 
@@ -402,7 +375,7 @@ Usage: satsa [OPTIONS] COMMAND [ARGS]...
 
 Commands:
   generate-data   Generate a synthetic periodic SOC submission with ground-truth defects.
-  ingest          Ingest CSVs, apply HMAC masking, and build Parquet stores
+  ingest          Ingest CSV/JSON/SQLite exports (or --api-config local APIs), apply HMAC masking, build Parquet
                   (--source splunk|servicenow|thehive --entity <id> for a product export).
   run             Execute the supervisory assessment across all entities.
   seed-history    Seed genuine multi-period historical runs for the trend chart.

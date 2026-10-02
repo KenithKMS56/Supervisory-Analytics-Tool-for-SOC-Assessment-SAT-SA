@@ -1,6 +1,7 @@
 """Supervisory report generation module: self-contained HTML, PDF (ReportLab), and CSV."""
 
 import csv
+import html
 import json
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,7 @@ from reportlab.platypus import (
 
 from satsa import FINDING_NOTICE
 from satsa.explain.finding_card import WHY_IT_MATTERS
+from satsa.peers.anomaly_scan import format_value
 from satsa.report.pdf_charts import (
     CRITICAL_THRESHOLD,
     MODERATE_THRESHOLD,
@@ -170,6 +172,32 @@ class ReportGenerator:
         )
         queue_items = [dict(r) for r in cur.fetchall()]
 
+        # Exploratory leads: shown apart from the findings, never scored (DECISIONS.md ADR-007).
+        lead_rows = "".join(
+            "<tr><td>{kind}</td><td>{label}</td><td>{value}</td><td>{baseline}</td><td><small>{why}</small></td></tr>".format(
+                kind="Peer outlier" if s["kind"] == "peer_outlier" else "Time shift",
+                label=html.escape(s["label"]),
+                value=format_value(s["value"], s["detail"].get("scale", "per_unit")),
+                baseline=format_value(s["baseline"], s["detail"].get("scale", "per_unit")),
+                why=html.escape(s["rationale"]),
+            )
+            for s in self.sqlite_store.get_anomaly_signals(run_id, entity_id)
+        )
+        leads_card = (
+            f"""
+  <div class="card">
+    <h3>Exploratory Leads (not scored)</h3>
+    <p style="font-size: 0.85rem;">Rates at this entity that stand out from its peers or shifted within the period. No rule tests most of them and they are not part of the risk index. Ask the entity what explains each one.</p>
+    <table>
+      <thead><tr><th>Kind</th><th>Indicator</th><th>Entity value</th><th>Baseline</th><th>Why it was flagged</th></tr></thead>
+      <tbody>{lead_rows}</tbody>
+    </table>
+  </div>
+"""
+            if lead_rows
+            else ""
+        )
+
         html_content = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -233,7 +261,7 @@ class ReportGenerator:
       </tbody>
     </table>
   </div>
-
+{leads_card}
   <div class="footer">
     <div class="notice">Indicators requiring supervisory review; not a compliance determination.</div>
     <div>Run ID: {run_id} | Config Hash: {config_hash} | Generated: {gen_time} | Fully Offline / Air-Gapped Engine</div>
