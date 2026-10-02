@@ -426,3 +426,72 @@ Decided at the Phase 5 pause: fix everything found in Phase 5 before Phase 6.
 - **Result:** 5,761 to 5,435 MiB. The peak is now under 6 GB (5,722 MiB), at the cost of about
   6 s (13%) more ingest time at 5,000,000 alerts (`docs/benchmarks.md`, "Peak-memory change").
 - The "under 6 GB" target in Phase 5 is now met. Before this it was not reliably met.
+
+### Phase 6: examiner workflow and traceability
+
+**The finding page** (`src/satsa/ui/templates/finding_detail.html`, `src/satsa/api/routes.py`,
+`src/satsa/explain/finding_card.py`) is in five numbered sections:
+1. what was found;
+2. why it matters;
+3. evidence;
+4. confidence and limitations;
+5. next step.
+
+- **Why it matters is new.** `WHY_IT_MATTERS` holds one statement per rule, following the
+  rule's Purpose in `docs/analytics_methodology.md` and worded as what the pattern *may* mean.
+- **The evidence section now also shows two things the page never displayed:**
+  - the figures the rule recorded (`peer_comparison`);
+  - the rule's parameters.
+- **What the parameter values are.** A run stores only a hash of `config/rules.yaml`, not the
+  values. The page therefore shows the current values and says whether the configuration is
+  unchanged since the finding's run.
+- **Confidence shows as a whole percentage** ("100%", not "100.0%").
+- **Tests:** `tests/test_finding_page.py` (23 tests).
+  - For one finding of each of the 19 rules with a finding in the test data (all but EG02), as
+    an examiner: the five sections, in order, with the right content in each.
+  - Every registered rule has a statement.
+  - The parameter table and both configuration messages.
+- **Doc correction:** `docs/functional_design.md` §7 described a peer IQR and percentile rank
+  on this page. No rule computes either, and the page never showed them. The section now
+  describes the page as built.
+
+**Traceability** (`docs/ps_traceability.md`):
+- Rewritten as one table: requirement, feature, code, test, and evidence with status.
+- One row for each of the problem statement's 17 functional and 6 deployment requirements, the
+  out-of-scope items and two further statements. The quoted wording is from
+  `docs/legal_traceability.md` §3.
+- The old version used this project's own paraphrased numbering and is replaced.
+- **Statuses are stated as found, not upgraded:**
+  - F2 is Partial: the SQLite and REST adapters are not wired into `satsa ingest` on this branch.
+  - F7, F8 and F10 are Partial.
+  - F14 is "met as built; not measured with examiners".
+- **Tests:**
+  - `tests/test_traceability_links.py`: every path and `file.py::test_name` in the table exists,
+    and every requirement has code and a test. It checks more than 60 references.
+  - `tests/test_dependencies.py` is new evidence for D3-D5. No cloud, telemetry, SaaS or AI/ML
+    client is among the 50 locked packages.
+- F3 cites this session's 5,000,000-alert measurement. `docs/legal_traceability.md` §3 still has
+  the 2026-09-30 figures, which are refreshed in Phase 8 with the others.
+
+**Usability:**
+- `docs/usability_protocol.md`:
+  - 8 timed tasks for 5 to 8 examiners new to the tool;
+  - what counts as correct;
+  - what is recorded;
+  - what the results can and cannot show.
+- `docs/usability/usability_results_template.csv` holds only its header.
+- `scripts/usability_summary.py` uses the standard library only. Per task it gives
+  participants, completion, median time over completed attempts, and total and median errors.
+  It refuses malformed rows, naming the line, and says so when there are no rows.
+- `tests/test_usability_summary.py` (8 tests).
+- **No session has been run**, and the protocol says so at the top.
+
+**Finding PDF:**
+- The finding PDF report (`src/satsa/report/generator.py`) now has a "Why it matters" section
+  after its headline.
+- `tests/test_finding_page.py::test_the_finding_pdf_states_why_it_matters` reads it back from
+  the PDF.
+- The PDF otherwise keeps its own layout: headline, comparison, technical detail, verification
+  step and benign explanations.
+
+**Not done:** no examiner session was run, so there is no usability figure.

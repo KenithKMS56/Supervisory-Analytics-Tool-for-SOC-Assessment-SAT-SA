@@ -35,7 +35,7 @@
     <div class="stat-lbl">Indicator Score (0-100)</div>
   </div>
   <div class="stat-box">
-    <div class="stat-val">{{ (card.confidence * 100)|round(0) }}%</div>
+    <div class="stat-val">{{ (card.confidence * 100)|round|int }}%</div>
     <div class="stat-lbl">Statistical Confidence</div>
   </div>
   <div class="stat-box">
@@ -48,9 +48,9 @@
   </div>
 </div>
 
-<div class="card">
+<section id="found" class="card">
   <div class="card-title">
-    <span>Supervisory Indicator Summary</span>
+    <span>1. What was found</span>
   </div>
   <div style="font-size: 1.05rem; line-height: 1.6; margin-bottom: 1rem;">
     {{ card.rationale }}
@@ -58,39 +58,20 @@
   <div style="background-color: var(--bg-hover); padding: 1rem; border-radius: 6px; border-left: 4px solid var(--accent-blue);">
     <strong>Supervisory Notice:</strong> {{ card.statutory_wording }}
   </div>
-</div>
+</section>
 
-<div class="grid-2">
-  <div class="card">
-    <div class="card-title">
-      <span>Suggested Examiner Verification Procedure</span>
-    </div>
-    <p style="font-size: 0.95rem; line-height: 1.6; color: var(--text-primary);">
-      {{ card.examiner_check }}
-    </p>
-    <div style="margin-top: 1rem;">
-      <h4 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Limitations</h4>
-      <p style="font-size: 0.85rem; color: var(--text-muted);">{{ card.limitations }}</p>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-title">
-      <span>Possible Legitimate Explanations (Confounders)</span>
-    </div>
-    <ul style="padding-left: 1.25rem; font-size: 0.9rem; line-height: 1.6; color: var(--text-secondary);">
-      {% for expl in card.benign_explanations %}
-        <li>{{ expl }}</li>
-      {% else %}
-        <li>No standard benign exemptions documented for this rule pattern.</li>
-      {% endfor %}
-    </ul>
-  </div>
-</div>
-
-<div class="card">
+<section id="why" class="card">
   <div class="card-title">
-    <span>Evidence Traceability Table ({{ card.evidence_records|length }} records)</span>
+    <span>2. Why it matters</span>
+  </div>
+  <p style="font-size: 0.95rem; line-height: 1.6; color: var(--text-primary);">
+    {{ card.why_it_matters or "No statement is recorded for this rule." }}
+  </p>
+</section>
+
+<section id="evidence" class="card">
+  <div class="card-title">
+    <span>3. Evidence ({{ card.evidence_records|length }} records)</span>
   </div>
   <div class="table-responsive">
     <table>
@@ -116,9 +97,76 @@
             </code>
           </td>
         </tr>
+        {% else %}
+        <tr><td colspan="3">No evidence records are stored for this finding.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
-</div>
+  <div class="grid-2" style="margin-top: 1rem;">
+    <div>
+      <h4 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Figures behind the finding</h4>
+      {% if card.peer_comparison %}
+      <table id="peer-comparison">
+        <tbody>
+          {% for k, v in card.peer_comparison.items() %}
+          <tr><td>{{ k|replace('_', ' ') }}</td><td><code>{{ v }}</code></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p style="font-size: 0.85rem; color: var(--text-muted);">This rule records no comparison figures.</p>
+      {% endif %}
+    </div>
+    <div>
+      <h4 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Rule parameters</h4>
+      {% if card.parameters_used %}
+      <table id="rule-parameters">
+        <tbody>
+          {% for k, v in card.parameters_used.items() %}
+          <tr><td>{{ k }}</td><td><code>{{ v }}</code></td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p style="font-size: 0.85rem; color: var(--text-muted);">No parameters are configured for this rule.</p>
+      {% endif %}
+      <p id="config-status" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.5rem;">
+        {% if config.unchanged %}
+        These are the values this run used: the rule configuration is unchanged since the run (configuration {{ config.run_hash }}).
+        {% else %}
+        The rule configuration has changed since this run (run: {{ config.run_hash or "not recorded" }}, now: {{ config.current_hash or "missing" }}). These are the current values, not necessarily the ones the run applied.
+        {% endif %}
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="confidence" class="card">
+  <div class="card-title">
+    <span>4. Confidence and limitations</span>
+  </div>
+  <p style="font-size: 0.95rem; line-height: 1.6;">
+    Statistical confidence: <strong>{{ (card.confidence * 100)|round|int }}%</strong>.
+  </p>
+  <h4 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Limitations</h4>
+  <p style="font-size: 0.9rem; color: var(--text-muted);">{{ card.limitations }}</p>
+  <h4 style="font-size: 0.9rem; color: var(--text-secondary); margin: 1rem 0 0.5rem;">Possible legitimate explanations</h4>
+  <ul style="padding-left: 1.25rem; font-size: 0.9rem; line-height: 1.6; color: var(--text-secondary);">
+    {% for expl in card.benign_explanations %}
+      <li>{{ expl }}</li>
+    {% else %}
+      <li>No standard benign explanations are documented for this rule.</li>
+    {% endfor %}
+  </ul>
+</section>
+
+<section id="next-step" class="card">
+  <div class="card-title">
+    <span>5. Next step</span>
+  </div>
+  <p style="font-size: 0.95rem; line-height: 1.6; color: var(--text-primary);">
+    {{ card.examiner_check }}
+  </p>
+</section>
 {% endblock %}
