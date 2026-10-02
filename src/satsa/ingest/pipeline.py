@@ -1023,7 +1023,7 @@ class IngestionPipeline:
                 "entity_id": primary_entity,
                 "files_count": len(processed_files),
                 "row_counts": row_counts,
-                "entities_detected": list(entities_present),
+                "entities_detected": sorted(entities_present),
                 "dq_issues_found": len(all_dq_issues),
                 "failed_tables": failed_tables,
             },
@@ -1032,7 +1032,7 @@ class IngestionPipeline:
         return {
             "status": "partial" if failed_tables else "success",
             "batch_id": batch.batch_id,
-            "entities": list(entities_present),
+            "entities": sorted(entities_present),
             "row_counts": row_counts,
             "failed_tables": failed_tables,
             "unreadable_files": sorted(unreadable_files),

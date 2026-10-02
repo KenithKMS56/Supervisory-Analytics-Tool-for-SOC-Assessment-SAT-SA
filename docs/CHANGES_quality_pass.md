@@ -26,7 +26,8 @@ Each documented behaviour below was checked against the code before anything was
 | M12 | Submitted entity profile | `docs/data_requirements.md` and the UI: the entity's submitted name, sector, size band and SOC model are what the tool shows and what peer cohorts are built from | On a fresh store, ingest appended a default record ("<id> Operations", "General Infrastructure", "Medium", "inhouse") **after** the submitted rows, and the entity table keeps the newest non-null value per column, so every submitted profile was overwritten. Reproduced by ingesting `data/generated` (the seed-42 demo) with the pre-fix `src` (`git archive` of `37b9bd4`, the commit before the fix): all 10 CSEs came out as "CSE-xx Operations / General Infrastructure / Medium / inhouse"; with the fix, "Northern Power Grid Ltd / power / large / inhouse" etc. Every entity therefore fell into one peer cohort. | **Code bug, fixed** in Phase 4 (`ingest/pipeline.py`: defaults first). Regression tests in `tests/test_entity_profile_ingest.py` fail without the fix. Found because the independent generator gives entities distinct sectors and sizes; the original generator's checks did not depend on cohort membership, and the primary and stress results were the same before and after the fix (21/21, 3/3). |
 | M13 | Canonical schema page | `docs/data_requirements.md` §1.1, §1.5: `soc_model` values `internal`/`hybrid`/`managed_mssp`; criticality 1-5; `declared_kpi(metric_name, declared_value)`; `external_report(report_id, case_id, regulatory_body)`; no `soc_provider`, `comment_len`, `detection_rule`, `remediation`, `sla_policy` | `satsa.models.canonical`: `inhouse`/`hybrid`/`mssp`; criticality 1-4; `declared_kpi(metric, value)`; `external_report(incident_id, reported_to)`; `soc_provider`, `closure.comment_len`, and the three tables exist and are read by rules | **Doc was wrong.** Corrected. Found by writing the independent generator from that page: CSVs built to the page did not load as documented. |
 | M14 | Deterministic output | DECISIONS.md ADR-001: analytics are "strictly deterministic", with "byte-identical reproducibility"; README: "deterministic analytical tool" | Findings, scores and counts were reproducible, but the **evidence records** of EG01, EG02, EG04, EG05, EG08, EG09, NS04 and NS05 were the first rows of a query with no (or no complete) ORDER BY, so they depended on the order rows happened to be stored in. That order changes on a re-ingest (Parquet merge with `unique()`). Reproduced: seed 42 ingested twice, then assessed, in two fresh stores gave different evidence alerts for CSE-03 EG01 (9 of the 10 differed) and therefore different review queues. | **Code fixed** in Phase 5: each of those queries now has a total order (`rules/execution_gaps.py`, `rules/negative_space.py`; EG09 lists the oldest stale case first, the rest by record id). No threshold, count or score changed. `tests/test_golden_findings.py::test_findings_do_not_depend_on_the_order_of_submitted_rows` (same submission, rows shuffled) fails without the fix. Found by the Phase 5 golden test, which failed against its own snapshot before any optimisation. |
-| M15 | Close-before-create DQ check | `docs/validation_summary.md`: alerts closed before they were created "are already reported by the `close_before_create` data-quality check"; `docs/architecture.md` listed the check among those ingest runs | `DQValidator.check_timestamp_logic` compares only values that are Python `datetime`s. Timestamps in a CSV or JSON submission arrive as text, so for those submissions the check never runs; it works for product exports through a mapping, whose timestamps are parsed. Reproduced on the pre-Phase 5 code: a CSV alert closed one day before it was created gave no `close_before_create` issue. EG01 and EG10 still exclude such alerts in SQL, so findings are not affected. | **Open item, not fixed.** Fixing it changes DQ output, so it is kept out of the Phase 5 performance change and raised for decision. `docs/architecture.md` now states the limit. |
+| M15 | Close-before-create DQ check | `docs/validation_summary.md`: alerts closed before they were created "are already reported by the `close_before_create` data-quality check"; `docs/architecture.md` listed the check among those ingest runs | `DQValidator.check_timestamp_logic` compares only values that are Python `datetime`s. Timestamps in a CSV or JSON submission arrive as text, so for those submissions the check never runs; it works for product exports through a mapping, whose timestamps are parsed. Reproduced on the pre-Phase 5 code: a CSV alert closed one day before it was created gave no `close_before_create` issue. EG01 and EG10 still exclude such alerts in SQL, so findings are not affected. | **Code fixed** in the Phase 5 follow-up (decided at the Phase 5 pause). Text timestamps are now read the way the store reads them (DuckDB's `TRY_CAST(... AS TIMESTAMP)`, as in `DuckDBStore.load_table_from_parquet`), so the check reports exactly the alerts the rules see as closed before they were created; text the store cannot read is not compared, as before. The check only reads: no stored row, finding, score or other DQ issue changes (`tests/test_dq_timestamps.py`, and the golden snapshot, taken before the fix, still matches). The method's docstring also claimed an `acknowledged_at >= created_at` check that has never existed; the docstring was corrected and no check was added. |
+| M16 | UTC offsets in canonical timestamps | `docs/data_requirements.md` §1.2: `created_at` is "Alert generation timestamp (UTC)"; nothing says what happens to a timestamp that carries an offset | In a canonical CSV or JSON submission, a timestamp is stored as text and cast at load with `TRY_CAST(... AS TIMESTAMP)`, which **drops** an offset instead of applying it: `2026-04-02T10:00:00+05:30` is stored as 10:00, not 04:30 UTC. Product exports through a mapping are not affected (the mapping's `utc_offset` converts to UTC). Shown in a full ingest by `tests/test_dq_timestamps.py` (alert A-0009). | **Open item, not fixed.** Applying offsets would change stored timestamps, and so durations and findings, for any submission that uses them; it needs its own decision and a golden-snapshot update. The close-before-create check follows the store, so it reports what the rules see. |
 
 ## Process note: another session edited the same working tree
 
@@ -323,13 +324,51 @@ on the same machine and interpreter on 2026-10-01. Details are in `docs/benchmar
 
 **Targets:**
 - **At least 3x faster:** met.
-- **Under 6 GB at 5,000,000 alerts:** met, narrowly. 5,716 MiB is 5.99 GB. The peak comes
-  while the 938 MiB workflow-event CSV is read; none of the Polars readers tried (default,
-  low-memory, batched, streaming) was lower.
+- **Under 6 GB at 5,000,000 alerts:** under 6 GiB, not reliably under 6 GB. This entry first
+  said "met, narrowly" from one run (5,716 MiB, 5.99 GB); two later measurements gave 5,731 and
+  5,736 MiB (6.01 GB), see the follow-up below. The peak comes while the 938 MiB workflow-event
+  CSV is read; none of the Polars readers tried (default, low-memory, batched, streaming) was
+  lower.
 
 **Not done:**
 - Assessment speed. It was not in scope, and its before and after figures differ by 7%.
 - The first web page after a run still reloads every table (about 20 s at 5,000,000 alerts).
 - README, `docs/infrastructure.md` and EVIDENCE.md still carry the 2026-09-30 figures,
   labelled with that date. They are refreshed in Phase 8, as agreed.
-- M15 (close-before-create never runs for CSV/JSON timestamps) is recorded, not fixed.
+- M15 (close-before-create never runs for CSV/JSON timestamps) was recorded here and fixed in
+  the follow-up below.
+
+### Phase 5 follow-up: close-before-create on text timestamps (M15)
+
+Decided at the Phase 5 pause: fix M15 without changing any other data-quality output.
+
+- `src/satsa/ingest/dq_checks.py`: `_stored_timestamps` casts text timestamps with DuckDB's
+  `TRY_CAST(... AS TIMESTAMP)`, the cast the store applies when it loads a table. Both
+  `FrameDQ.check_timestamp_logic` and `DQValidator.check_timestamp_logic` use it. Text against
+  a zoned datetime is not compared, because the store would convert a zoned value by its session
+  time zone.
+- `src/satsa/ingest/pipeline.py`: the ingest result and its audit entry list entities sorted.
+  Before, the list was in Python set order, which changes with the per-process hash seed.
+  - This made `tests/test_columnar_ingest.py::test_messy_submission_is_stored_identically`
+    flaky. It was added in Phase 5 and failed on the Phase 5 commit itself with
+    `PYTHONHASHSEED=16`.
+  - Only the order of that list changes.
+- `tests/test_dq_timestamps.py` (37 tests):
+  - CSV (columnar and row path), JSON and NDJSON submissions with ten kinds of timestamp pair.
+    The check reports exactly the alerts the store holds as closed before created.
+  - Against the check as it was, the stored alerts and every other DQ issue are identical.
+  - The frame and dict checks agree on 30 randomised frames of mixed timestamp text.
+  - Neither check rewrites its input.
+- The Phase 5 messy-submission tests contain alerts closed up to five minutes before
+  creation, so they now also show the columnar and row paths agreeing on this issue.
+- **Unchanged:** the golden snapshot (`tests/golden/golden_findings.json`, taken before the
+  fix) still matches. No generator produces inverted timestamps
+  (`tests/test_edge_paths.py::test_generated_defects_are_what_their_ground_truth_says`), so no
+  finding, score, stored row or other DQ issue in the four scenarios moved.
+- **Found, not fixed:** M16 (UTC offsets in canonical text timestamps are dropped at load).
+- **Cost** (`python scripts/benchmark_scale.py --configs 10x50000,50x100000`, 2026-10-02): ingest
+  5.4 s at 500,000 alerts and 45.8 s at 5,000,000; ingest peak 1,261 and 5,731 MiB. A memory trace
+  at 5,000,000 shows the peak set while the workflow-event CSV is read, before the checks run, so
+  the fix does not set it. It did show that the read peak varies between runs (5,716 to 5,736 MiB),
+  so the Phase 5 "under 6 GB, met narrowly" was corrected above: it is under 6 GiB, not reliably
+  under 6 GB.

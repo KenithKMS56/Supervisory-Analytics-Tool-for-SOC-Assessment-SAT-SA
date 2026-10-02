@@ -54,10 +54,13 @@ The tables below are those runs' own output; the raw results of both are at the 
 Against the targets set for this change:
 
 - **Ingest at least 3x faster:** met. 9.8x at 5,000,000 alerts and 8.5x at 500,000.
-- **Ingest peak under 6 GB at 5,000,000 alerts:** met, narrowly. 5,716 MiB is 5.99 GB
-  (decimal). The peak comes while the largest file (10,000,000 workflow events, 938 MiB of
-  CSV) is read; reading that file alone peaks at about 2.8 GiB, with every reader Polars
-  offers (measured; a batched or streaming read was no lower).
+- **Ingest peak under 6 GB at 5,000,000 alerts:** under 6 GiB (6,144 MiB) every time, but not
+  reliably under 6 GB (decimal, 5,722 MiB). Three measurements give 5,716 MiB (this run, 5.99 GB),
+  5,731 MiB (the 2026-10-02 run below, 6.01 GB) and 5,736 MiB (a memory trace, 6.01 GB). The
+  peak comes while the largest file (10,000,000 workflow events, 938 MiB of CSV) is read; reading
+  that file alone peaks at about 2.8 GiB, with every reader Polars offers (measured; a batched or
+  streaming read was no lower). An earlier version of this page said "met, narrowly" on the
+  first measurement alone.
 - **Findings unchanged:** `tests/test_golden_findings.py` compares every stored row, DQ issue,
   finding, score, review-queue item and systemic finding with a snapshot taken before the
   change; it passes on both the old and the new code.
@@ -82,6 +85,24 @@ first web page after a run or ingest, which still reloads every table (about 20 
 Reproduce the profile that guided the change with
 `uv run python scripts/profile_ingest.py --entities 10 --alerts 50000` (add `--no-profile`
 for timing only).
+
+## Re-run after the close-before-create fix (2026-10-02)
+
+`python scripts/benchmark_scale.py --configs 10x50000,50x100000 --out <file> --json <file>`, same
+machine, after the Phase 5 follow-up (M15 in `docs/CHANGES_quality_pass.md`), which adds a timestamp
+cast to the data-quality checks:
+
+| Entities x alerts each | Alerts | Ingest | Ingest peak | Assess | Findings |
+|---|---:|---:|---:|---:|---:|
+| 10 x 50,000 | 500,000 | 5.4 s | 1,261 MiB | 10.0 s | 30 |
+| 50 x 100,000 | 5,000,000 | 45.8 s | 5,731 MiB | 106.3 s | 150 |
+
+A memory trace of a 5,000,000-alert ingest (resident and peak memory logged at each step) shows
+the peak (5,736 MiB) set while the workflow-event CSV is read, before the data-quality checks
+start (5,324 MiB resident); memory stays below that peak through the checks. The difference from
+the 5,716 MiB above is therefore run-to-run variation in that read, not the fix. Assessment ran
+faster on this run (106.3 s against 153.8 s) with no change to assessment code; that spread is
+variation between runs on this machine, and neither figure is a claim of improvement.
 
 ## Results (after: the current code)
 

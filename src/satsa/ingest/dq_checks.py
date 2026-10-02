@@ -5,9 +5,37 @@ from collections import Counter
 from datetime import datetime
 from typing import Any
 
+import duckdb
 import polars as pl
 
 from satsa.models.outputs import DQIssue
+
+
+def _stored_timestamps(*columns: pl.Series) -> list[pl.Series]:
+    """Each column as the store reads it: DuckDB's `TRY_CAST(... AS TIMESTAMP)`.
+
+    Timestamps in a CSV or JSON submission arrive as text, are written as text, and are cast
+    when the store loads them (`DuckDBStore.load_table_from_parquet`). The rules compare those
+    cast values, so the timestamp check reads text the same way: text DuckDB cannot read becomes
+    NULL and is not compared, and a UTC offset is dropped, not applied.
+    """
+    names = [f"c{i}" for i in range(len(columns))]
+    frame = pl.DataFrame(
+        [(s.cast(pl.String) if s.dtype == pl.Null else s).alias(n) for s, n in zip(columns, names, strict=True)]
+    ).with_row_index("row")
+    select = ", ".join(f'TRY_CAST("{n}" AS TIMESTAMP) AS "{n}"' for n in names)
+    con = duckdb.connect()
+    try:
+        con.register("ts_frame", frame)
+        cast = con.execute(f"SELECT {select} FROM ts_frame ORDER BY row").pl()
+    finally:
+        con.close()
+    return [cast[n] for n in names]
+
+
+def _read_like_the_store(dtype: pl.DataType) -> bool:
+    """Text, all-null or naive datetime: a column `_stored_timestamps` reads as the store does."""
+    return dtype in (pl.String, pl.Null) or (isinstance(dtype, pl.Datetime) and dtype.time_zone is None)
 
 
 class DQValidator:
@@ -42,12 +70,31 @@ class DQValidator:
 
     @staticmethod
     def check_timestamp_logic(records: list[dict[str, Any]], entity_id: str) -> list[DQIssue]:
-        """Ensure closed_at >= created_at and acknowledged_at >= created_at."""
+        """Flag records whose closed_at precedes created_at.
+
+        Text timestamps are read as the store reads them (`_stored_timestamps`) and compared
+        where both sides are then naive datetimes; text the store cannot read is not compared.
+        """
         issues: list[DQIssue] = []
         inverted_close: list[str] = []
+        texts = sorted({v for r in records for v in (r.get("created_at"), r.get("closed_at")) if isinstance(v, str)})
+        as_stored: dict[str, datetime | None] = {}
+        if texts:
+            cast = _stored_timestamps(pl.Series(texts, dtype=pl.String))[0].to_list()
+            as_stored = dict(zip(texts, cast, strict=True))
         for r in records:
             c_at = r.get("created_at")
             cl_at = r.get("closed_at")
+            if isinstance(c_at, str) or isinstance(cl_at, str):
+                c_at = as_stored[c_at] if isinstance(c_at, str) else c_at
+                cl_at = as_stored[cl_at] if isinstance(cl_at, str) else cl_at
+                if not (
+                    isinstance(c_at, datetime)
+                    and isinstance(cl_at, datetime)
+                    and c_at.tzinfo is None
+                    and cl_at.tzinfo is None
+                ):
+                    continue
             if isinstance(c_at, datetime) and isinstance(cl_at, datetime) and cl_at < c_at:
                 inverted_close.append(str(r.get("alert_id", "unknown")))
 
@@ -249,6 +296,11 @@ class FrameDQ:
         created, closed = frame["created_at"], frame["closed_at"]
         if isinstance(created.dtype, pl.Datetime) and created.dtype == closed.dtype:
             inverted = (closed < created).fill_null(False)
+        elif pl.String in (created.dtype, closed.dtype) and all(
+            _read_like_the_store(c.dtype) for c in (created, closed)
+        ):
+            created, closed = _stored_timestamps(created, closed)
+            inverted = (closed < created).fill_null(False)
         elif created.dtype == pl.Object or closed.dtype == pl.Object or (
             isinstance(created.dtype, pl.Datetime) and isinstance(closed.dtype, pl.Datetime)
         ):
@@ -259,7 +311,7 @@ class FrameDQ:
             ]
             return DQValidator.check_timestamp_logic(records, entity_id)
         else:
-            return []  # neither column holds datetime values, so no row can be compared
+            return []  # e.g. numbers, or text against a zoned datetime: nothing to compare
         count = int(inverted.sum())
         if not count:
             return []
