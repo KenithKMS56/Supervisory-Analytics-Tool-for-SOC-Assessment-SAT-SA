@@ -17,6 +17,29 @@ from satsa.security import require_entity_id
 KEYED_BY_ENTITY = frozenset({"entity"})
 
 
+# A text timestamp ending in a UTC offset: "Z", "+05:30", "+0530" or "+05" after a time of day.
+_OFFSET_SUFFIX = r"[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|z|[+-][0-9]{2}(:?[0-9]{2})?)$"
+
+
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def text_timestamp_sql(column: str) -> str:
+    """SQL reading the text column `column` (a quoted identifier) as a naive UTC TIMESTAMP.
+
+    Canonical timestamps are UTC (docs/data_requirements.md). Text that carries an offset is
+    converted to UTC with that offset; a plain `TRY_CAST(... AS TIMESTAMP)` drops the offset
+    and keeps the wall-clock time. Text without an offset is read exactly as before (as UTC,
+    never by the session time zone), and text DuckDB cannot read becomes NULL.
+    """
+    return (
+        f"CASE WHEN regexp_matches({column}, '{_OFFSET_SUFFIX}') "
+        f"THEN timezone('UTC', TRY_CAST({column} AS TIMESTAMPTZ)) "
+        f"ELSE TRY_CAST({column} AS TIMESTAMP) END"
+    )
+
+
 def _upsert_entity_row(frames: list[pl.DataFrame]) -> pl.DataFrame:
     """Collapse all versions of an entity's record into one row, newest-wins per column.
 
@@ -325,7 +348,8 @@ class DuckDBStore:
         # every entity vanished from the UI after a single upload lacking an
         # entity_id). Likewise only the table's own columns are selected, with
         # TRY_CAST, so a pass-through source column or an unparseable timestamp
-        # in one file can't fail the insert for all the others.
+        # in one file can't fail the insert for all the others. Text timestamps go
+        # through text_timestamp_sql, which applies a UTC offset instead of dropping it.
         partitioned = [f for f in files if f.parent.name.startswith("entity_id=")]
         unpartitioned = [f for f in files if not f.parent.name.startswith("entity_id=")]
         verb = "INSERT OR REPLACE" if table_name in KEYED_BY_ENTITY else "INSERT"
@@ -339,11 +363,16 @@ class DuckDBStore:
                 f"read_parquet([{file_list}], hive_partitioning={str(hive).lower()}, union_by_name=true)"
             )
             try:
-                source_cols = [r[0] for r in self.conn.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()]
-                cols = [c for c in source_cols if c in table_types]
+                source_types = {r[0]: r[1] for r in self.conn.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()}
+                cols = [c for c in source_types if c in table_types]
                 if not cols:
                     continue
-                select = ", ".join(f'TRY_CAST("{c}" AS {table_types[c]}) AS "{c}"' for c in cols)
+                select = ", ".join(
+                    f'{text_timestamp_sql(_quoted(c))} AS "{c}"'
+                    if table_types[c] == "TIMESTAMP" and source_types[c] == "VARCHAR"
+                    else f'TRY_CAST("{c}" AS {table_types[c]}) AS "{c}"'
+                    for c in cols
+                )
                 self.conn.execute(
                     f"{verb} INTO {escaped_table_name} BY NAME SELECT {select} FROM {source}"
                 )

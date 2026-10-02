@@ -27,7 +27,7 @@ Each documented behaviour below was checked against the code before anything was
 | M13 | Canonical schema page | `docs/data_requirements.md` §1.1, §1.5: `soc_model` values `internal`/`hybrid`/`managed_mssp`; criticality 1-5; `declared_kpi(metric_name, declared_value)`; `external_report(report_id, case_id, regulatory_body)`; no `soc_provider`, `comment_len`, `detection_rule`, `remediation`, `sla_policy` | `satsa.models.canonical`: `inhouse`/`hybrid`/`mssp`; criticality 1-4; `declared_kpi(metric, value)`; `external_report(incident_id, reported_to)`; `soc_provider`, `closure.comment_len`, and the three tables exist and are read by rules | **Doc was wrong.** Corrected. Found by writing the independent generator from that page: CSVs built to the page did not load as documented. |
 | M14 | Deterministic output | DECISIONS.md ADR-001: analytics are "strictly deterministic", with "byte-identical reproducibility"; README: "deterministic analytical tool" | Findings, scores and counts were reproducible, but the **evidence records** of EG01, EG02, EG04, EG05, EG08, EG09, NS04 and NS05 were the first rows of a query with no (or no complete) ORDER BY, so they depended on the order rows happened to be stored in. That order changes on a re-ingest (Parquet merge with `unique()`). Reproduced: seed 42 ingested twice, then assessed, in two fresh stores gave different evidence alerts for CSE-03 EG01 (9 of the 10 differed) and therefore different review queues. | **Code fixed** in Phase 5: each of those queries now has a total order (`rules/execution_gaps.py`, `rules/negative_space.py`; EG09 lists the oldest stale case first, the rest by record id). No threshold, count or score changed. `tests/test_golden_findings.py::test_findings_do_not_depend_on_the_order_of_submitted_rows` (same submission, rows shuffled) fails without the fix. Found by the Phase 5 golden test, which failed against its own snapshot before any optimisation. |
 | M15 | Close-before-create DQ check | `docs/validation_summary.md`: alerts closed before they were created "are already reported by the `close_before_create` data-quality check"; `docs/architecture.md` listed the check among those ingest runs | `DQValidator.check_timestamp_logic` compares only values that are Python `datetime`s. Timestamps in a CSV or JSON submission arrive as text, so for those submissions the check never runs; it works for product exports through a mapping, whose timestamps are parsed. Reproduced on the pre-Phase 5 code: a CSV alert closed one day before it was created gave no `close_before_create` issue. EG01 and EG10 still exclude such alerts in SQL, so findings are not affected. | **Code fixed** in the Phase 5 follow-up (decided at the Phase 5 pause). Text timestamps are now read the way the store reads them (DuckDB's `TRY_CAST(... AS TIMESTAMP)`, as in `DuckDBStore.load_table_from_parquet`), so the check reports exactly the alerts the rules see as closed before they were created; text the store cannot read is not compared, as before. The check only reads: no stored row, finding, score or other DQ issue changes (`tests/test_dq_timestamps.py`, and the golden snapshot, taken before the fix, still matches). The method's docstring also claimed an `acknowledged_at >= created_at` check that has never existed; the docstring was corrected and no check was added. |
-| M16 | UTC offsets in canonical timestamps | `docs/data_requirements.md` §1.2: `created_at` is "Alert generation timestamp (UTC)"; nothing says what happens to a timestamp that carries an offset | In a canonical CSV or JSON submission, a timestamp is stored as text and cast at load with `TRY_CAST(... AS TIMESTAMP)`, which **drops** an offset instead of applying it: `2026-04-02T10:00:00+05:30` is stored as 10:00, not 04:30 UTC. Product exports through a mapping are not affected (the mapping's `utc_offset` converts to UTC). Shown in a full ingest by `tests/test_dq_timestamps.py` (alert A-0009). | **Open item, not fixed.** Applying offsets would change stored timestamps, and so durations and findings, for any submission that uses them; it needs its own decision and a golden-snapshot update. The close-before-create check follows the store, so it reports what the rules see. |
+| M16 | UTC offsets in canonical timestamps | `docs/data_requirements.md` §1.2: `created_at` is "Alert generation timestamp (UTC)"; nothing says what happens to a timestamp that carries an offset | In a canonical CSV or JSON submission, a timestamp is stored as text and cast at load with `TRY_CAST(... AS TIMESTAMP)`, which **drops** an offset instead of applying it: `2026-04-02T10:00:00+05:30` is stored as 10:00, not 04:30 UTC. Product exports through a mapping are not affected (the mapping's `utc_offset` converts to UTC). Shown in a full ingest by `tests/test_dq_timestamps.py` (alert A-0009). | **Code fixed** in the second Phase 5 follow-up (asked for at the Phase 5 pause). Text with an offset is now converted to UTC with it (`text_timestamp_sql` in `store/duckdb.py`, used by the store's load and by the close-before-create check); text without one is read exactly as before, independent of the session time zone. The golden snapshot did not move: no generator writes a non-zero offset. `docs/data_requirements.md` §1 now states how timestamps are read. |
 
 ## Process note: another session edited the same working tree
 
@@ -241,7 +241,7 @@ already implemented an unsigned, hand-copied checkpoint (`SQLiteStore.audit_head
 - NS03's `min_spread` was not probed, although 8 entities met its criterion by chance.
 - The independent generator was written in a session that had read the rule code. The report
   states this.
-- Open item, observed while verifying: some web tests (for example
+- Open item (fixed in the second Phase 5 follow-up), observed while verifying: some web tests (for example
   `tests/test_shadow_pilot.py`) use the working tree's `data/satsa.db`. A `satsa validate` run
   after the suite therefore reports their shadow workpaper in place of the stand-in one. The
   committed validation reports were not regenerated in this phase.
@@ -372,3 +372,57 @@ Decided at the Phase 5 pause: fix M15 without changing any other data-quality ou
   the fix does not set it. It did show that the read peak varies between runs (5,716 to 5,736 MiB),
   so the Phase 5 "under 6 GB, met narrowly" was corrected above: it is under 6 GiB, not reliably
   under 6 GB.
+
+### Phase 5 follow-up 2: offsets, test isolation, peak memory
+
+Decided at the Phase 5 pause: fix everything found in Phase 5 before Phase 6.
+
+**M16, UTC offsets** (`src/satsa/store/duckdb.py`, `src/satsa/ingest/dq_checks.py`):
+- `text_timestamp_sql` reads a text timestamp as UTC. One carrying an offset (`Z`, `+05:30`,
+  `+0530`, `+05`) is converted with it. One without an offset is read exactly as before. The
+  result does not depend on the DuckDB session's time zone.
+- The store's load and the close-before-create check both use it.
+- It uses DuckDB's ICU extension, which is statically linked in the DuckDB wheel, so nothing is
+  downloaded (checked with `duckdb_extensions()`: `STATICALLY_LINKED`).
+- **Cost:** 0.11 s per 10,000,000 values against the plain cast, measured on a 10,000,000-row
+  table.
+- **Tests:** `tests/test_dq_timestamps.py` now has 42 tests:
+  - offsets stored in UTC for CSV and JSON;
+  - three session time zones;
+  - an alert inverted only once its offset is applied (A-0010).
+  - One expectation in that file, which this session added, was updated: alert A-0009 was
+    recorded as inverted under the old behaviour, which dropped offsets. With offsets applied it
+    is not.
+- **Golden snapshot:** unchanged.
+
+**Tests no longer write to the working tree** (`tests/conftest.py`):
+- The application keeps its state relative to the working directory, and about 30 test lines
+  use `data/satsa.db` the same way. The suite therefore used to change a developer's database,
+  salt and reports.
+- It now runs from a temporary copy of the repository inputs it reads by relative path:
+  `config/`, `demo_data/`, `docs/`, `scripts/`, `src/` and the top-level files.
+- That copy is bootstrapped as CI bootstraps a clean checkout: `generate-data`, `ingest`, `run`.
+  This takes about 13 s.
+- The copy is removed at the end of the session, and also when the bootstrap fails. It holds
+  copies only, nothing linked.
+- `SATSA_TESTS_IN_PLACE=1` keeps the old behaviour.
+- **Shown:** after a full run (1,053 passed), the SHA-256 of every file under `data/`,
+  `reports/` and `.satsa_salt` is unchanged.
+
+**Peak memory at 5,000,000 alerts** (`src/satsa/ingest/pipeline.py`, `src/satsa/__init__.py`):
+- **Memory traces** (resident and peak memory logged at each ingest step) showed three phases
+  within 100 MiB of each other:
+  - the read of the largest CSV, on top of the tables already held;
+  - the data-quality checks;
+  - the final reload into DuckDB, on top of about 2.6 GB that Polars' allocator kept after the
+    frames were freed. `gc.collect()` released none of it.
+- **Changes:**
+  - The largest CSV is read before the others. Files are still processed in their usual order,
+    so row order, DQ samples and error reporting are unchanged.
+    `tests/test_ingest_read_order.py` checks this with the early read on and off, including an
+    unreadable largest file.
+  - `MIMALLOC_PURGE_DELAY=0` is set in `satsa/__init__.py` before Polars is imported, unless
+    the environment sets it.
+- **Result:** 5,761 to 5,435 MiB. The peak is now under 6 GB (5,722 MiB), at the cost of about
+  6 s (13%) more ingest time at 5,000,000 alerts (`docs/benchmarks.md`, "Peak-memory change").
+- The "under 6 GB" target in Phase 5 is now met. Before this it was not reliably met.

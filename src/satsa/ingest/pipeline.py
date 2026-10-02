@@ -126,6 +126,10 @@ def default_entity_record(entity_id: str) -> dict[str, Any]:
     }
 
 
+# Read the largest CSV of a canonical submission first (see ingest_directory); a switch only so
+# tests can compare with the plain order.
+READ_LARGEST_FIRST = True
+
 class IngestionPipeline:
     """Orchestrates ingestion, data hygiene, DQ validation, Parquet persistence, and audit logging."""
 
@@ -645,6 +649,19 @@ class IngestionPipeline:
                     unreadable_files.append(f.name)
             mapping.build_lookups({f.stem: rows for f, rows in preloaded.items()})
 
+        # The largest CSV of a canonical submission is read before the others, while nothing
+        # else is held: reading a file briefly needs a few times its size, and at 5,000,000
+        # alerts that read on top of the tables already held set the ingest's peak memory.
+        # Files are still processed in their usual order, so nothing else changes.
+        read_early: dict[Path, pl.DataFrame | Exception] = {}
+        csv_files = [f for f in raw_files if f.suffix.lower() == ".csv"]
+        if READ_LARGEST_FIRST and mapping is None and len(csv_files) > 1:
+            largest = max(csv_files, key=lambda f: f.stat().st_size)
+            try:
+                read_early[largest] = SourceAdapter.read_csv_frame(largest)
+            except Exception as exc:  # noqa: BLE001 - raised again, and reported, in the file's turn
+                read_early[largest] = exc
+
         for f in raw_files:
             if f.name in unreadable_files:
                 continue
@@ -667,7 +684,10 @@ class IngestionPipeline:
                         store_rows(spec.table, mapping.map_rows(raw_rows, spec, default_entity_id).rows)
                     continue
 
-                data = read(f)
+                early = read_early.pop(f, None)
+                if isinstance(early, Exception):
+                    raise early
+                data = early if early is not None else read(f)
                 if len(data) == 0:
                     empty_table = self.table_for_empty_file(f)
                     if empty_table:

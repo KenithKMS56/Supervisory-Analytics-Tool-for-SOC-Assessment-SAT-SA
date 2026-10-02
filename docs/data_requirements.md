@@ -41,6 +41,13 @@ assessable is measured on sample exports in `docs/connectors.md`.
 
 SAT-SA standardizes multi-source periodic submissions into 8 canonical relational entities:
 
+**Timestamps** are ISO 8601 text in a CSV or JSON submission (`2026-04-02T10:00:00`, a space in
+place of the `T`, optional fractional seconds) and are held in UTC. A timestamp that carries an
+offset (`Z`, `+05:30`, `+0530`, `+05`) is converted to UTC with it: `2026-04-02T10:00:00+05:30`
+is stored as 04:30 UTC. One without an offset is taken to be UTC already. Text that cannot be read
+as a timestamp is stored as empty. Product exports through a mapping are converted by the
+mapping's `utc_offset` (`docs/connectors.md`).
+
 ### 1.1 `Entity` (Master Profile)
 | Field Name | Type | Constraint | Description |
 |---|---|---|---|
