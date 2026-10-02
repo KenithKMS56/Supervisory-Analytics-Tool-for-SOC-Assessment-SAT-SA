@@ -9,21 +9,25 @@ import duckdb
 import polars as pl
 
 from satsa.models.outputs import DQIssue
+from satsa.store.duckdb import text_timestamp_sql
 
 
 def _stored_timestamps(*columns: pl.Series) -> list[pl.Series]:
-    """Each column as the store reads it: DuckDB's `TRY_CAST(... AS TIMESTAMP)`.
+    """Each column as the store reads it.
 
     Timestamps in a CSV or JSON submission arrive as text, are written as text, and are cast
-    when the store loads them (`DuckDBStore.load_table_from_parquet`). The rules compare those
-    cast values, so the timestamp check reads text the same way: text DuckDB cannot read becomes
-    NULL and is not compared, and a UTC offset is dropped, not applied.
+    when the store loads them (`DuckDBStore.load_table_from_parquet`, with `text_timestamp_sql`).
+    The rules compare those cast values, so the timestamp check reads text the same way: a UTC
+    offset is applied, and text DuckDB cannot read becomes NULL and is not compared.
     """
     names = [f"c{i}" for i in range(len(columns))]
     frame = pl.DataFrame(
         [(s.cast(pl.String) if s.dtype == pl.Null else s).alias(n) for s, n in zip(columns, names, strict=True)]
     ).with_row_index("row")
-    select = ", ".join(f'TRY_CAST("{n}" AS TIMESTAMP) AS "{n}"' for n in names)
+    text = {n for s, n in zip(columns, names, strict=True) if s.dtype in (pl.String, pl.Null)}
+    select = ", ".join(
+        (text_timestamp_sql(f'"{n}"') if n in text else f'TRY_CAST("{n}" AS TIMESTAMP)') + f' AS "{n}"' for n in names
+    )
     con = duckdb.connect()
     try:
         con.register("ts_frame", frame)

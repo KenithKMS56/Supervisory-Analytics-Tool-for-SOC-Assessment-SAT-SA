@@ -2,8 +2,9 @@
 
 Timestamps in a CSV or JSON submission arrive as text. The check used to compare only Python
 datetimes, so for those submissions it never ran. It now reads text the way the store does
-(DuckDB's `TRY_CAST(... AS TIMESTAMP)` in `DuckDBStore.load_table_from_parquet`), so the alerts
-it reports are exactly the alerts the rules see as closed before they were created.
+(`text_timestamp_sql` in `DuckDBStore.load_table_from_parquet`), so the alerts it reports are
+exactly the alerts the rules see as closed before they were created. Since M16 the store applies
+a UTC offset in text instead of dropping it, and the check follows.
 
 The check only reads: stored rows, findings and every other DQ issue are unchanged. That is
 asserted here for single submissions and, for four whole scenarios, by
@@ -19,13 +20,14 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import polars as pl
 import pytest
 
 import satsa.ingest.pipeline as pipeline_module
 from satsa.ingest.dq_checks import DQValidator, FrameDQ, _read_like_the_store
 from satsa.ingest.pipeline import IngestionPipeline
-from satsa.store.duckdb import DuckDBStore
+from satsa.store.duckdb import DuckDBStore, text_timestamp_sql
 from satsa.store.sqlite import SQLiteStore
 
 HEADER = ["entity_id", "alert_id", "rule_id", "severity_final", "created_at", "closed_at", "closed_by_type"]
@@ -39,9 +41,11 @@ ALERTS = [
     ("A-0006", "", "2026-04-01T10:00:00", False),  # no created_at
     ("A-0007", "2026-04-02T10:00:00", "", False),  # still open
     ("A-0008", "2026-04-02T10:00:00", "2026-04-02T10:00:00", False),  # closed the same instant
-    # The store drops a UTC offset rather than applying it (recorded in CHANGES as M16), so
-    # this reads as 10:00 created, 05:00 closed. The check reports what the rules see.
-    ("A-0009", "2026-04-02T10:00:00+05:30", "2026-04-02T05:00:00Z", True),
+    # UTC offsets are applied (M16): 04:30 UTC created, 05:00 UTC closed, so not inverted,
+    # although the wall-clock times read 10:00 and 05:00.
+    ("A-0009", "2026-04-02T10:00:00+05:30", "2026-04-02T05:00:00Z", False),
+    # ... and inverted only once the offset is applied: 10:00 UTC created, 06:30 UTC closed.
+    ("A-0010", "2026-04-02T10:00:00Z", "2026-04-02T12:00:00+05:30", True),
 ]
 
 
@@ -96,6 +100,43 @@ def test_text_timestamps_closed_before_creation_are_reported(tmp_path, monkeypat
     assert count == len(expected)
     assert samples == expected  # first five in submission order; there are four
     assert details == f"{len(expected)} records exhibit close timestamp preceding create timestamp."
+
+
+@pytest.mark.parametrize("fmt", ["csv", "json"])
+def test_text_timestamps_with_an_offset_are_stored_in_utc(tmp_path, monkeypatch, fmt):
+    stored = {r["alert_id"]: r for r in _ingest(tmp_path, fmt, True, monkeypatch)["stored"]}
+    assert stored["A-0009"]["created_at"] == datetime(2026, 4, 2, 4, 30)
+    assert stored["A-0009"]["closed_at"] == datetime(2026, 4, 2, 5, 0)
+    assert stored["A-0010"]["closed_at"] == datetime(2026, 4, 2, 6, 30)
+    # Without an offset, or with Z, the text is read as UTC, as before.
+    assert stored["A-0001"]["created_at"] == datetime(2026, 4, 2, 10, 0)
+    assert stored["A-0004"]["created_at"] == datetime(2026, 4, 2, 10, 0)
+    assert stored["A-0005"]["closed_at"] is None
+
+
+@pytest.mark.parametrize("session_zone", ["UTC", "Asia/Kolkata", "America/New_York"])
+def test_text_timestamp_reading_does_not_depend_on_the_session_time_zone(session_zone):
+    con = duckdb.connect()
+    try:
+        con.execute(f"SET TimeZone = '{session_zone}'")
+        cases = {
+            "2026-04-02T10:00:00+05:30": datetime(2026, 4, 2, 4, 30),
+            "2026-04-02T10:00:00+0530": datetime(2026, 4, 2, 4, 30),
+            "2026-04-02T10:00:00-03": datetime(2026, 4, 2, 13, 0),
+            "2026-04-02T10:00:00.250+05:30": datetime(2026, 4, 2, 4, 30, 0, 250000),
+            "2026-04-02T10:00:00Z": datetime(2026, 4, 2, 10, 0),
+            "2026-04-02T10:00:00": datetime(2026, 4, 2, 10, 0),
+            "2026-04-02 10:00": datetime(2026, 4, 2, 10, 0),
+            "2026-04-02": datetime(2026, 4, 2),
+            "garbage+05:30": None,
+            "2026-04-02T25:00:00+05:30": None,
+            "": None,
+        }
+        for text, expected in cases.items():
+            got = con.execute(f"SELECT {text_timestamp_sql('x')} FROM (SELECT CAST(? AS VARCHAR) AS x)", [text])
+            assert got.fetchone()[0] == expected, text
+    finally:
+        con.close()
 
 
 def test_the_fix_changes_no_stored_row_and_no_other_dq_issue(tmp_path, monkeypatch):

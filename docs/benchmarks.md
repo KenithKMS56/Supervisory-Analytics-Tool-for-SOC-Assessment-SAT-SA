@@ -60,7 +60,8 @@ Against the targets set for this change:
   peak comes while the largest file (10,000,000 workflow events, 938 MiB of CSV) is read; reading
   that file alone peaks at about 2.8 GiB, with every reader Polars offers (measured; a batched or
   streaming read was no lower). An earlier version of this page said "met, narrowly" on the
-  first measurement alone.
+  first measurement alone. **Met after the memory change below:** 5,435 and 5,440 MiB (5.70 GB)
+  in two runs, against 5,761 MiB for the code before it in the same session.
 - **Findings unchanged:** `tests/test_golden_findings.py` compares every stored row, DQ issue,
   finding, score, review-queue item and systemic finding with a snapshot taken before the
   change; it passes on both the old and the new code.
@@ -85,6 +86,28 @@ first web page after a run or ingest, which still reloads every table (about 20 
 Reproduce the profile that guided the change with
 `uv run python scripts/profile_ingest.py --entities 10 --alerts 50000` (add `--no-profile`
 for timing only).
+
+## Peak-memory change (2026-10-02)
+
+Two changes lower the ingest's peak memory (details in `docs/CHANGES_quality_pass.md`, second
+Phase 5 follow-up): the largest CSV of a submission is read before the others, while nothing else
+is held, and Polars' memory allocator on Windows (mimalloc) is told to return freed memory at
+once (`MIMALLOC_PURGE_DELAY=0`, set in `satsa/__init__.py` unless the environment sets it).
+
+`python scripts/benchmark_scale.py --configs 50x100000 --out <file> --json <file>`, run twice back
+to back on the same machine: first on commit `26d842e` (the code before the change), then on the
+changed code.
+
+| Code | Ingest | Ingest peak | Assess |
+|---|---:|---:|---:|
+| Before (`26d842e`) | 44.1 s | 5,761 MiB | 121.2 s |
+| After | 50.0 s | 5,435 MiB | 114.2 s |
+
+The peak falls by 326 MiB and is under 6 GB (5,722 MiB) with 287 MiB to spare; a second run of
+the changed code (`--configs 10x50000,50x100000`) gave 5,440 MiB at 5,000,000 alerts and 804 MiB
+at 500,000. Ingest takes about 6 s (13%) longer at 5,000,000 alerts: memory returned at once has
+to be requested again. Assessment code did not change; its difference is run-to-run variation,
+which on this machine and day was large (the same assessment took 190.7 s in another run).
 
 ## Re-run after the close-before-create fix (2026-10-02)
 
