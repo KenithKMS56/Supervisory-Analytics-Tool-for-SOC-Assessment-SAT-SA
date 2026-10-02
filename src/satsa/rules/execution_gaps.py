@@ -262,6 +262,7 @@ class EG03CriticalWithoutEscalation(BaseRule):
           AND a.disposition = 'true_positive'
         GROUP BY a.alert_id, a.category, a.disposition
         HAVING count(e.esc_id) = 0
+        ORDER BY a.alert_id
         """
         df = store.query(sql, [entity_id])
         if df.is_empty():
@@ -546,6 +547,7 @@ class EG06MetricGaming(BaseRule):
         WHERE entity_id = ? AND closed_by_type = 'human' AND closed_at IS NOT NULL
         GROUP BY closed_by, date_trunc('minute', closed_at)
         HAVING count(*) >= ?
+        ORDER BY close_minute, closed_by
         """
         df_bulk = store.query(sql_bulk, [entity_id, min_bulk_closures_per_minute])
 
@@ -632,6 +634,7 @@ class EG07AnalystImplausibility(BaseRule):
         WHERE entity_id = ? AND closed_by_type = 'human' AND closed_at IS NOT NULL
         GROUP BY closed_by, date_trunc('hour', closed_at)
         HAVING count(*) >= ?
+        ORDER BY hourly_closures DESC, closed_by, close_hour
         """
         df = store.query(sql, [entity_id, min_closures_per_analyst_hour])
         if df.is_empty():
@@ -643,7 +646,9 @@ class EG07AnalystImplausibility(BaseRule):
         # analyst-hours crossed the line: one hour with 35 closures is 35 observations.
         score, conf = self.compute_rule_score(max_hourly / 30.0, max_hourly)
         f_id = f"FND-EG07-{entity_id}-{run_id}"
-        analysts = df["closed_by"].unique().to_list()
+        # Busiest analyst first (then by name), so the rationale names the analyst whose hour
+        # gave max_hourly; unique() without maintain_order could name any of them.
+        analysts = df["closed_by"].unique(maintain_order=True).to_list()
 
         rationale = (
             f"Analyst productivity exceeds plausible cognitive limits: up to {max_hourly} "
@@ -1093,6 +1098,7 @@ class EG12WorkflowNonConformance(BaseRule):
             GROUP BY c.case_id
         )
         SELECT case_id FROM case_actions WHERE contain_cnt = 0
+        ORDER BY case_id
         """
         df = store.query(sql, [entity_id])
         if df.is_empty():

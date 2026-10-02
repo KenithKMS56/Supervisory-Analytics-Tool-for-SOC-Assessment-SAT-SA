@@ -28,6 +28,9 @@ Each documented behaviour below was checked against the code before anything was
 | M14 | Deterministic output | DECISIONS.md ADR-001: analytics are "strictly deterministic", with "byte-identical reproducibility"; README: "deterministic analytical tool" | Findings, scores and counts were reproducible, but the **evidence records** of EG01, EG02, EG04, EG05, EG08, EG09, NS04 and NS05 were the first rows of a query with no (or no complete) ORDER BY, so they depended on the order rows happened to be stored in. That order changes on a re-ingest (Parquet merge with `unique()`). Reproduced: seed 42 ingested twice, then assessed, in two fresh stores gave different evidence alerts for CSE-03 EG01 (9 of the 10 differed) and therefore different review queues. | **Code fixed** in Phase 5: each of those queries now has a total order (`rules/execution_gaps.py`, `rules/negative_space.py`; EG09 lists the oldest stale case first, the rest by record id). No threshold, count or score changed. `tests/test_golden_findings.py::test_findings_do_not_depend_on_the_order_of_submitted_rows` (same submission, rows shuffled) fails without the fix. Found by the Phase 5 golden test, which failed against its own snapshot before any optimisation. |
 | M15 | Close-before-create DQ check | `docs/validation_summary.md`: alerts closed before they were created "are already reported by the `close_before_create` data-quality check"; `docs/architecture.md` listed the check among those ingest runs | `DQValidator.check_timestamp_logic` compares only values that are Python `datetime`s. Timestamps in a CSV or JSON submission arrive as text, so for those submissions the check never runs; it works for product exports through a mapping, whose timestamps are parsed. Reproduced on the pre-Phase 5 code: a CSV alert closed one day before it was created gave no `close_before_create` issue. EG01 and EG10 still exclude such alerts in SQL, so findings are not affected. | **Code fixed** in the Phase 5 follow-up (decided at the Phase 5 pause). Text timestamps are now read the way the store reads them (DuckDB's `TRY_CAST(... AS TIMESTAMP)`, as in `DuckDBStore.load_table_from_parquet`), so the check reports exactly the alerts the rules see as closed before they were created; text the store cannot read is not compared, as before. The check only reads: no stored row, finding, score or other DQ issue changes (`tests/test_dq_timestamps.py`, and the golden snapshot, taken before the fix, still matches). The method's docstring also claimed an `acknowledged_at >= created_at` check that has never existed; the docstring was corrected and no check was added. |
 | M16 | UTC offsets in canonical timestamps | `docs/data_requirements.md` §1.2: `created_at` is "Alert generation timestamp (UTC)"; nothing says what happens to a timestamp that carries an offset | In a canonical CSV or JSON submission, a timestamp is stored as text and cast at load with `TRY_CAST(... AS TIMESTAMP)`, which **drops** an offset instead of applying it: `2026-04-02T10:00:00+05:30` is stored as 10:00, not 04:30 UTC. Product exports through a mapping are not affected (the mapping's `utc_offset` converts to UTC). Shown in a full ingest by `tests/test_dq_timestamps.py` (alert A-0009). | **Code fixed** in the second Phase 5 follow-up (asked for at the Phase 5 pause). Text with an offset is now converted to UTC with it (`text_timestamp_sql` in `store/duckdb.py`, used by the store's load and by the close-before-create check); text without one is read exactly as before, independent of the session time zone. The golden snapshot did not move: no generator writes a non-zero offset. `docs/data_requirements.md` §1 now states how timestamps are read. |
+| M17 | Offline installation | `docs/deployment_ops.md` §1.1: the bundle's "automated air-gapped setup script"; `README_OFFLINE.md`: "No Internet or network access required"; `Containerfile`: "Air-Gapped OCI Container" | No step ever put a wheelhouse in the bundle, and `install_offline.sh`, `install_offline.bat` and the `Containerfile` all ended in a `pip install .` fallback when `wheelhouse/` was missing. So every bundle the tool built went to PyPI for all its runtime dependencies when installed: on an air-gapped machine that install cannot succeed, and on a connected one it took whatever versions PyPI offered that day, not the locked ones. | **Code fixed** in Phase 7. `scripts/build_wheelhouse.sh` / `.bat` build a hash-pinned wheelhouse from `uv.lock`; `satsa offline-bundle --wheelhouse` copies it into the bundle (and refuses a directory that is not one); both scripts and the `Containerfile` install with `--no-index --require-hashes` and stop with an error, without downloading, when it is missing. `tests/test_offline_bundle.py`; procedure in `docs/offline_install.md`. |
+| M18 | Deterministic output, continued | As M14 | M14 fixed eight rules found by the golden test. The Phase 7 property tests, which insert the same rows in shuffled order, found seven more whose evidence order depended on storage order: EG03, EG06, EG07, EG12, NS01, NS06, NS07. For EG07 it was also a wrong statement: the rationale names "the" analyst, taken from an unordered `unique()`, so with two analysts over the limit it could give one analyst's name with the other's hourly count. | **Code fixed** in Phase 7: a total ORDER BY on each query, and EG07 names the busiest analyst (ties by name). No threshold, count or score changed. `tests/test_property_rules.py`. |
+| M19 | `satsa offline-bundle --output-dir` | `satsa offline-bundle --help`: "Output directory" | The option was accepted and ignored; the bundle always went to `./dist`. | **Code fixed** in Phase 7 (`OfflinePackager(dist_dir=...)`); `tests/test_offline_bundle.py::test_offline_bundle_command_honours_output_dir_and_wheelhouse`. |
 
 ## Process note: another session edited the same working tree
 
@@ -495,3 +498,84 @@ Decided at the Phase 5 pause: fix everything found in Phase 5 before Phase 6.
   step and benign explanations.
 
 **Not done:** no examiner session was run, so there is no usability figure.
+
+### Phase 7: engineering maturity
+
+**Property-based tests** (`hypothesis`, development dependency only; DECISIONS.md ADR-009):
+- `tests/test_property_rules.py`, for EG03, EG07, EG09, NS04 and NS07. Hypothesis generates the
+  records of one entity, plus another entity's records that must never count. For every case:
+  - the rule flags exactly when its documented criterion holds, computed in the test from the
+    generated records;
+  - a finding always cites evidence, the evidence is the offending records, and the count it
+    reports is their number;
+  - the same records in another storage order give the same finding and evidence, in order;
+  - one more offending record never removes a finding or lowers its score.
+- The same file runs all 20 rules on the seed-42 synthetic data, loaded in a shuffled order
+  per example, and requires identical findings and evidence.
+- EG06, NS01 and NS06 get the criterion, evidence and row-order checks on generated data. The
+  seed-42 set has at most one EG06 bulk batch per entity (one, at CSE-07) and too few silent or
+  ghost assets for their order to vary, so the all-rule test alone could not catch these three.
+- `tests/test_property_ingest.py`:
+  - any ISO date-time with any UTC offset is stored as its UTC instant (300 examples);
+  - any text is read as a timestamp or as empty, never an error;
+  - a JSON array and NDJSON give the same records;
+  - the columnar and row-by-row CSV paths store the same alerts and DQ issues for generated
+    files with odd headers, whitespace and entity IDs;
+  - any bytes in a submitted file give a result, not a crash, and an unreadable file is
+    reported as `file_unreadable`.
+
+**What the property tests found:** seven more rules whose evidence order depended on storage
+order (M18): EG03, EG06, EG07, EG12, NS01, NS06, NS07. EG07 could also name the wrong analyst
+in its rationale. Fixed with a total ORDER BY on each query; EG07 now names the busiest analyst.
+No threshold, count or score changed, and the Phase 5 golden snapshot still matches.
+
+Each fix was checked by undoing it alone, in a copy of `src/` put first on `PYTHONPATH`, and
+running the property tests against it. All eight changes (seven ORDER BYs, and EG07's
+`unique(maintain_order=True)`) made a test fail. EG06, NS01 and NS06 were only caught once
+their generated-data tests were added, as described above.
+
+**Offline installation** (M17, M19):
+- `scripts/build_wheelhouse.sh` and `scripts/build_wheelhouse.bat`: `uv export --frozen --no-dev`
+  with hashes, `pip download --only-binary=:all: --require-hashes`, and SAT-SA's own wheel.
+- `satsa offline-bundle --wheelhouse DIR` puts the wheelhouse in the bundle and refuses a
+  directory that is not one; `--output-dir` now works.
+- `install_offline.sh`, `install_offline.bat` and the `Containerfile` install only from the
+  wheelhouse (`--no-index --require-hashes`), and stop with an error when it is missing. The
+  `pip install .` fallback to PyPI is gone. The scripts also work when started from another
+  directory.
+- `docs/offline_install.md`: build, package, install, verify, container, and limits (one
+  wheelhouse per OS family and Python minor version). `docs/deployment_ops.md` §1.1-1.2 point
+  to it.
+- `tests/test_offline_bundle.py` (9 tests): no install path has a network fallback; the
+  repository `Containerfile` is the one the packager writes; dependencies are installed with
+  hashes checked; the install script refuses to run without a wheelhouse and creates nothing;
+  the wheelhouse reaches the bundle and the archive; a directory that is not a wheelhouse is
+  refused; the CLI options work.
+
+**Verified by hand on this machine (Windows 11, CPython 3.11, 2026-10-02):**
+- `PYTHON=<CPython 3.11 with pip> sh scripts/build_wheelhouse.sh build/wh` wrote 36 wheels.
+- A fresh venv installed from it with `--no-index`; `satsa version` and `pip check` passed, and
+  `satsa generate-data`, `ingest` and `run` succeeded in a directory holding only `config/`.
+- `satsa offline-bundle --wheelhouse build/wh --output-dir build/b`, then `install_offline.bat`
+  in the bundle with `PIP_INDEX_URL` pointed at a closed local port: installed, `satsa version`
+  and `pip check` passed. Run with Python 3.13 first on `PATH`, the same script stopped at the
+  first compiled wheel (`cffi==2.1.1`, built for 3.11) without trying the network, which is the
+  version limit the guide states.
+- `bash install_offline.sh` in a bundle without a wheelhouse: exit 1, explanation, no `.venv`.
+- The network was not physically disconnected for these checks.
+
+**CI** (`.github/workflows/test.yml`; the YAML parses and the no-network step passes `bash -n`,
+but **no CI run was executed** from this machine):
+- The test job runs the suite under `coverage run --branch`, writes `coverage report` and
+  `coverage.xml`, and uploads both per Python version (3.11 and 3.13). Ruff now checks `.`, as
+  the local verification does.
+- New job `offline-install`: builds the wheelhouse and bundle with network access, then, inside
+  `unshare --net` (an empty network namespace), first checks that pypi.org is unreachable, then
+  runs the bundle's `install_offline.sh`, `pip check`, and `satsa generate-data`, `ingest` and
+  `run`.
+
+**Other:**
+- `docs/ps_traceability.md` F13 cited ADR-007, which does not exist on this branch (signed
+  checkpoints are ADR-008). Corrected, and `tests/test_traceability_links.py` now checks that
+  every cited ADR exists.
+- `.hypothesis/` added to `.gitignore`.

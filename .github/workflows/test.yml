@@ -38,8 +38,11 @@ jobs:
           uv run satsa ingest
           uv run satsa run
 
-      - name: Test suite
-        run: uv run pytest tests -q
+      - name: Test suite (with branch coverage)
+        run: |
+          uv run coverage run --branch --source=src/satsa -m pytest tests -q
+          uv run coverage report | tee coverage-report.txt
+          uv run coverage xml -o coverage.xml
 
       - name: Validation (primary dataset)
         run: uv run satsa validate
@@ -51,7 +54,7 @@ jobs:
         run: uv run satsa audit verify
 
       - name: Ruff
-        run: uv run ruff check src tests
+        run: uv run ruff check .
 
       - name: Mypy
         run: uv run mypy src/satsa
@@ -66,3 +69,54 @@ jobs:
             docs/validation_report.html
             docs/validation_stress_report.md
           if-no-files-found: warn
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-py${{ matrix.python-version }}
+          path: |
+            coverage.xml
+            coverage-report.txt
+          if-no-files-found: warn
+
+  offline-install:
+    # Builds the wheelhouse and the offline bundle with network access, then installs and runs
+    # SAT-SA in a process with no network at all (its own empty network namespace), using the
+    # bundle's install_offline.sh: the same path as on the air-gapped machine
+    # (docs/offline_install.md).
+    name: offline install from wheelhouse (no network)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python (with pip, for pip download)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      - name: Build wheelhouse and bundle (network allowed)
+        run: |
+          PYTHON="$(command -v python)" sh scripts/build_wheelhouse.sh wheelhouse
+          uv run --frozen satsa offline-bundle --wheelhouse wheelhouse --output-dir dist
+          mkdir offline && tar -xzf dist/satsa_offline_bundle.tar.gz -C offline
+
+      - name: Install and run with no network
+        run: |
+          sudo env "PATH=$PATH" "HOME=$HOME" PIP_NO_CACHE_DIR=1 \
+            unshare --net --setuid "$(id -u)" --setgid "$(id -g)" -- bash -euo pipefail -c '
+            cd offline/satsa_offline_bundle
+            if python3 -c "import socket; socket.create_connection((\"pypi.org\", 443), 5)"; then
+              echo "network is reachable: this check would prove nothing" >&2; exit 1
+            fi
+            bash install_offline.sh
+            .venv/bin/python -m pip check
+            .venv/bin/satsa generate-data
+            .venv/bin/satsa ingest
+            .venv/bin/satsa run
+          '

@@ -4,6 +4,7 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_NO_INDEX=1 \
     SATSA_AIRGAPPED=1
 
 WORKDIR /app
@@ -11,8 +12,10 @@ WORKDIR /app
 # Copy bundle
 COPY . /app
 
-# Install package locally
-RUN pip install --no-index --find-links=wheelhouse . || pip install .
+# Install from the bundled wheelhouse only (Linux wheels: docs/offline_install.md). There is
+# no network fallback: without a wheelhouse the build stops here.
+RUN pip install --no-index --find-links=wheelhouse --require-hashes -r wheelhouse/requirements.txt && \
+    pip install --no-index --no-deps --find-links=wheelhouse satsa
 
 EXPOSE 8000
 
