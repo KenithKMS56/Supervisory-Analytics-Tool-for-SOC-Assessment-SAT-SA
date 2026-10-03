@@ -6,8 +6,9 @@
 
 ## Slide 1: Problem & Regulatory Mission
 - **Regulatory Challenge:** NCIIPC oversees SOC operations across Critical Sector Entities (Power, Banking, Telecom, Transport, Oil & Gas). Standard compliance audits rely on static questionnaires and self-declared KPIs that fail to detect operational degradation, metric gaming, or surveillance blindspots.
-- **The SAT-SA Solution:** The **Supervisory Analytics Tool for SOC Assessment (SAT-SA)** ingests periodic batch submissions exported from CSE tools (Splunk, ServiceNow, TheHive) and applies deterministic relational analytics and robust statistics to surface objective operational realities.
-- **Guiding Principle:** Strict supervisory support, not subjective compliance verdicts. Every finding provides evidentiary proof for human examiner verification.
+- **The SAT-SA Solution:** The **Supervisory Analytics Tool for SOC Assessment (SAT-SA)** ingests periodic batch submissions exported from CSE tools (Splunk, ServiceNow, TheHive) and applies deterministic relational analytics and robust statistics to surface indicators of operational weakness.
+- **Guiding Principle:** Strict supervisory support, not subjective compliance verdicts. Every finding cites the submitted records behind it so a human examiner can verify it.
+- **Status:** all results to date are on synthetic data; a real-data pilot is pending.
 
 ---
 
@@ -21,13 +22,15 @@
 
 ## Slide 3: Detection Heuristics: Execution Gaps & Negative Space
 - **Execution Gaps (EG01–EG12):** Detects operational shortcuts, metric manipulation, and triage failures:
-  - *Example EG01:* High/Critical alerts closed in $<120$ seconds without investigation.
+  - *Example EG01:* High/Critical alerts closed faster than the peer 5th-percentile close time with at most one workflow event.
   - *Example EG06:* SLA deadline-hugging, bulk closures, and MTTA/MTTR gaming.
   - *Example EG10:* Discrepancies between declared KPIs and KPIs recomputed from the submitted records.
 - **Negative Space (NS01–NS08):** Detects what is missing from a submission:
   - *Example NS01:* Critical monitored assets that have gone completely silent ($>3$ days zero logs).
   - *Example NS03:* Collapse of nighttime and weekend logging activity (lack of 24x7 coverage).
   - *Example NS06:* Shadow assets (telemetry without CMDB record) and ghost assets (inventory without logs).
+- **Beyond the 20 rules (unscored):** an exploratory scan of about 40 metrics flags peer outliers (robust z ≥ 3.5) and month-on-month shifts (CUSUM) as *leads* for the examiner, kept out of the risk index (ADR-007). On the default synthetic portfolio it raised 9 leads, e.g. CSE-09 maps only 54.5% of enabled detection rules to MITRE against a peer median of 100%. Leads have not been validated.
+- **Controls & processes to prioritise:** the portfolio page ranks failed controls (one per rule) by how many entities failed them, and the 8 capability domains by how many entities score 50 or more.
 
 ---
 
@@ -37,7 +40,7 @@
 - **Synthetic Ground-Truth Correctness Check** (not a real-world accuracy benchmark; see docs/validation.md §0):
   - **Entity Rank Precision@7:** **100.0%** (all 7 injected entities ranked in top 7; clean entities at bottom).
   - **Injected Defect Recall / Precision:** **100.0%** (21/21 defects found; 21 of 21 findings correct, every finding counted).
-  - **Review-Effort Lift:** the top 25 queue alerts are **19x** as likely to be defect-affected as random alerts (5.2x across the whole 130-alert queue), on the synthetic dataset.
+  - **Review-Effort Lift:** the top 25 queue alerts are **19x** as likely to be defect-affected as random alerts (5.2x across the whole 130-alert queue), on the synthetic dataset (`satsa validate`, re-run 2026-10-03).
   - **Ranking Stability:** Spearman $\rho = \mathbf{1.0000}$ under $\pm 20\%$ domain-weight perturbations.
   - **Threshold Sensitivity:** every tunable threshold moved ±20%; no move creates a false alarm on a clean entity.
   - **Limits:** all synthetic; real accuracy needs a shadow pilot on historical examiner workpapers.
@@ -45,9 +48,9 @@
 ---
 
 ## Slide 5: Deployment, Operational Sizing & Roadmap
-- **Hardware Efficiency:** Executes on standard commodity CPUs. DuckDB columnar engine aggregates at $>10\text{M}$ rows/second; full 5-million alert assessment completes in under 10 minutes.
+- **Hardware Efficiency:** Runs on a single laptop, no database server. On a 4-core / 8-thread Ryzen 5 7235HS with 23.7 GB RAM and uniform synthetic data, 5,000,000 alerts took 46.6 s to ingest (5.7 GB peak) and 124 s to assess (3.9 GB peak; assessment time varies between runs), recorded 2026-10-02 in `docs/benchmarks.md`. Real submissions with skewed volumes may behave differently.
 - **Operational Packaging:** Single self-contained offline bundle (`tar.gz`), containerized `Containerfile`, and signed versioned rule packs (`satsa rules import`).
 - **Implementation Roadmap:**
-  - *Phase I (Current):* Standalone offline forensic station and examiner portal.
+  - *Phase I (Current):* Standalone offline analysis station and examiner portal; next step is a shadow pilot on historical examiner workpapers (`docs/shadow_pilot_runbook.md`).
   - *Phase II (Next):* Secure automated quarterly batch drops via encrypted air-gap media.
   - *Phase III:* Sector-wide anonymized peer benchmark registry across national critical sectors.
