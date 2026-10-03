@@ -122,14 +122,25 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
 - **Direct Dossier Exports:** Instant PDF dossier generation via ReportLab and standalone HTML view.
 
 ### 7. Finding Detail & Card View (`/finding/{finding_id}`)
-- Complete supervisory finding card containing:
-  - **Core Metadata:** Rule ID, title, domain, severity, calibrated score (0–100), and sample confidence rating.
-  - **Plain-Language Rationale:** Fully deterministic rationale generated from computed metric values and dynamic peer cut-offs.
-  - **Parametric Evidence Table:** Direct links to underlying record IDs (alerts, cases, assets).
-  - **Peer Benchmarking Context:** Entity metric value compared side-by-side with peer median, IQR, and percentile rank.
-  - **Possible Legitimate Explanations:** Concrete engineering or architectural contexts that could explain the pattern benignly (e.g., automated SOAR triage, scheduled maintenance windows).
-  - **Suggested Examiner Checks:** Step-by-step instructions for on-site or evidentiary examination.
-  - **Known Limitations:** Data assumptions and boundaries of the detection heuristic.
+- Header: rule ID and version, title, entity, domain, score (0–100), confidence, severity and
+  number of evidence records; PDF exports.
+- Five sections, in this order (`src/satsa/ui/templates/finding_detail.html`, checked for one
+  finding of every rule present by `tests/test_finding_page.py`):
+  1. **What was found:** the finding's rationale, generated deterministically from the computed
+     figures, and the supervisory notice.
+  2. **Why it matters:** what the pattern may mean for supervision, one statement per rule
+     (`WHY_IT_MATTERS` in `src/satsa/explain/finding_card.py`, following each rule's Purpose in
+     `docs/analytics_methodology.md` Section 3).
+  3. **Evidence:** the evidence records with their IDs and details; the figures behind the
+     finding as the rule recorded them (for rules that compare with peers, the peer figures they
+     used); and the rule's parameters. A run stores only a hash of `config/rules.yaml`, so the
+     page shows the current parameter values and says whether the configuration is unchanged
+     since the finding's run.
+  4. **Confidence and limitations:** confidence, the rule's limitations and the possible
+     legitimate explanations.
+  5. **Next step:** the suggested examiner check.
+- An earlier version of this section listed a peer IQR and percentile rank; no rule computes
+  either, and the page never showed them.
 
 ### 8. Review Queue (`/queue`)
 - **Queue Composition:** per entity, records cited by findings (highest accumulated rule score first, up to 70% of the queue size) plus random control samples stratified by severity. Entities with few cited records get a shorter, mostly random queue.

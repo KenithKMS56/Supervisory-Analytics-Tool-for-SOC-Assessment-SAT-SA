@@ -23,6 +23,20 @@ Each documented behaviour below was checked against the code before anything was
 | M9 | Package layout | README directory tree: `src/satsa/core/  # Ingestion, validation, pseudonymisation, scoring` | No `core/` package; that work lives in `ingest/`, `scoring/`, `validate/` | **Doc was wrong.** Tree line corrected. |
 | M10 | Audit hash algorithm | README §10 and admin diagram: "SHA-256 tamper-evident log chain", "Chained SHA-256 prev_hash"; CLI reference: "verify the SHA-256 audit log hash chain" | New entries are SHA3-256; legacy SHA-256 entries still verify (`store/sqlite.py::compute_chain_hash`) | **Doc was stale.** Wording now says SHA3-256 with legacy SHA-256. |
 | M11 | Report file names vs Windows path limit | EVIDENCE.md: the suite had to be run "from a short path" | Reproduced: from a 181-character root, 4 PDF-route tests fail (`reports/SAT-SA_CSE_<entity>_Report_<full run id>.pdf.tmp` > 260 characters) and `test_bundle` fails (the offline bundle mirrors the source tree under `dist/satsa_offline_bundle/`) | **Code fixed for the reports** (`satsa/report/naming.py`; see Phase 1). The bundle depth is recorded as an open item. |
+| M12 | Submitted entity profile | `docs/data_requirements.md` and the UI: the entity's submitted name, sector, size band and SOC model are what the tool shows and what peer cohorts are built from | On a fresh store, ingest appended a default record ("<id> Operations", "General Infrastructure", "Medium", "inhouse") **after** the submitted rows, and the entity table keeps the newest non-null value per column, so every submitted profile was overwritten. Reproduced by ingesting `data/generated` (the seed-42 demo) with the pre-fix `src` (`git archive` of `37b9bd4`, the commit before the fix): all 10 CSEs came out as "CSE-xx Operations / General Infrastructure / Medium / inhouse"; with the fix, "Northern Power Grid Ltd / power / large / inhouse" etc. Every entity therefore fell into one peer cohort. | **Code bug, fixed** in Phase 4 (`ingest/pipeline.py`: defaults first). Regression tests in `tests/test_entity_profile_ingest.py` fail without the fix. Found because the independent generator gives entities distinct sectors and sizes; the original generator's checks did not depend on cohort membership, and the primary and stress results were the same before and after the fix (21/21, 3/3). |
+| M13 | Canonical schema page | `docs/data_requirements.md` §1.1, §1.5: `soc_model` values `internal`/`hybrid`/`managed_mssp`; criticality 1-5; `declared_kpi(metric_name, declared_value)`; `external_report(report_id, case_id, regulatory_body)`; no `soc_provider`, `comment_len`, `detection_rule`, `remediation`, `sla_policy` | `satsa.models.canonical`: `inhouse`/`hybrid`/`mssp`; criticality 1-4; `declared_kpi(metric, value)`; `external_report(incident_id, reported_to)`; `soc_provider`, `closure.comment_len`, and the three tables exist and are read by rules | **Doc was wrong.** Corrected. Found by writing the independent generator from that page: CSVs built to the page did not load as documented. |
+| M14 | Deterministic output | DECISIONS.md ADR-001: analytics are "strictly deterministic", with "byte-identical reproducibility"; README: "deterministic analytical tool" | Findings, scores and counts were reproducible, but the **evidence records** of EG01, EG02, EG04, EG05, EG08, EG09, NS04 and NS05 were the first rows of a query with no (or no complete) ORDER BY, so they depended on the order rows happened to be stored in. That order changes on a re-ingest (Parquet merge with `unique()`). Reproduced: seed 42 ingested twice, then assessed, in two fresh stores gave different evidence alerts for CSE-03 EG01 (9 of the 10 differed) and therefore different review queues. | **Code fixed** in Phase 5: each of those queries now has a total order (`rules/execution_gaps.py`, `rules/negative_space.py`; EG09 lists the oldest stale case first, the rest by record id). No threshold, count or score changed. `tests/test_golden_findings.py::test_findings_do_not_depend_on_the_order_of_submitted_rows` (same submission, rows shuffled) fails without the fix. Found by the Phase 5 golden test, which failed against its own snapshot before any optimisation. |
+| M15 | Close-before-create DQ check | `docs/validation_summary.md`: alerts closed before they were created "are already reported by the `close_before_create` data-quality check"; `docs/architecture.md` listed the check among those ingest runs | `DQValidator.check_timestamp_logic` compares only values that are Python `datetime`s. Timestamps in a CSV or JSON submission arrive as text, so for those submissions the check never runs; it works for product exports through a mapping, whose timestamps are parsed. Reproduced on the pre-Phase 5 code: a CSV alert closed one day before it was created gave no `close_before_create` issue. EG01 and EG10 still exclude such alerts in SQL, so findings are not affected. | **Code fixed** in the Phase 5 follow-up (decided at the Phase 5 pause). Text timestamps are now read the way the store reads them (DuckDB's `TRY_CAST(... AS TIMESTAMP)`, as in `DuckDBStore.load_table_from_parquet`), so the check reports exactly the alerts the rules see as closed before they were created; text the store cannot read is not compared, as before. The check only reads: no stored row, finding, score or other DQ issue changes (`tests/test_dq_timestamps.py`, and the golden snapshot, taken before the fix, still matches). The method's docstring also claimed an `acknowledged_at >= created_at` check that has never existed; the docstring was corrected and no check was added. |
+| M16 | UTC offsets in canonical timestamps | `docs/data_requirements.md` §1.2: `created_at` is "Alert generation timestamp (UTC)"; nothing says what happens to a timestamp that carries an offset | In a canonical CSV or JSON submission, a timestamp is stored as text and cast at load with `TRY_CAST(... AS TIMESTAMP)`, which **drops** an offset instead of applying it: `2026-04-02T10:00:00+05:30` is stored as 10:00, not 04:30 UTC. Product exports through a mapping are not affected (the mapping's `utc_offset` converts to UTC). Shown in a full ingest by `tests/test_dq_timestamps.py` (alert A-0009). | **Code fixed** in the second Phase 5 follow-up (asked for at the Phase 5 pause). Text with an offset is now converted to UTC with it (`text_timestamp_sql` in `store/duckdb.py`, used by the store's load and by the close-before-create check); text without one is read exactly as before, independent of the session time zone. The golden snapshot did not move: no generator writes a non-zero offset. `docs/data_requirements.md` §1 now states how timestamps are read. |
+| M17 | Offline installation | `docs/deployment_ops.md` §1.1: the bundle's "automated air-gapped setup script"; `README_OFFLINE.md`: "No Internet or network access required"; `Containerfile`: "Air-Gapped OCI Container" | No step ever put a wheelhouse in the bundle, and `install_offline.sh`, `install_offline.bat` and the `Containerfile` all ended in a `pip install .` fallback when `wheelhouse/` was missing. So every bundle the tool built went to PyPI for all its runtime dependencies when installed: on an air-gapped machine that install cannot succeed, and on a connected one it took whatever versions PyPI offered that day, not the locked ones. | **Code fixed** in Phase 7. `scripts/build_wheelhouse.sh` / `.bat` build a hash-pinned wheelhouse from `uv.lock`; `satsa offline-bundle --wheelhouse` copies it into the bundle (and refuses a directory that is not one); both scripts and the `Containerfile` install with `--no-index --require-hashes` and stop with an error, without downloading, when it is missing. `tests/test_offline_bundle.py`; procedure in `docs/offline_install.md`. |
+| M18 | Deterministic output, continued | As M14 | M14 fixed eight rules found by the golden test. The Phase 7 property tests, which insert the same rows in shuffled order, found seven more whose evidence order depended on storage order: EG03, EG06, EG07, EG12, NS01, NS06, NS07. For EG07 it was also a wrong statement: the rationale names "the" analyst, taken from an unordered `unique()`, so with two analysts over the limit it could give one analyst's name with the other's hourly count. | **Code fixed** in Phase 7: a total ORDER BY on each query, and EG07 names the busiest analyst (ties by name). No threshold, count or score changed. `tests/test_property_rules.py`. |
+| M19 | `satsa offline-bundle --output-dir` | `satsa offline-bundle --help`: "Output directory" | The option was accepted and ignored; the bundle always went to `./dist`. | **Code fixed** in Phase 7 (`OfflinePackager(dist_dir=...)`); `tests/test_offline_bundle.py::test_offline_bundle_command_honours_output_dir_and_wheelhouse`. |
+| M20 | `scripts/benchmark_scale.py --workdir` | `--help`: "scratch directory" | Each stage process changes into its workspace and then uses the workspace path again, so a relative `--workdir` failed every ingest ("No supported data files found in build\bench\bench_10x50000\csv"). The default (the system temp directory, an absolute path) was not affected, which is why earlier runs worked. | **Code fixed** in Phase 8: the work directory is made absolute first. Found by the Phase 8 benchmark run, which failed this way before it was re-run. |
+| M21 | README | Documentation index linked `file:///docs/...` (12 links, which resolve to the root of the reader's disk, not the repository); "Method 2 ... (Under 1 Minute)", never measured; Method 2 served SAT-SA on `--port 8000`, the Admin Portal's port, while everything else says `:8001`; "871 passing tests" and the test row's Python 3.13 run, both from the baseline; `infrastructure.md` described as a "5M alert projection", withdrawn in Phase 2 | (docs only) | **Doc was wrong or stale.** Corrected in Phase 8; see the Phase 8 entry. |
+| M22 | Capability domains | README portfolio view: "8-domain capability heatmap (Detection, Triage, Escalation, Hygiene, Compliance, etc.)" | `config/scoring.yaml` defines exactly the problem statement's eight capabilities: Threat Detection, Investigation, Escalation, Incident Response, Security Operations, Governance and Oversight, Operational Discipline, Cyber Resilience | **Doc was wrong.** README now names the eight domains as configured. Found in the requirement review after Phase 8, which also refreshed `docs/ps_traceability.md` F3 to the final benchmark. |
+| M23 | Installing with pip | README Method 3: `pip install -e ".[dev]"`, then `pytest` | `pyproject.toml` has no `dev` extra; the development tools are a PEP 735 dependency group (`[dependency-groups] dev`), so that command installs SAT-SA without pytest, ruff or mypy (pip only warns that the extra does not exist). Present since before the baseline. | **Doc was wrong.** README now uses `pip install -e . --group dev` (pip 25.1 or later). |
+| M24 | Presentation material | `docs/slides_outline.md`: "aggregates at >10M rows/second; full 5-million alert assessment completes in under 10 minutes", EG01 as "closed in <120 seconds", "evidentiary proof". `docs/demo_script.md`: serves on `--port 8000` (the Admin Portal's port) with no login step; "CSE-07 and CSE-08 ... at the top"; CSE-02 MTTR "roughly 45 minutes for critical and 90 for high"; EG01 alerts "dismissed in under 120 seconds"; NS01 on CSE-05 as "two Criticality-4 servers ... for several days"; blind review shows "comment hashes"; "evidentiary subpoena". Neither file mentioned the anomaly leads or the control/process ranking. `docs/legal_traceability.md` listed two Section 70A phrases still awaiting legal review. | Fresh default run (seed 42, 2026-10-03): top three are CSE-02 41.5, CSE-08 29.6, CSE-03 27.7; CSE-07 is fifth (25.9, Moderate). EG10 on CSE-02: declared 35.0 min, recomputed 80.8 min. EG01 on CSE-03: 195 of 488 faster than the peer p5 close time (30.1 min) with at most one workflow event; EG01 has no 120 s parameter. NS01 on CSE-05: one criticality-4 SCADA controller silent on 16 days. The blind review page shows sample comments. 9 exploratory leads. `satsa validate` re-run: 21/21, 19.47x and 5.19x unchanged. Scale: 46.6 s ingest and 124 s assess at 5M (2026-10-02). Neither Section 70A phrase is in any file. | **Doc was wrong or stale.** Slides and demo script rewritten to match this run and the final benchmark, with the synthetic-only status stated in both. The demo gains a step for leads and controls to prioritise. The two stale legal-review bullets are replaced with a dated note. |
+| M25 | Re-ingest on Linux | Everything recorded in this pass was run on Windows. The first CI run (GitHub Actions, ubuntu-latest, 2026-10-03) was also the first Linux run. | The golden test's `primary` scenario ingests the same submission twice. On CI some tables then loaded with 0 rows: `asset`, `remediation` and `external_report` on the first run, `case` on the next. The Parquet files were valid; Polars read all 776 `case` rows from them. DuckDB failed with "ZSTD Decompression failure", and `load_table_from_parquet` swallowed the error with a bare `continue`. A re-ingest rewrites each `data.parquet` at the same path and reloads it on the same connection. DuckDB 1.5.5's external file cache (on by default) checks a cached file by path and modification time, so it could serve the previous file's bytes. Not reproducible on Windows. | **Code was wrong (Linux only).** `DuckDBStore` turns the external file cache off; every table is copied into memory on load, so the cache saved nothing. A failed Parquet load is now logged with the DuckDB error instead of being skipped silently. The golden test's failure message lists the Parquet files on disk and their rows. New test `tests/test_store.py::test_rewritten_parquet_reloads_from_disk_not_a_file_cache`. Benchmarks were not re-run after this change. |
 
 ## Process note: another session edited the same working tree
 
@@ -40,6 +54,11 @@ these commits. Consequences, stated plainly:
 - From Phase 2 on, each phase is verified on a **clean copy**: `git archive HEAD` plus exactly
   the file contents being committed, with its own `data/` directory. The files are written to
   the index from those contents, never with `git add` on the shared working tree.
+
+**Repair after Phase 2 (at the user's request):** the main checkout was moved, unchanged, to a
+new branch `feat/anomaly-scan-wip` for the other session's uncommitted work, and the quality pass
+continues in its own git worktree (`satsa-quality`, branch `quality/10of10`) with its own `data/`.
+The other session was told by message. Its ADR keeps the number 007; this pass uses ADR-008.
 
 ## Phase log
 
@@ -127,3 +146,579 @@ reports describes the design, which `tests/test_offline_hardening.py` exercises.
 
 Verification (clean copy, see the process note): full suite, `satsa validate`, `satsa
 validate-stress`, `ruff check .`, `mypy src`; results in the Phase 2 commit message.
+
+### Phase 3: signed, verifiable audit checkpoints
+
+Verified first: `satsa audit head` and `satsa audit verify --checkpoint-count/--checkpoint-head`
+already implemented an unsigned, hand-copied checkpoint (`SQLiteStore.audit_head`,
+`verify_checkpoint`), and ADR-005 stated its limits correctly. They were kept and reused.
+
+- `src/satsa/audit/signing.py`: `Signer`/`Verifier` interface and an algorithm registry.
+  `ed25519` implemented with `cryptography`; `ml-dsa-44/65/87` reserved (raise "not
+  implemented"); any other name rejected (`UnknownAlgorithmError`).
+- `src/satsa/audit/keys.py`: `satsa audit keygen` writes the key pair owner-only (0600 on POSIX;
+  on Windows `icacls /inheritance:r /grant:r <user>:(F)`); signing refuses a private key that
+  other accounts can read (POSIX group/other bits; Windows: an Allow-read entry for Everyone,
+  Anonymous, Authenticated Users, Users or Guests, checked by SID so the display language does
+  not matter).
+- `src/satsa/audit/checkpoint.py`: `satsa audit checkpoint [--sign --key K] [--out F]` emits
+  `satsa-audit-checkpoint/1` JSON (chain, table, entries, head hash, hash algorithm, UTC time,
+  tool version) with a detached Ed25519 signature over its canonical encoding; it refuses to
+  checkpoint a chain that does not verify. `satsa audit verify --checkpoint F --pubkey P`
+  checks the signature, then that the live chain matches or extends the checkpoint.
+- `tests/test_audit_tamper_matrix.py`, one test per case. Result:
+
+| Case | Chain alone | With a signed checkpoint |
+|---|---|---|
+| 1 Edit a middle entry | detected (row 5) | detected |
+| 2 Insert an entry | detected (row 6) | detected |
+| 3 Delete a middle entry | detected (row 5) | detected |
+| 4 Reorder two entries | detected (row 4) | detected |
+| 5 Truncate the newest 3 entries | **not detected** (documented limit) | detected ("truncated") |
+| 6 Recompute the whole chain after an edit | **not detected** (documented limit) | detected ("history rewritten") |
+| 7 Verify with the wrong public key (and with the right key id copied in) | n/a | rejected |
+| 8 Modified checkpoint (entries, head hash, time, version; flipped signature bits) | n/a | rejected |
+
+  Also tested: appended entries extend a checkpoint; an unsigned checkpoint, a checkpoint of a
+  broken chain and an unknown algorithm in a checkpoint are refused; ML-DSA is reserved, not
+  implemented; keygen never overwrites without `--force`; a world-readable key is refused by
+  the API and the CLI; the CLI catches truncation end to end.
+- DECISIONS.md ADR-008 (new; "tamper-evident, not tamper-proof"; key custody stated as the
+  condition the guarantee rests on); ADR-005 points to it. `docs/deployment_ops.md`, README,
+  `docs/architecture.md` and `docs/slides_outline.md` describe the signed checkpoint.
+- New dependency `cryptography` (50.0.2, with `cffi`, `pycparser`): justified in ADR-008; prebuilt
+  wheels for Windows and Linux, no network use at run time.
+
+**Not done, by decision** (each recorded in ADR-008):
+- An ML-DSA signer: only the interface and the reserved names, as the Phase 3 scope said. It
+  needs no new dependency: the pinned `cryptography` 50.0.2 already provides ML-DSA keys.
+  (Correction: the first version of this commit said an optional dependency would be needed;
+  checking the installed library showed otherwise.)
+- Checkpoint verification in the web app: deliberately CLI-only, because a page served by the
+  host being checked could be made to report anything; the examiner verifies on their own machine.
+- A passphrase on the private key: possible hardening; the key is protected by owner-only
+  permissions and by being kept off the host.
+
+### Phase 4: validation rigour
+
+- `src/satsa/synth/independent.py` (`independent/1`): a second synthetic generator, written from
+  README.md, `docs/analytics_methodology.md` §3 and `docs/data_requirements.md`. It uses the
+  standard library only and imports nothing from `satsa` (an AST test enforces this). Per
+  seed: 15 entities `ORG-A`..`ORG-O` covering every sector and size band, lognormal volumes,
+  its own analyst naming and timing. Each rule's defect is built 1.08-1.9x over the documented
+  threshold, most rules get a decoy just under it, and there is a systemic group plus a
+  two-entity systemic decoy. For EG05, EG11 and NS03 the generator computes the documented
+  criterion on what it built and labels the ground truth by it. EG11 is built in both of its
+  documented forms (no true positives, or a skewed rate with 1-2.5% true positives). The first
+  version built only the first form, so the robust-z branch was tested only by chance cases;
+  this was found while writing the threshold rationale and fixed before the reported run.
+- `src/satsa/validate/baselines.py`: three one-line baselines (`fast_closure`,
+  `short_comment`, `no_escalation`).
+- `src/satsa/validate/independent.py` and `satsa validate-independent`: per seed, generate,
+  ingest and assess, then score the engine against the baselines with Wilson 95% intervals.
+  It also runs an ablation (without EG, without NS; the systemic detector reported on its
+  own) and a ±20% sweep of every tunable threshold (reusing the harness).
+- `docs/validation_independent_report.md`, from `uv run satsa validate-independent --seeds 20
+  --start-seed 1`, run 2026-10-01 in 10 min 50 s:
+  - recall 487/487, precision 487/487 and decoys flagged 0/245;
+  - clean entities flagged 0/57;
+  - baselines lose on precision to the matching rule (20/23, 20/26, 20/300);
+  - baseline entity ranking precision@k is 81.8% against the engine's 100%;
+  - without EG recall is 198/487, and without NS it is 289/487.
+  The report has a "what this does and does not prove" section.
+- `docs/threshold_rationale.md` and `scripts/threshold_probe.py`. The probe computes each
+  rule's statistic per entity with the rule's own SQL, counts flags at candidate values, and
+  reproduces the engine at every current value. The rationale covers EG04, EG05, EG07, NS05,
+  NS08 and EG11, and makes **proposals only**. No change was made to `config/`.
+- Two defects found by the independent set and fixed (see M12 and M13 above):
+  - the entity-profile overwrite at ingest, with regression tests in
+    `tests/test_entity_profile_ingest.py`;
+  - the schema page in `docs/data_requirements.md`.
+- Tests: `tests/test_validate_independent.py` (12 tests: generator independence, documented
+  defaults, determinism, ground-truth consistency, decoys under threshold, formulas,
+  precision@k ties, one seed end to end, EG11 built both ways).
+- `docs/validation_hard_report.md` was re-run (`uv run python scripts/validate_hard.py --out
+  docs/validation_hard_report.md`, 11 min), because its earlier figures were produced while M12
+  put every entity in one peer cohort. Every result is unchanged; only the date and the
+  per-run seconds differ. The 4 known STRESS-03:EG05 false positives (seeds 3, 10, 14 and 15)
+  are the same ones as before.
+
+**Not done:**
+- The structural proposals in the threshold rationale (EG04 group size relative to volume,
+  peer-relative EG07, NS05 excluding new rules) are not evaluated, because each needs a code
+  change.
+- NS03's `min_spread` was not probed, although 8 entities met its criterion by chance.
+- The independent generator was written in a session that had read the rule code. The report
+  states this.
+- Open item (fixed in the second Phase 5 follow-up), observed while verifying: some web tests (for example
+  `tests/test_shadow_pilot.py`) use the working tree's `data/satsa.db`. A `satsa validate` run
+  after the suite therefore reports their shadow workpaper in place of the stand-in one. The
+  committed validation reports were not regenerated in this phase.
+
+### Phase 5: ingest performance
+
+**Golden test first.** `tests/test_golden_findings.py` ingests and assesses four scenarios:
+- the original generator (seed 42), ingested twice;
+- the independent generator (seed 7);
+- the Splunk and TheHive sample exports through their mappings.
+
+For each scenario it compares the outputs with `tests/golden/golden_findings.json`:
+- every canonical table (row count and SHA-256 of the sorted rows);
+- the DQ issues;
+- the findings, including a hash of their text and evidence;
+- the entity scores, the review queue and the systemic findings.
+
+**Finding before any change (M14).** The first snapshot did not match a second run of the
+unchanged code. The cause was that evidence samples depended on storage row order. This was
+fixed first, in the rules, and the snapshot was then taken on the code before any
+optimisation (SHA-256 `e470c0d9dcaa713f…`).
+
+That snapshot passes on both versions:
+- **The pre-optimisation source** (commit `b371788` plus the M14 fix, run with `PYTHONPATH`
+  pointing at a copy of it): 6 passed.
+- **The current code:** 6 passed.
+
+**Profile** (`uv run python scripts/profile_ingest.py --entities 10 --alerts 50000`, cProfile,
+121.8 s under the profiler; 58.4 s without it, 1,837 MiB peak):
+
+| Cost | Cumulative under cProfile |
+|---|---|
+| Row-wise column normalisation (`normalize_row_columns`, 2.17 million calls) | 54.8 s (45%) |
+| Row hygiene (`_apply_row_hygiene`; 1.47 million HMAC pseudonymisations) | 21.8 s (18%) |
+| Rebuilding canonical rows and frames from dicts | about 15 s |
+| `to_dicts` for chunks and per-entity DQ checks | 9.5 s |
+| Parquet write | 4.3 s |
+
+**Changes:**
+- `src/satsa/ingest/columnar.py`: a canonical CSV table is normalised column by column.
+  - It covers column aliases, header case and trimming (with Python's own whitespace set), the
+    default entity, rejection of rows without a valid entity, pseudonymisation, taxonomy
+    mapping and comment redaction.
+  - Per-value functions run once per distinct value.
+  - Where exact equivalence is not certain, it declines and the row path runs as before. This
+    covers mixed-type columns, two alias columns for one field, JSON, and product mappings.
+- `src/satsa/ingest/dq_checks.py` `FrameDQ`: the DQ checks on columns, with the same counts,
+  samples (in row order) and text as `DQValidator`. Non-text columns go through the
+  dict-based logic.
+- `src/satsa/ingest/pipeline.py`:
+  - Each entity's rows are found by position instead of copying every table per entity.
+  - Field coverage is counted for all columns of a table together, in 500,000-row slices.
+  - Each table's frame is released once written.
+  - The written tables are reloaded into DuckDB after all are written (new
+    `DuckDBStore.deferred_reload()`). A failed reload still counts as a failed store.
+- `scripts/profile_ingest.py`: new. `scripts/benchmark_scale.py` now labels sizes MiB, which
+  is what it measured all along.
+
+**Equivalence tests** (`tests/test_columnar_ingest.py`, 56 tests):
+- Messy submissions are ingested with the columnar path on and off. Every stored table, the
+  ingest result and every DQ issue must be identical, and the test asserts that the columnar
+  path really ran. The submissions mix:
+  - alias columns and odd headers;
+  - Python-only whitespace;
+  - raw comments with e-mail addresses and IPs;
+  - invalid and missing entity IDs, and a default entity.
+- `FrameDQ` is compared with `DQValidator` on 40 random frames and on non-text columns.
+- Column counts are compared with the per-column formula.
+- Two deliberately planted bugs were each caught:
+  1. a wrong default closer type;
+  2. using the regex engine's whitespace instead of Python's.
+
+**Results.** `python scripts/benchmark_scale.py --configs 10x50000,50x100000`, before and after,
+on the same machine and interpreter on 2026-10-01. Details are in `docs/benchmarks.md`.
+
+| Alerts | Ingest before | Ingest after | Peak before | Peak after |
+|---|---:|---:|---:|---:|
+| 500,000 | 55.1 s | 6.5 s (8.5x) | 1,855 MiB | 1,155 MiB |
+| 5,000,000 | 529.7 s | 54.2 s (9.8x) | 13,339 MiB | 5,716 MiB |
+
+**Targets:**
+- **At least 3x faster:** met.
+- **Under 6 GB at 5,000,000 alerts:** under 6 GiB, not reliably under 6 GB. This entry first
+  said "met, narrowly" from one run (5,716 MiB, 5.99 GB); two later measurements gave 5,731 and
+  5,736 MiB (6.01 GB), see the follow-up below. The peak comes while the 938 MiB workflow-event
+  CSV is read; none of the Polars readers tried (default, low-memory, batched, streaming) was
+  lower.
+
+**Not done:**
+- Assessment speed. It was not in scope, and its before and after figures differ by 7%.
+- The first web page after a run still reloads every table (about 20 s at 5,000,000 alerts).
+- README, `docs/infrastructure.md` and EVIDENCE.md still carry the 2026-09-30 figures,
+  labelled with that date. They are refreshed in Phase 8, as agreed.
+- M15 (close-before-create never runs for CSV/JSON timestamps) was recorded here and fixed in
+  the follow-up below.
+
+### Phase 5 follow-up: close-before-create on text timestamps (M15)
+
+Decided at the Phase 5 pause: fix M15 without changing any other data-quality output.
+
+- `src/satsa/ingest/dq_checks.py`: `_stored_timestamps` casts text timestamps with DuckDB's
+  `TRY_CAST(... AS TIMESTAMP)`, the cast the store applies when it loads a table. Both
+  `FrameDQ.check_timestamp_logic` and `DQValidator.check_timestamp_logic` use it. Text against
+  a zoned datetime is not compared, because the store would convert a zoned value by its session
+  time zone.
+- `src/satsa/ingest/pipeline.py`: the ingest result and its audit entry list entities sorted.
+  Before, the list was in Python set order, which changes with the per-process hash seed.
+  - This made `tests/test_columnar_ingest.py::test_messy_submission_is_stored_identically`
+    flaky. It was added in Phase 5 and failed on the Phase 5 commit itself with
+    `PYTHONHASHSEED=16`.
+  - Only the order of that list changes.
+- `tests/test_dq_timestamps.py` (37 tests):
+  - CSV (columnar and row path), JSON and NDJSON submissions with ten kinds of timestamp pair.
+    The check reports exactly the alerts the store holds as closed before created.
+  - Against the check as it was, the stored alerts and every other DQ issue are identical.
+  - The frame and dict checks agree on 30 randomised frames of mixed timestamp text.
+  - Neither check rewrites its input.
+- The Phase 5 messy-submission tests contain alerts closed up to five minutes before
+  creation, so they now also show the columnar and row paths agreeing on this issue.
+- **Unchanged:** the golden snapshot (`tests/golden/golden_findings.json`, taken before the
+  fix) still matches. No generator produces inverted timestamps
+  (`tests/test_edge_paths.py::test_generated_defects_are_what_their_ground_truth_says`), so no
+  finding, score, stored row or other DQ issue in the four scenarios moved.
+- **Found, not fixed:** M16 (UTC offsets in canonical text timestamps are dropped at load).
+- **Cost** (`python scripts/benchmark_scale.py --configs 10x50000,50x100000`, 2026-10-02): ingest
+  5.4 s at 500,000 alerts and 45.8 s at 5,000,000; ingest peak 1,261 and 5,731 MiB. A memory trace
+  at 5,000,000 shows the peak set while the workflow-event CSV is read, before the checks run, so
+  the fix does not set it. It did show that the read peak varies between runs (5,716 to 5,736 MiB),
+  so the Phase 5 "under 6 GB, met narrowly" was corrected above: it is under 6 GiB, not reliably
+  under 6 GB.
+
+### Phase 5 follow-up 2: offsets, test isolation, peak memory
+
+Decided at the Phase 5 pause: fix everything found in Phase 5 before Phase 6.
+
+**M16, UTC offsets** (`src/satsa/store/duckdb.py`, `src/satsa/ingest/dq_checks.py`):
+- `text_timestamp_sql` reads a text timestamp as UTC. One carrying an offset (`Z`, `+05:30`,
+  `+0530`, `+05`) is converted with it. One without an offset is read exactly as before. The
+  result does not depend on the DuckDB session's time zone.
+- The store's load and the close-before-create check both use it.
+- It uses DuckDB's ICU extension, which is statically linked in the DuckDB wheel, so nothing is
+  downloaded (checked with `duckdb_extensions()`: `STATICALLY_LINKED`).
+- **Cost:** 0.11 s per 10,000,000 values against the plain cast, measured on a 10,000,000-row
+  table.
+- **Tests:** `tests/test_dq_timestamps.py` now has 42 tests:
+  - offsets stored in UTC for CSV and JSON;
+  - three session time zones;
+  - an alert inverted only once its offset is applied (A-0010).
+  - One expectation in that file, which this session added, was updated: alert A-0009 was
+    recorded as inverted under the old behaviour, which dropped offsets. With offsets applied it
+    is not.
+- **Golden snapshot:** unchanged.
+
+**Tests no longer write to the working tree** (`tests/conftest.py`):
+- The application keeps its state relative to the working directory, and about 30 test lines
+  use `data/satsa.db` the same way. The suite therefore used to change a developer's database,
+  salt and reports.
+- It now runs from a temporary copy of the repository inputs it reads by relative path:
+  `config/`, `demo_data/`, `docs/`, `scripts/`, `src/` and the top-level files.
+- That copy is bootstrapped as CI bootstraps a clean checkout: `generate-data`, `ingest`, `run`.
+  This takes about 13 s.
+- The copy is removed at the end of the session, and also when the bootstrap fails. It holds
+  copies only, nothing linked.
+- `SATSA_TESTS_IN_PLACE=1` keeps the old behaviour.
+- **Shown:** after a full run (1,053 passed), the SHA-256 of every file under `data/`,
+  `reports/` and `.satsa_salt` is unchanged.
+
+**Peak memory at 5,000,000 alerts** (`src/satsa/ingest/pipeline.py`, `src/satsa/__init__.py`):
+- **Memory traces** (resident and peak memory logged at each ingest step) showed three phases
+  within 100 MiB of each other:
+  - the read of the largest CSV, on top of the tables already held;
+  - the data-quality checks;
+  - the final reload into DuckDB, on top of about 2.6 GB that Polars' allocator kept after the
+    frames were freed. `gc.collect()` released none of it.
+- **Changes:**
+  - The largest CSV is read before the others. Files are still processed in their usual order,
+    so row order, DQ samples and error reporting are unchanged.
+    `tests/test_ingest_read_order.py` checks this with the early read on and off, including an
+    unreadable largest file.
+  - `MIMALLOC_PURGE_DELAY=0` is set in `satsa/__init__.py` before Polars is imported, unless
+    the environment sets it.
+- **Result:** 5,761 to 5,435 MiB. The peak is now under 6 GB (5,722 MiB), at the cost of about
+  6 s (13%) more ingest time at 5,000,000 alerts (`docs/benchmarks.md`, "Peak-memory change").
+- The "under 6 GB" target in Phase 5 is now met. Before this it was not reliably met.
+
+### Phase 6: examiner workflow and traceability
+
+**The finding page** (`src/satsa/ui/templates/finding_detail.html`, `src/satsa/api/routes.py`,
+`src/satsa/explain/finding_card.py`) is in five numbered sections:
+1. what was found;
+2. why it matters;
+3. evidence;
+4. confidence and limitations;
+5. next step.
+
+- **Why it matters is new.** `WHY_IT_MATTERS` holds one statement per rule, following the
+  rule's Purpose in `docs/analytics_methodology.md` and worded as what the pattern *may* mean.
+- **The evidence section now also shows two things the page never displayed:**
+  - the figures the rule recorded (`peer_comparison`);
+  - the rule's parameters.
+- **What the parameter values are.** A run stores only a hash of `config/rules.yaml`, not the
+  values. The page therefore shows the current values and says whether the configuration is
+  unchanged since the finding's run.
+- **Confidence shows as a whole percentage** ("100%", not "100.0%").
+- **Tests:** `tests/test_finding_page.py` (23 tests).
+  - For one finding of each of the 19 rules with a finding in the test data (all but EG02), as
+    an examiner: the five sections, in order, with the right content in each.
+  - Every registered rule has a statement.
+  - The parameter table and both configuration messages.
+- **Doc correction:** `docs/functional_design.md` §7 described a peer IQR and percentile rank
+  on this page. No rule computes either, and the page never showed them. The section now
+  describes the page as built.
+
+**Traceability** (`docs/ps_traceability.md`):
+- Rewritten as one table: requirement, feature, code, test, and evidence with status.
+- One row for each of the problem statement's 17 functional and 6 deployment requirements, the
+  out-of-scope items and two further statements. The quoted wording is from
+  `docs/legal_traceability.md` §3.
+- The old version used this project's own paraphrased numbering and is replaced.
+- **Statuses are stated as found, not upgraded:**
+  - F2 is Partial: the SQLite and REST adapters are not wired into `satsa ingest` on this branch.
+  - F7, F8 and F10 are Partial.
+  - F14 is "met as built; not measured with examiners".
+- **Tests:**
+  - `tests/test_traceability_links.py`: every path and `file.py::test_name` in the table exists,
+    and every requirement has code and a test. It checks more than 60 references.
+  - `tests/test_dependencies.py` is new evidence for D3-D5. No cloud, telemetry, SaaS or AI/ML
+    client is among the 50 locked packages.
+- F3 cites this session's 5,000,000-alert measurement. `docs/legal_traceability.md` §3 still has
+  the 2026-09-30 figures, which are refreshed in Phase 8 with the others.
+
+**Usability:**
+- `docs/usability_protocol.md`:
+  - 8 timed tasks for 5 to 8 examiners new to the tool;
+  - what counts as correct;
+  - what is recorded;
+  - what the results can and cannot show.
+- `docs/usability/usability_results_template.csv` holds only its header.
+- `scripts/usability_summary.py` uses the standard library only. Per task it gives
+  participants, completion, median time over completed attempts, and total and median errors.
+  It refuses malformed rows, naming the line, and says so when there are no rows.
+- `tests/test_usability_summary.py` (8 tests).
+- **No session has been run**, and the protocol says so at the top.
+
+**Finding PDF:**
+- The finding PDF report (`src/satsa/report/generator.py`) now has a "Why it matters" section
+  after its headline.
+- `tests/test_finding_page.py::test_the_finding_pdf_states_why_it_matters` reads it back from
+  the PDF.
+- The PDF otherwise keeps its own layout: headline, comparison, technical detail, verification
+  step and benign explanations.
+
+**Not done:** no examiner session was run, so there is no usability figure.
+
+### Phase 7: engineering maturity
+
+**Property-based tests** (`hypothesis`, development dependency only; DECISIONS.md ADR-009):
+- `tests/test_property_rules.py`, for EG03, EG07, EG09, NS04 and NS07. Hypothesis generates the
+  records of one entity, plus another entity's records that must never count. For every case:
+  - the rule flags exactly when its documented criterion holds, computed in the test from the
+    generated records;
+  - a finding always cites evidence, the evidence is the offending records, and the count it
+    reports is their number;
+  - the same records in another storage order give the same finding and evidence, in order;
+  - one more offending record never removes a finding or lowers its score.
+- The same file runs all 20 rules on the seed-42 synthetic data, loaded in a shuffled order
+  per example, and requires identical findings and evidence.
+- EG06, NS01 and NS06 get the criterion, evidence and row-order checks on generated data. The
+  seed-42 set has at most one EG06 bulk batch per entity (one, at CSE-07) and too few silent or
+  ghost assets for their order to vary, so the all-rule test alone could not catch these three.
+- `tests/test_property_ingest.py`:
+  - any ISO date-time with any UTC offset is stored as its UTC instant (300 examples);
+  - any text is read as a timestamp or as empty, never an error;
+  - a JSON array and NDJSON give the same records;
+  - the columnar and row-by-row CSV paths store the same alerts and DQ issues for generated
+    files with odd headers, whitespace and entity IDs;
+  - any bytes in a submitted file give a result, not a crash, and an unreadable file is
+    reported as `file_unreadable`.
+
+**What the property tests found:** seven more rules whose evidence order depended on storage
+order (M18): EG03, EG06, EG07, EG12, NS01, NS06, NS07. EG07 could also name the wrong analyst
+in its rationale. Fixed with a total ORDER BY on each query; EG07 now names the busiest analyst.
+No threshold, count or score changed, and the Phase 5 golden snapshot still matches.
+
+Each fix was checked by undoing it alone, in a copy of `src/` put first on `PYTHONPATH`, and
+running the property tests against it. All eight changes (seven ORDER BYs, and EG07's
+`unique(maintain_order=True)`) made a test fail. EG06, NS01 and NS06 were only caught once
+their generated-data tests were added, as described above.
+
+**Offline installation** (M17, M19):
+- `scripts/build_wheelhouse.sh` and `scripts/build_wheelhouse.bat`: `uv export --frozen --no-dev`
+  with hashes, `pip download --only-binary=:all: --require-hashes`, and SAT-SA's own wheel.
+- `satsa offline-bundle --wheelhouse DIR` puts the wheelhouse in the bundle and refuses a
+  directory that is not one; `--output-dir` now works.
+- `install_offline.sh`, `install_offline.bat` and the `Containerfile` install only from the
+  wheelhouse (`--no-index --require-hashes`), and stop with an error when it is missing. The
+  `pip install .` fallback to PyPI is gone. The scripts also work when started from another
+  directory.
+- `docs/offline_install.md`: build, package, install, verify, container, and limits (one
+  wheelhouse per OS family and Python minor version). `docs/deployment_ops.md` §1.1-1.2 point
+  to it.
+- `tests/test_offline_bundle.py` (9 tests): no install path has a network fallback; the
+  repository `Containerfile` is the one the packager writes; dependencies are installed with
+  hashes checked; the install script refuses to run without a wheelhouse and creates nothing;
+  the wheelhouse reaches the bundle and the archive; a directory that is not a wheelhouse is
+  refused; the CLI options work.
+
+**Verified by hand on this machine (Windows 11, CPython 3.11, 2026-10-02):**
+- `PYTHON=<CPython 3.11 with pip> sh scripts/build_wheelhouse.sh build/wh` wrote 36 wheels.
+- A fresh venv installed from it with `--no-index`; `satsa version` and `pip check` passed, and
+  `satsa generate-data`, `ingest` and `run` succeeded in a directory holding only `config/`.
+- `satsa offline-bundle --wheelhouse build/wh --output-dir build/b`, then `install_offline.bat`
+  in the bundle with `PIP_INDEX_URL` pointed at a closed local port: installed, `satsa version`
+  and `pip check` passed. Run with Python 3.13 first on `PATH`, the same script stopped at the
+  first compiled wheel (`cffi==2.1.1`, built for 3.11) without trying the network, which is the
+  version limit the guide states.
+- `bash install_offline.sh` in a bundle without a wheelhouse: exit 1, explanation, no `.venv`.
+- The network was not physically disconnected for these checks.
+
+**CI** (`.github/workflows/test.yml`; the YAML parses and the no-network step passes `bash -n`,
+but **no CI run was executed** from this machine):
+- The test job runs the suite under `coverage run --branch`, writes `coverage report` and
+  `coverage.xml`, and uploads both per Python version (3.11 and 3.13). Ruff now checks `.`, as
+  the local verification does.
+- New job `offline-install`: builds the wheelhouse and bundle with network access, then, inside
+  `unshare --net` (an empty network namespace), first checks that pypi.org is unreachable, then
+  runs the bundle's `install_offline.sh`, `pip check`, and `satsa generate-data`, `ingest` and
+  `run`.
+
+**Other:**
+- `docs/ps_traceability.md` F13 cited ADR-007, which does not exist on this branch (signed
+  checkpoints are ADR-008). Corrected, and `tests/test_traceability_links.py` now checks that
+  every cited ADR exists.
+- `.hypothesis/` added to `.gitignore`.
+
+### Phase 8: final documentation and refreshed figures
+
+**Benchmark re-run on the final code** (commit `61d8d55` plus the fix below), 2026-10-02:
+`python scripts/benchmark_scale.py --configs 10x50000,50x100000 --workdir build/bench --out <file> --json <file>`.
+
+| Alerts | Ingest | Ingest peak | Assess | Assess peak | First page after a run |
+|---:|---:|---:|---:|---:|---:|
+| 500,000 | 7.1 s | 797 MiB | 9.8 s | 454 MiB | 1.8 s |
+| 5,000,000 | 54.5 s | 5,424 MiB | 107.3 s | 3,301 MiB | 15.4 s |
+
+The first attempt failed at every ingest stage: a relative `--workdir` did not survive the
+stage process's change of directory (M20). Fixed in `scripts/benchmark_scale.py` and re-run.
+These figures replace the 2026-09-30 ones (603 s ingest, 13.2 GB peak, 310 s assess) in the
+README, `docs/infrastructure.md` (rewritten Section 3, RAM guidance now 16 GB suggested
+instead of "16 GB at least, 32 GB suggested"), `docs/legal_traceability.md` F3 and EVIDENCE.md.
+`docs/benchmarks.md` gains a "Final code" section and keeps every earlier run with its date.
+Assessment time is reported as one measurement: the same code took 106 s to 191 s on this
+machine in different runs, so the fall from 310 s is not claimed as an improvement.
+
+**Independent validation re-run on the final code:**
+`satsa validate-independent --seeds 20 --start-seed 1` (409 s). Every result is identical to
+the 2026-10-01 run (recall and precision 487/487, 0 of 245 decoys, 0 of 57 clean entities, same
+baselines, ablation, sweep and relabelling); only the date and per-seed timings in
+`docs/validation_independent_report.md` changed. The rule ORDER BY changes of Phases 5 and 7
+change no detection, as expected.
+
+**Documentation:**
+- `docs/validation_summary.md`: the synthetic-only statement now opens the page; the
+  independent generator is in the "what was tested" table and has its own results section
+  (3.7), including the baselines, ablation, sweep and relabelling, and what it does not add
+  (independence of mind). `docs/validation.md` points to it.
+- README (M21): broken `file:///` links fixed and the documentation index regrouped, with links
+  to `offline_install.md`, `threshold_rationale.md`, `validation_independent_report.md`,
+  `usability_protocol.md` and this file; the synthetic-only statement leads the index; an
+  "Independent generator" row in the results table; the test row and scale rows refreshed;
+  `validate-independent` added to the CLI list; the unmeasured "Under 1 Minute" removed; Method 2
+  serves SAT-SA on `:8001`; a UI-styling paragraph and an 8-file test listing removed. README
+  size: 39,380 bytes at the baseline, 40,205 after Phase 3, **39,185** now.
+- `docs/deployment_ops.md` §5: the effort column is labelled a planning estimate of staff
+  time, not a measurement.
+- EVIDENCE.md: a Phase 8 section with every command and result; open items updated (CI and
+  Linux never run, scale limits, test isolation) and new ones (18-22: the independent
+  generator's limits, threshold proposals not applied, no usability session, checkpoint
+  signing limits, offline install not tried on a disconnected machine); ratings use the new
+  figures. The historical feasibility-pass sections are unchanged apart from a pointer to the
+  superseding figures.
+
+**Verified** (2026-10-02, Python 3.11.16, Windows 11):
+`uv run coverage run --branch --source=src/satsa -m pytest tests -q -p no:cacheprovider`:
+1,107 passed, 33 skipped, 0 failed (870.5 s); statement-and-branch coverage 89.2% (9,157
+statements, 809 missed; 2,550 branches, 305 partial); working data unchanged by the suite. `satsa validate` 21/21,
+`satsa validate-stress` 3/3, `satsa audit verify` OK, `ruff check .` and `mypy src` clean.
+
+**Not done:** no CI run; no Linux run; no Docker build; no real data; no usability session;
+the 25 x 100,000 size was not re-run (its 2026-09-30 figures stay, labelled).
+
+### Claims removed or softened in this pass (summary)
+
+Each is detailed in its phase entry above.
+
+- "Socket-level egress is blocked" (no guard existed) -> a real guard, described as best-effort
+  defence in depth that does not cover native code or DNS (M1).
+- "10.6 Million rows/second", "evaluated in seconds", "Extreme ... Performance" -> measured
+  end-to-end times with the machine and date (Phase 2, Phase 8).
+- "20 Production Rules" -> "20 Detection Rules" (Phase 2).
+- "Guarantees forensic immutability" -> tamper-evident, not tamper-proof; signed off-box
+  checkpoints for the cases a hash chain cannot catch (M7, Phase 3).
+- "multi-threaded SIMD", "partition-pruned scans", the Parquet layout and adapter class names
+  -> what the code does (M3-M6).
+- "byte-identical reproducibility" -> findings were reproducible, evidence was not: fifteen
+  rules' evidence depended on storage order and was fixed (M14, M18); the golden and property
+  tests now check row-order independence.
+- "No Internet or network access required" for the offline bundle -> was false (PyPI fallback);
+  holds now when the bundle carries a wheelhouse built for that OS and Python version (M17).
+- A projected 10.1-minute 5M-alert run, storage estimates, "ideal for ... appliances",
+  "Under 1 Minute" setup -> removed (Phase 2, Phase 8).
+- README test and coverage figures from the baseline (871 tests, Python 3.13) -> this
+  phase's run.
+
+### Requirement closure (after Phase 8): F2, F7, F8, F10
+
+A review of every problem-statement requirement against this branch found four still partial:
+database exports and APIs were not wired into ingest (F2); only 2 of 20 rules used an outlier
+statistic and nothing looked for "previously unknown indicators" (F7); only 4 of 20 rules
+compared against peers (F8); controls and processes were prioritised only through domain
+scores (F10). Another session had already built all four on `feat/anomaly-scan-wip`
+(commit `0ab62f2`, made on top of Phase 2). At the user's direction that commit was applied to
+this branch instead of being written again.
+
+**What it brings** (details in its own commit message and in DECISIONS.md ADR-007):
+- `satsa/peers/anomaly_scan.py`, `config/anomaly.yaml`: about 40 operational rates per entity
+  across the eight domains, flagged as peer outliers (robust z >= 3.5 against the cohort) or
+  time shifts (CUSUM against the entity's first three months). Leads are stored per run and
+  shown on the entity profile, the portfolio, the entity report and `GET /api/v1/anomalies`,
+  and are **not scored**.
+- `satsa/scoring/control_priorities.py`: controls (rules) and processes (domains) ranked for
+  review on the portfolio and at `GET /api/v1/priorities`.
+- `satsa ingest` reads SQLite database exports table by table; `--api-config` stages loopback
+  REST endpoints and ingests them through the same checks.
+- `tests/test_anomaly_scan.py` (15 tests).
+
+**Reconciled with Phases 3-8:** six conflicts, each two independent additions (imports in
+`api/routes.py` and `report/generator.py`; the database-table reader next to Phase 5's
+columnar path in `ingest/pipeline.py`; ADR-007 placed before ADR-008 and ADR-009; the two
+traceability tables, where the Phase 6 format was kept and rows F2, F7, F8, F10 rewritten).
+mypy then found that Phase 5's largest-CSV-first read was typed for files only; a database
+table now never enters it (`isinstance(f, Path)`), which was already true at run time because
+its suffix is `.table`. The README sections it added were condensed to one paragraph, so the
+README stays under its baseline size (39,366 bytes); the method is in
+`docs/analytics_methodology.md` Sections 3B and 4.5. `docs/architecture.md` gained the scan,
+the ranking and the new ingest paths.
+
+**Verified** (2026-10-02, Python 3.11.16, Windows 11):
+- `tests/test_golden_findings.py` passes: every stored row, DQ issue, finding, score,
+  review-queue item and systemic finding is identical to the snapshot taken before Phase 5.
+  The scan adds leads and changes nothing that was there.
+- `uv run coverage run --branch --source=src/satsa -m pytest tests -q -p no:cacheprovider`:
+  1,130 passed, 33 skipped, 0 failed (869.8 s); coverage 89.3% (9,576 statements, 832 missed;
+  2,688 branches, 319 partial; `anomaly_scan.py` 94.4%, `control_priorities.py` 100%); working data unchanged by the suite; `satsa validate` 21/21,
+  `satsa validate-stress` 3/3, `satsa audit verify` OK, `ruff check .` and `mypy src` clean.
+- `satsa validate-independent --seeds 20`: recall and precision 487/487, 0 of 245 decoys; every pooled result
+  identical to the run before the scan was added (only per-seed timings differ, so the committed
+  report was kept).
+- Benchmark (`docs/benchmarks.md`, "Final code"): at 5,000,000 alerts ingest 46.6 s
+  (5,425 MiB), assessment 124.0 s (3,751 MiB peak, against 3,301 MiB before the scan), 150
+  findings as before. README, `docs/infrastructure.md`, both traceability tables and
+  EVIDENCE.md now quote this run.
+
+**Also found:** README Method 3 installed with `pip install -e ".[dev]"`, an extra that has
+never existed (M23).
+
+**Requirement status now** (`docs/ps_traceability.md`): F1-F17, D1-D6, O1-O6 met, several on
+synthetic data only. Not closable in code: accuracy against real examiner findings (§8; the
+shadow-pilot method exists and has not been run on real data), usability measured with
+examiners (F14), trends over successive real submissions (F16), a built container image and a
+CI run.

@@ -9,6 +9,11 @@ This guide provides operational procedures for deploying, maintaining, updating,
 ## 1. Installation Procedures
 
 ### 1.1 Air-Gapped Python Environment
+The bundle must be built with a wheelhouse for the target's OS and Python version
+(`scripts/build_wheelhouse.sh`, then `satsa offline-bundle --wheelhouse wheelhouse`). The install
+scripts take every package from that wheelhouse and never fall back to downloading; without one
+they stop with an error. Full procedure and its limits: [offline_install.md](offline_install.md).
+
 1. Extract the offline distribution archive:
    ```bash
    tar -xzf dist/satsa_offline_bundle.tar.gz
@@ -24,7 +29,9 @@ This guide provides operational procedures for deploying, maintaining, updating,
    ```
 
 ### 1.2 Containerized OCI Deployment (Podman / Docker)
-Build and deploy using the self-contained production `Containerfile`:
+Build and deploy using the `Containerfile` in the bundle. It installs from the bundled
+`wheelhouse/`, which for a container must hold Linux wheels for Python 3.11, and the
+`python:3.11-slim` base image must already be loaded on the host ([offline_install.md](offline_install.md) §5):
 ```bash
 # Build local container image without network
 podman build -t satsa:latest -f Containerfile .
@@ -177,12 +184,21 @@ satsa audit verify --db-path data/satsa.db --chain admin   # Admin Portal chain
   entries, SHA-256 for legacy ones). If an entry in the chain was edited, inserted, deleted or
   reordered outside the application, the command fails and reports the first affected row.
 - **Limit:** removing the newest entries, or recomputing the entire chain, cannot be detected by
-  the chain alone (DECISIONS.md ADR-005). Record a checkpoint off-box at each examination and
-  compare against it later:
+  the chain alone (DECISIONS.md ADR-005). Record a **signed checkpoint** off-box at each
+  examination and verify against it later (DECISIONS.md ADR-008):
   ```bash
-  satsa audit head                      # note entries + head_hash on paper / a separate system
-  satsa audit verify --checkpoint-count <entries> --checkpoint-head <head_hash>
+  # once, on the examiner's own machine or removable media (never leave the private key on the host)
+  satsa audit keygen --out-dir E:/satsa-keys
+  # at each examination
+  satsa audit checkpoint --sign --key E:/satsa-keys/satsa_audit_ed25519.key --out E:/checkpoints/2026-10-01.json
+  # later, by anyone holding the public key
+  satsa audit verify --checkpoint E:/checkpoints/2026-10-01.json --pubkey satsa_audit_ed25519.pub
   ```
+  Verification checks the signature, then that the live chain matches or extends the
+  checkpoint. A key readable by other accounts is refused. Without a key pair, `satsa audit
+  head` prints the entry count and head hash to copy by hand, checked with
+  `satsa audit verify --checkpoint-count <entries> --checkpoint-head <head_hash>`. Either way
+  the trail is tamper-evident, not tamper-proof.
 
 ### Backup & Disaster Recovery
 To back up the complete supervisory state:
@@ -205,3 +221,6 @@ tar -czf backup/parquet_$(date +%Y%m%d).tar.gz data/parquet/
 | Examiner Finding Review | Each assessment cycle (e.g. quarterly) | ~2 hours per entity | Supervisory Examiner |
 | Rule Calibration & Update | Bi-annually | ~4 hours | Lead Regulatory Specialist |
 | Audit Chain Verification | Weekly | < 1 minute (automated CLI) | Security Auditor |
+
+The effort column is a planning estimate of staff time, not a measurement: no examiner session
+has been timed (`docs/usability_protocol.md`). Measured machine times are in `docs/benchmarks.md`.

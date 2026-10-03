@@ -9,7 +9,8 @@ from typing import Any
 import polars as pl
 
 from satsa.ingest.adapters import SourceAdapter
-from satsa.ingest.dq_checks import DQValidator
+from satsa.ingest.columnar import normalise_frame
+from satsa.ingest.dq_checks import FrameDQ
 from satsa.ingest.manifest import ManifestBuilder
 from satsa.ingest.mapper import SourceMapping
 from satsa.ingest.normaliser import TaxonomyNormaliser
@@ -22,6 +23,15 @@ from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
 
 logger = logging.getLogger(__name__)
+
+def _alert_refs(frame: pl.DataFrame) -> pl.DataFrame:
+    """Workflow events that refer to an alert: `str(row.get("ref_type", "alert")) == "alert"`."""
+    if "ref_type" not in frame.columns:
+        return frame
+    if frame["ref_type"].dtype == pl.String:
+        return frame.filter(pl.col("ref_type").fill_null("None") == "alert")
+    return frame.filter(pl.Series([str(v) == "alert" for v in frame["ref_type"].to_list()], dtype=pl.Boolean))
+
 
 # Database exports: every table inside is read as if it were a file named after the table.
 DATABASE_SUFFIXES = (".db", ".sqlite", ".sqlite3")
@@ -48,11 +58,11 @@ class DatabaseTable:
 
 # Child tables whose rows must reference an alert in the same submission:
 # (table, foreign-key column, which rows the check applies to).
-_ALERT_CHILD_TABLES: list[tuple[str, str, Callable[[dict[str, Any]], bool]]] = [
-    ("closure", "ref_id", lambda r: True),
-    ("workflow_event", "ref_id", lambda r: str(r.get("ref_type", "alert")) == "alert"),
-    ("escalation", "ref_id", lambda r: True),
-    ("case_alert_link", "alert_id", lambda r: True),
+_ALERT_CHILD_TABLES: list[tuple[str, str, Callable[[pl.DataFrame], pl.DataFrame]]] = [
+    ("closure", "ref_id", lambda f: f),
+    ("workflow_event", "ref_id", _alert_refs),
+    ("escalation", "ref_id", lambda f: f),
+    ("case_alert_link", "alert_id", lambda f: f),
 ]
 
 
@@ -72,6 +82,28 @@ def _usable_count(series: pl.Series) -> int:
         blank = series.str.strip_chars().str.to_lowercase().is_in(list(_NO_VALUE))
         return int((series.is_not_null() & ~blank).sum())
     return int(series.is_not_null().sum())
+
+
+def _usable_counts(frame: pl.DataFrame, columns: list[str], slice_rows: int = 500_000) -> dict[str, int]:
+    """_usable_count for several columns of a frame (absent columns count 0).
+
+    The columns are counted together, a slice of rows at a time: together is faster, and
+    slicing bounds the memory the trimmed, lower-cased copies of the text take.
+    """
+    exprs = []
+    for column in columns:
+        if column not in frame.columns or frame.schema[column] == pl.Null:
+            continue
+        usable = pl.col(column).is_not_null()
+        if frame.schema[column] == pl.String:
+            usable = usable & ~pl.col(column).str.strip_chars().str.to_lowercase().is_in(list(_NO_VALUE))
+        exprs.append(usable.sum().alias(column))
+    totals = dict.fromkeys(columns, 0)
+    if exprs:
+        for piece in frame.iter_slices(slice_rows):
+            for column, count in piece.select(exprs).row(0, named=True).items():
+                totals[column] += int(count or 0)
+    return totals
 
 
 def _frame_from_rows(rows: list[dict[str, Any]]) -> pl.DataFrame:
@@ -117,6 +149,10 @@ def default_entity_record(entity_id: str) -> dict[str, Any]:
         "declared_shift_hours": "09:00-18:00",
     }
 
+
+# Read the largest CSV of a canonical submission first (see ingest_directory); a switch only so
+# tests can compare with the plain order.
+READ_LARGEST_FIRST = True
 
 class IngestionPipeline:
     """Orchestrates ingestion, data hygiene, DQ validation, Parquet persistence, and audit logging."""
@@ -599,6 +635,24 @@ class IngestionPipeline:
                 kept.append(clean_r)
             return kept
 
+        def store_frame(table: str, frame: pl.DataFrame) -> bool:
+            """The columnar equivalent of normalise_chunk + store_rows; False if it does not apply."""
+            if table not in canonical_columns:
+                canonical_columns[table] = self.duckdb_store.table_columns(_store_table(table))
+            done = normalise_frame(frame, table, self, default_entity_id, canonical_columns[table])
+            if done is None:
+                return False
+            if done.unattributed:
+                unattributed[table] = unattributed.get(table, 0) + done.unattributed
+            if done.rejected:
+                rejected_ids.setdefault(table, []).extend(done.rejected)
+            if done.frame.height:
+                if done.dropped:
+                    dropped.setdefault(_store_table(table), set()).update(done.dropped)
+                buffers.setdefault(table, []).append(done.frame)
+                row_counts[table] = row_counts.get(table, 0) + done.frame.height
+            return True
+
         def read(path: Path | DatabaseTable) -> pl.DataFrame | list[dict[str, Any]]:
             if isinstance(path, DatabaseTable):
                 return SourceAdapter.read_sqlite(path.db_path, path.table)
@@ -627,6 +681,19 @@ class IngestionPipeline:
                     unreadable_files.append(f.name)
             mapping.build_lookups({f.stem: rows for f, rows in preloaded.items()})
 
+        # The largest CSV of a canonical submission is read before the others, while nothing
+        # else is held: reading a file briefly needs a few times its size, and at 5,000,000
+        # alerts that read on top of the tables already held set the ingest's peak memory.
+        # Files are still processed in their usual order, so nothing else changes.
+        read_early: dict[Path | DatabaseTable, pl.DataFrame | Exception] = {}
+        csv_files = [f for f in raw_files if isinstance(f, Path) and f.suffix.lower() == ".csv"]
+        if READ_LARGEST_FIRST and mapping is None and len(csv_files) > 1:
+            largest = max(csv_files, key=lambda f: f.stat().st_size)
+            try:
+                read_early[largest] = SourceAdapter.read_csv_frame(largest)
+            except Exception as exc:  # noqa: BLE001 - raised again, and reported, in the file's turn
+                read_early[largest] = exc
+
         for f in raw_files:
             if f.name in unreadable_files:
                 continue
@@ -649,7 +716,10 @@ class IngestionPipeline:
                         store_rows(spec.table, mapping.map_rows(raw_rows, spec, default_entity_id).rows)
                     continue
 
-                data = read(f)
+                early = read_early.pop(f, None)
+                if isinstance(early, Exception):
+                    raise early
+                data = early if early is not None else read(f)
                 if len(data) == 0:
                     empty_table = self.table_for_empty_file(f)
                     if empty_table:
@@ -661,8 +731,12 @@ class IngestionPipeline:
                 canonical_table = self.resolve_canonical_table(f.stem, headers)
                 declared_tables.add(_store_table(canonical_table))
                 row_counts.setdefault(canonical_table, 0)
+                if isinstance(data, pl.DataFrame) and store_frame(canonical_table, data):
+                    del data  # the file as read is no longer needed
+                    continue
                 for raw_rows in chunks(data):
                     store_rows(canonical_table, normalise_chunk(canonical_table, raw_rows))
+                del data
             except Exception:
                 # Reported below as a DQ error: a file dropped without trace would make
                 # its table look absent, and rules would read that as a SOC defect.
@@ -713,19 +787,40 @@ class IngestionPipeline:
                 existing_eids.add(eid)
 
         if new_entities_to_add:
+            # Defaults go FIRST: the entity table keeps the newest non-null value per column
+            # (store.duckdb._upsert_entity_row), so the submission's own name, sector, size band
+            # and SOC model win and a default only fills a column the submission left empty.
+            # (They used to go last, which replaced every submitted profile with
+            # "General Infrastructure" / "Medium" on a fresh store and put every entity in one
+            # peer cohort.)
             parts = [tables["entity"]] if "entity" in tables else []
-            tables["entity"] = _concat_frames([*parts, _frame_from_rows(new_entities_to_add)])
+            tables["entity"] = _concat_frames([_frame_from_rows(new_entities_to_add), *parts])
             row_counts["entity"] = row_counts.get("entity", 0) + len(new_entities_to_add)
 
-        # Each table split by entity once; an entity's rows become dicts only while its
-        # checks run.
-        by_entity: dict[str, dict[str, pl.DataFrame]] = {
-            name: _partition_by_entity(frame) for name, frame in tables.items()
-        }
+        # An entity's rows of a table, selected when its checks run (None if it has none).
+        # Tables are not copied per entity up front: that doubled ingest's peak memory.
+        partitions: dict[str, dict[str, pl.DataFrame]] = {}
+        row_positions: dict[str, tuple[dict[str, int], pl.Series]] = {}
 
-        def entity_rows(table: str, ent_id: str) -> list[dict[str, Any]]:
-            frame = by_entity.get(table, {}).get(ent_id)
-            return frame.to_dicts() if frame is not None else []
+        def entity_frame(table: str, ent_id: str) -> pl.DataFrame | None:
+            frame = tables.get(table)
+            if frame is None or frame.height == 0 or "entity_id" not in frame.columns:
+                return None
+            if frame["entity_id"].dtype == pl.String:
+                if table not in row_positions:  # each entity's row positions, in row order
+                    grouped = (
+                        frame.select("entity_id").with_row_index("row")
+                        .group_by("entity_id", maintain_order=True).agg(pl.col("row"))
+                    )  # fmt: skip
+                    index = {e: i for i, e in enumerate(grouped["entity_id"].to_list()) if e is not None}
+                    row_positions[table] = (index, grouped["row"])
+                index, positions = row_positions[table]
+                if ent_id not in index:
+                    return None
+                return frame[positions[index[ent_id]]]
+            if table not in partitions:  # a non-text entity_id: grouped as str(value), as before
+                partitions[table] = _partition_by_entity(frame)
+            return partitions[table].get(ent_id)
 
         # Run Data Quality checks per entity
         all_dq_issues = []
@@ -790,10 +885,11 @@ class IngestionPipeline:
                     ),
                 )
             )
+        no_ids = pl.Series([], dtype=pl.String)
         for ent_id in sorted(entities_present):
-            ent_alerts = entity_rows("alert", ent_id)
-            if ent_alerts:
-                req_issues = DQValidator.check_required_fields(
+            ent_alerts = entity_frame("alert", ent_id)
+            if ent_alerts is not None:
+                req_issues = FrameDQ.check_required_fields(
                     ent_alerts,
                     ["alert_id", "entity_id", "created_at", "severity_final"],
                     ent_id,
@@ -801,30 +897,27 @@ class IngestionPipeline:
                 )
                 all_dq_issues.extend(req_issues)
 
-                ts_issues = DQValidator.check_timestamp_logic(ent_alerts, ent_id)
+                ts_issues = FrameDQ.check_timestamp_logic(ent_alerts, ent_id)
                 all_dq_issues.extend(ts_issues)
 
-                dup_issues = DQValidator.check_duplicate_ids(
-                    ent_alerts, "alert_id", ent_id, "alert"
-                )
+                dup_issues = FrameDQ.check_duplicate_ids(ent_alerts, "alert_id", ent_id, "alert")
                 all_dq_issues.extend(dup_issues)
 
                 # Only meaningful where alert ids are a running counter; a mapping for a product
                 # whose ids are GUIDs or storage keys says `sequential_ids: false`.
                 if mapping is None or mapping.config.get("sequential_ids", True):
-                    gap_issues = DQValidator.check_id_sequence_gaps(ent_alerts, "alert_id", ent_id)
+                    gap_issues = FrameDQ.check_id_sequence_gaps(ent_alerts, "alert_id", ent_id)
                     all_dq_issues.extend(gap_issues)
 
-                null_issues = DQValidator.check_null_rates(
+                null_issues = FrameDQ.check_null_rates(
                     ent_alerts, ["rule_id", "asset_id", "closed_by", "disposition"], ent_id, "alert"
                 )
                 all_dq_issues.extend(null_issues)
 
-            ent_assets: set[str] = {
-                str(a.get("asset_id")) for a in entity_rows("asset", ent_id) if a.get("asset_id")
-            }
-            if ent_assets and ent_alerts:
-                orphan_issues = DQValidator.check_orphan_references(
+            ent_asset_frame = entity_frame("asset", ent_id)
+            ent_assets = FrameDQ.truthy_ids(ent_asset_frame, "asset_id") if ent_asset_frame is not None else no_ids
+            if ent_assets.len() and ent_alerts is not None:
+                orphan_issues = FrameDQ.check_orphan_references(
                     ent_alerts, ent_assets, "asset_id", ent_id, "alert", "asset"
                 )
                 all_dq_issues.extend(orphan_issues)
@@ -833,27 +926,26 @@ class IngestionPipeline:
             # A closure, workflow event, escalation or case link whose parent is missing
             # makes EG02/EG03/NS04 read "no investigation / no escalation / no case" for
             # the wrong reason, and can itself indicate withheld records.
-            ent_alert_ids = {str(a.get("alert_id")) for a in ent_alerts if a.get("alert_id")}
+            ent_alert_ids = FrameDQ.truthy_ids(ent_alerts, "alert_id") if ent_alerts is not None else no_ids
             del ent_alerts
-            if ent_alert_ids:
+            if ent_alert_ids.len():
                 for child_table, fk_col, keep in _ALERT_CHILD_TABLES:
-                    children = [r for r in entity_rows(child_table, ent_id) if keep(r)]
-                    if children:
+                    child_frame = entity_frame(child_table, ent_id)
+                    children = keep(child_frame) if child_frame is not None else None
+                    if children is not None and children.height:
                         all_dq_issues.extend(
-                            DQValidator.check_orphan_references(
+                            FrameDQ.check_orphan_references(
                                 children, ent_alert_ids, fk_col, ent_id, child_table, "alert"
                             )
                         )
-            ent_case_ids = {
-                str(c.get("case_id"))
-                for tbl in ("case", "case_record")
-                for c in entity_rows(tbl, ent_id)
-                if c.get("case_id")
-            }
-            ent_links = entity_rows("case_alert_link", ent_id)
-            if ent_case_ids and ent_links:
+            case_frames = [cf for tbl in ("case", "case_record") if (cf := entity_frame(tbl, ent_id)) is not None]
+            ent_case_ids = (
+                pl.concat([FrameDQ.truthy_ids(cf, "case_id") for cf in case_frames]).unique() if case_frames else no_ids
+            )
+            ent_links = entity_frame("case_alert_link", ent_id)
+            if ent_case_ids.len() and ent_links is not None:
                 all_dq_issues.extend(
-                    DQValidator.check_orphan_references(
+                    FrameDQ.check_orphan_references(
                         ent_links, ent_case_ids, "case_id", ent_id, "case_alert_link", "case"
                     )
                 )
@@ -861,44 +953,78 @@ class IngestionPipeline:
         field_coverage: dict[str, dict[str, Any]] = {
             _store_table(name): {
                 "rows": frame.height,
-                "filled": {
-                    c: (_usable_count(frame[c]) if c in frame.columns else 0)
-                    for c in canonical_columns.get(name) or self.duckdb_store.table_columns(_store_table(name))
-                    if c != "entity_id"
-                },
+                "filled": _usable_counts(
+                    frame,
+                    [
+                        c
+                        for c in canonical_columns.get(name) or self.duckdb_store.table_columns(_store_table(name))
+                        if c != "entity_id"
+                    ],
+                ),
             }
             for name, frame in tables.items()
             if frame.height
         }
         dropped_columns = {table: sorted(columns) for table, columns in sorted(dropped.items())}
 
+        # Per entity, while the alert frame is still held: its alert count and the alert
+        # columns that hold no usable value (read by the rule coverage below).
+        alert_profile: dict[str, tuple[int, set[str]]] = {}
+        rule_columns = sorted({column for columns in RULE_ALERT_FIELDS.values() for column in columns})
+        for ent_id in sorted(entities_present):
+            alert_frame = entity_frame("alert", ent_id)
+            if alert_frame is None:
+                alert_profile[ent_id] = (0, set())
+                continue
+            usable = _usable_counts(alert_frame, rule_columns)
+            alert_profile[ent_id] = (alert_frame.height, {column for column in rule_columns if usable[column] == 0})
+        partitions.clear()
+        row_positions.clear()
+
         # Write to partitioned Parquet via DuckDBStore. A table that fails to store must
-        # not vanish quietly: rules would then read its absence as a SOC defect.
-        failed_tables: list[str] = []
-        for table_name, df in tables.items():
-            if df.height:
-                try:
-                    # Canonical table names: map 'case_record' to 'case' if DuckDB DDL requires
-                    duck_tbl = "case" if table_name == "case_record" else table_name
-                    self.duckdb_store.write_partitioned_parquet(duck_tbl, df)
-                except Exception as exc:
-                    logger.exception("Failed to store table %r (%d rows)", table_name, df.height)
-                    failed_tables.append(table_name)
-                    all_dq_issues.append(
-                        DQIssue(
-                            issue_id=f"DQ-WRITE-FAILED-{primary_entity}-{table_name}",
-                            entity_id=primary_entity,
-                            check_name="table_write_failed",
-                            severity="error",
-                            count=df.height,
-                            sample_records=[],
-                            details=(
-                                f"Table '{table_name}' ({df.height} rows) could not be stored "
-                                f"({type(exc).__name__}). Findings that depend on it are unreliable "
-                                "until the submission is re-ingested."
-                            ),
-                        )
-                    )
+        # not vanish quietly: rules would then read its absence as a SOC defect. Each table's
+        # frame is released once written, and the written tables are reloaded into DuckDB
+        # only after all are written, so the submission is not held as frames and as DuckDB
+        # tables at the same time. A reload that fails counts as a failed store, as it did
+        # when the reload was part of each write.
+        failures: dict[str, tuple[int, str]] = {}
+        written: list[tuple[str, int]] = []
+        table_order = list(tables)
+        with self.duckdb_store.deferred_reload():
+            for table_name in table_order:
+                df = tables.pop(table_name)
+                if df.height:
+                    try:
+                        self.duckdb_store.write_partitioned_parquet(_store_table(table_name), df)
+                        written.append((table_name, df.height))
+                    except Exception as exc:
+                        logger.exception("Failed to store table %r (%d rows)", table_name, df.height)
+                        failures[table_name] = (df.height, type(exc).__name__)
+                del df
+        for table_name, height in written:
+            try:
+                self.duckdb_store.load_table_from_parquet(_store_table(table_name))
+            except Exception as exc:
+                logger.exception("Failed to store table %r (%d rows)", table_name, height)
+                failures[table_name] = (height, type(exc).__name__)
+        failed_tables: list[str] = [t for t in table_order if t in failures]
+        for table_name in failed_tables:
+            height, error = failures[table_name]
+            all_dq_issues.append(
+                DQIssue(
+                    issue_id=f"DQ-WRITE-FAILED-{primary_entity}-{table_name}",
+                    entity_id=primary_entity,
+                    check_name="table_write_failed",
+                    severity="error",
+                    count=height,
+                    sample_records=[],
+                    details=(
+                        f"Table '{table_name}' ({height} rows) could not be stored "
+                        f"({error}). Findings that depend on it are unreliable "
+                        "until the submission is re-ingested."
+                    ),
+                )
+            )
 
         # Build manifest and append to audit log
         batch, _manifest_dict = ManifestBuilder.build_manifest(
@@ -914,15 +1040,7 @@ class IngestionPipeline:
         submitted = self.sqlite_store.get_submitted_tables()
         coverage: dict[str, dict[str, dict[str, list[str]]]] = {}
         for ent_id in sorted(entities_present):
-            alert_frame = by_entity.get("alert", {}).get(ent_id)
-            alert_count = alert_frame.height if alert_frame is not None else 0
-            empty_fields = {
-                column
-                for columns in RULE_ALERT_FIELDS.values()
-                for column in columns
-                if alert_frame is not None
-                and (column not in alert_frame.columns or _usable_count(alert_frame[column]) == 0)
-            }
+            alert_count, empty_fields = alert_profile[ent_id]
             coverage[ent_id] = rule_coverage(submitted.get(ent_id, set()), empty_fields)
             rules_by_column: dict[str, list[str]] = {}
             for rule_id, columns in coverage[ent_id]["degraded"].items():
@@ -957,7 +1075,7 @@ class IngestionPipeline:
                 "entity_id": primary_entity,
                 "files_count": len(set(processed_files)),
                 "row_counts": row_counts,
-                "entities_detected": list(entities_present),
+                "entities_detected": sorted(entities_present),
                 "dq_issues_found": len(all_dq_issues),
                 "failed_tables": failed_tables,
             },
@@ -966,7 +1084,7 @@ class IngestionPipeline:
         return {
             "status": "partial" if failed_tables else "success",
             "batch_id": batch.batch_id,
-            "entities": list(entities_present),
+            "entities": sorted(entities_present),
             "row_counts": row_counts,
             "failed_tables": failed_tables,
             "unreadable_files": sorted(unreadable_files),

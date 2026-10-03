@@ -2,7 +2,7 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-Generated 2026-09-30 by `python scripts/validate_hard.py --out docs/validation_hard_report.md --json C:\Users\SANJAY~1\AppData\Local\Temp/claude/c--Users-SANJAYRAMNATHAN-Downloads-Supervisory-Analytics-Tool-for-SOC-Assessment-SAT-SA/23b52793-75a1-42f0-9255-ad71c55e82fc/scratchpad/hard_after.json`. Every figure is counted from the runs
+Generated 2026-10-01 by `python scripts/validate_hard.py --out docs/validation_hard_report.md`. Every figure is counted from the runs
 listed at the end. **All data is synthetic**: these figures show how the rules behave under
 other random seeds, lower volumes and near-threshold cases. They are not real-world accuracy;
 see `docs/validation_summary.md`.
@@ -149,47 +149,47 @@ defect or clean entity sits within 20% of it.
 
 | Scenario | Seed | Base alerts per entity | Injected | Detected | Missed | False positives | Seconds |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| portfolio | 101 | 1500 | 21 | 21 | 0 | 0 | 27.7 |
-| portfolio | 202 | 1500 | 21 | 21 | 0 | 0 | 26.0 |
-| portfolio | 303 | 1500 | 21 | 21 | 0 | 0 | 26.5 |
-| portfolio | 404 | 1500 | 21 | 21 | 0 | 0 | 26.7 |
-| portfolio | 505 | 1500 | 21 | 21 | 0 | 0 | 27.5 |
-| portfolio | 606 | 1500 | 21 | 21 | 0 | 0 | 26.6 |
-| portfolio | 707 | 1500 | 21 | 21 | 0 | 0 | 27.0 |
-| portfolio | 808 | 1500 | 21 | 21 | 0 | 0 | 26.3 |
-| portfolio | 101 | 600 | 21 | 21 | 0 | 0 | 22.2 |
-| portfolio | 202 | 600 | 21 | 21 | 0 | 0 | 22.4 |
-| portfolio | 303 | 600 | 21 | 21 | 0 | 0 | 21.9 |
-| portfolio | 404 | 600 | 21 | 21 | 0 | 0 | 22.2 |
-| portfolio | 505 | 600 | 21 | 21 | 0 | 0 | 22.2 |
-| portfolio | 606 | 600 | 21 | 21 | 0 | 0 | 22.5 |
-| portfolio | 707 | 600 | 21 | 21 | 0 | 0 | 22.5 |
-| portfolio | 808 | 600 | 20 | 20 | 0 | 0 | 22.1 |
-| portfolio | 101 | 300 | 21 | 21 | 0 | 0 | 20.5 |
-| portfolio | 202 | 300 | 21 | 21 | 0 | 0 | 20.4 |
-| portfolio | 303 | 300 | 21 | 21 | 0 | 0 | 20.2 |
-| portfolio | 404 | 300 | 21 | 21 | 0 | 0 | 20.4 |
-| portfolio | 505 | 300 | 21 | 21 | 0 | 0 | 21.0 |
-| portfolio | 606 | 300 | 21 | 21 | 0 | 0 | 20.3 |
-| portfolio | 707 | 300 | 21 | 21 | 0 | 0 | 20.2 |
-| portfolio | 808 | 300 | 21 | 21 | 0 | 0 | 20.4 |
-| stress | 1 |  | 3 | 3 | 0 | 0 | 4.0 |
-| stress | 2 |  | 3 | 3 | 0 | 0 | 3.8 |
-| stress | 3 |  | 3 | 3 | 0 | 1 | 3.8 |
-| stress | 4 |  | 3 | 3 | 0 | 0 | 3.7 |
-| stress | 5 |  | 3 | 3 | 0 | 0 | 3.4 |
-| stress | 6 |  | 3 | 3 | 0 | 0 | 2.8 |
-| stress | 7 |  | 3 | 3 | 0 | 0 | 3.0 |
-| stress | 8 |  | 3 | 3 | 0 | 0 | 2.8 |
-| stress | 9 |  | 3 | 3 | 0 | 0 | 2.6 |
-| stress | 10 |  | 3 | 3 | 0 | 1 | 2.6 |
-| stress | 11 |  | 3 | 3 | 0 | 0 | 2.6 |
-| stress | 12 |  | 3 | 3 | 0 | 0 | 2.6 |
-| stress | 13 |  | 3 | 3 | 0 | 0 | 2.2 |
-| stress | 14 |  | 3 | 3 | 0 | 1 | 2.1 |
-| stress | 15 |  | 3 | 3 | 0 | 1 | 2.2 |
-| stress | 16 |  | 3 | 3 | 0 | 0 | 2.2 |
-| stress | 17 |  | 3 | 3 | 0 | 0 | 2.2 |
-| stress | 18 |  | 3 | 3 | 0 | 0 | 2.1 |
-| stress | 19 |  | 3 | 3 | 0 | 0 | 2.1 |
-| stress | 20 |  | 3 | 3 | 0 | 0 | 2.2 |
+| portfolio | 101 | 1500 | 21 | 21 | 0 | 0 | 24.0 |
+| portfolio | 202 | 1500 | 21 | 21 | 0 | 0 | 26.6 |
+| portfolio | 303 | 1500 | 21 | 21 | 0 | 0 | 27.8 |
+| portfolio | 404 | 1500 | 21 | 21 | 0 | 0 | 27.8 |
+| portfolio | 505 | 1500 | 21 | 21 | 0 | 0 | 23.2 |
+| portfolio | 606 | 1500 | 21 | 21 | 0 | 0 | 26.8 |
+| portfolio | 707 | 1500 | 21 | 21 | 0 | 0 | 28.5 |
+| portfolio | 808 | 1500 | 21 | 21 | 0 | 0 | 28.6 |
+| portfolio | 101 | 600 | 21 | 21 | 0 | 0 | 23.9 |
+| portfolio | 202 | 600 | 21 | 21 | 0 | 0 | 23.7 |
+| portfolio | 303 | 600 | 21 | 21 | 0 | 0 | 23.6 |
+| portfolio | 404 | 600 | 21 | 21 | 0 | 0 | 23.7 |
+| portfolio | 505 | 600 | 21 | 21 | 0 | 0 | 23.7 |
+| portfolio | 606 | 600 | 21 | 21 | 0 | 0 | 23.6 |
+| portfolio | 707 | 600 | 21 | 21 | 0 | 0 | 22.7 |
+| portfolio | 808 | 600 | 20 | 20 | 0 | 0 | 24.0 |
+| portfolio | 101 | 300 | 21 | 21 | 0 | 0 | 22.5 |
+| portfolio | 202 | 300 | 21 | 21 | 0 | 0 | 22.4 |
+| portfolio | 303 | 300 | 21 | 21 | 0 | 0 | 22.9 |
+| portfolio | 404 | 300 | 21 | 21 | 0 | 0 | 22.6 |
+| portfolio | 505 | 300 | 21 | 21 | 0 | 0 | 23.3 |
+| portfolio | 606 | 300 | 21 | 21 | 0 | 0 | 22.0 |
+| portfolio | 707 | 300 | 21 | 21 | 0 | 0 | 22.2 |
+| portfolio | 808 | 300 | 21 | 21 | 0 | 0 | 22.0 |
+| stress | 1 |  | 3 | 3 | 0 | 0 | 4.1 |
+| stress | 2 |  | 3 | 3 | 0 | 0 | 4.1 |
+| stress | 3 |  | 3 | 3 | 0 | 1 | 4.2 |
+| stress | 4 |  | 3 | 3 | 0 | 0 | 4.2 |
+| stress | 5 |  | 3 | 3 | 0 | 0 | 3.9 |
+| stress | 6 |  | 3 | 3 | 0 | 0 | 3.8 |
+| stress | 7 |  | 3 | 3 | 0 | 0 | 3.8 |
+| stress | 8 |  | 3 | 3 | 0 | 0 | 3.6 |
+| stress | 9 |  | 3 | 3 | 0 | 0 | 3.8 |
+| stress | 10 |  | 3 | 3 | 0 | 1 | 3.6 |
+| stress | 11 |  | 3 | 3 | 0 | 0 | 3.5 |
+| stress | 12 |  | 3 | 3 | 0 | 0 | 3.6 |
+| stress | 13 |  | 3 | 3 | 0 | 0 | 3.6 |
+| stress | 14 |  | 3 | 3 | 0 | 1 | 3.6 |
+| stress | 15 |  | 3 | 3 | 0 | 1 | 3.5 |
+| stress | 16 |  | 3 | 3 | 0 | 0 | 3.5 |
+| stress | 17 |  | 3 | 3 | 0 | 0 | 3.7 |
+| stress | 18 |  | 3 | 3 | 0 | 0 | 3.5 |
+| stress | 19 |  | 3 | 3 | 0 | 0 | 3.6 |
+| stress | 20 |  | 3 | 3 | 0 | 0 | 3.6 |

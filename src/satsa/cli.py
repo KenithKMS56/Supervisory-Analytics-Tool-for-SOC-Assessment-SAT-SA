@@ -777,20 +777,85 @@ def validate_stress_cmd(
     console.print(f"\n[bold green][+] Stress report written to:[/bold green] [cyan]{md_path}[/cyan]")
 
 
+@app.command("validate-independent")
+def validate_independent_cmd(
+    seeds: int = typer.Option(20, "--seeds", "-n", help="Number of seeds to run"),
+    start_seed: int = typer.Option(1, "--start-seed", help="First seed"),
+    output_md: str = typer.Option(
+        "docs/validation_independent_report.md", "--output-md", help="Markdown report path"
+    ),
+    output_json: str = typer.Option("", "--output-json", help="Also write the raw per-seed results as JSON"),
+    rules_config: str = typer.Option("config/rules.yaml", "--rules-config", help="Rule configuration to evaluate"),
+    sweep: bool = typer.Option(True, "--sweep/--no-sweep", help="Run the +/-20% threshold sweep per seed"),
+) -> None:
+    """Validate on the INDEPENDENT generator (written from the documented rule catalogue):
+    engine vs three naive baselines, family ablation, +/-20% sweep, Wilson intervals.
+
+    Each seed runs in its own temporary store; data/ is never touched. Synthetic data only.
+    """
+    import json
+    from pathlib import Path
+
+    from satsa.validate.independent import aggregate, render_markdown, run_seed
+
+    results = []
+    for seed in range(start_seed, start_seed + seeds):
+        r = run_seed(seed, rules_config=rules_config, sweep=sweep)
+        e = r["engine"]
+        console.print(
+            f"  * seed {seed}: {e['tp']}/{e['tp'] + e['fn']} defects detected, {e['fp']} false positives "
+            f"({e['fp_on_decoys']} on decoys), {r['seconds']} s"
+        )
+        results.append(r)
+    agg = aggregate(results)
+    t = agg["totals"]
+    command = (
+        f"satsa validate-independent --seeds {seeds} --start-seed {start_seed}"
+        + ("" if sweep else " --no-sweep")
+        + (f" --rules-config {rules_config}" if rules_config != "config/rules.yaml" else "")
+    )
+    md = Path(output_md)
+    md.parent.mkdir(parents=True, exist_ok=True)
+    md.write_text(render_markdown(results, agg, command), encoding="utf-8")
+    if output_json:
+        Path(output_json).write_text(json.dumps({"results": results}, indent=1, default=str), encoding="utf-8")
+    recall = t["tp"] / max(t["tp"] + t["fn"], 1)
+    precision = t["tp"] / max(t["tp"] + t["fp"], 1)
+    console.print(
+        f"[bold green][+] Independent set:[/bold green] recall {recall * 100:.1f}% ({t['tp']:g}/{t['tp'] + t['fn']:g}), "
+        f"precision {precision * 100:.1f}% ({t['tp']:g}/{t['tp'] + t['fp']:g}), decoys flagged "
+        f"{t['decoys_flagged']:g}/{t['decoys']:g}. Report: [cyan]{md}[/cyan]"
+    )
+
+
 @app.command("offline-bundle")
 def offline_bundle_cmd(
     output_dir: str = typer.Option("dist", "--output-dir", "-o", help="Output directory"),
+    wheelhouse: str | None = typer.Option(
+        None,
+        "--wheelhouse",
+        help="Wheelhouse from scripts/build_wheelhouse.sh to include (default: ./wheelhouse if present)",
+    ),
 ) -> None:
-    """Package SAT-SA for air-gapped installation: sources, configs, containerfiles, and scripts."""
-    from satsa.bundle.packager import OfflinePackager
+    """Package SAT-SA for air-gapped installation: sources, configs, wheelhouse, containerfiles, and scripts."""
+    from satsa.bundle.packager import OfflinePackager, WheelhouseError
 
     console.print("[bold blue]Building SAT-SA offline deployment bundle...[/bold blue]")
-    packager = OfflinePackager()
-    archive = packager.create_bundle(output_tar=True)
+    packager = OfflinePackager(dist_dir=output_dir, wheelhouse=wheelhouse)
+    try:
+        archive = packager.create_bundle(output_tar=True)
+    except WheelhouseError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
     console.print(
         f"[bold green][+] Offline bundle successfully packaged:[/bold green] [cyan]{archive}[/cyan]"
     )
     console.print(f"  * Bundle directory: [dim]{packager.bundle_dir}[/dim]")
+    if packager.wheelhouse is None:
+        console.print(
+            "[bold yellow][!] No wheelhouse included: install_offline will refuse to run until the bundle "
+            "is rebuilt with one (scripts/build_wheelhouse.sh, docs/offline_install.md).[/bold yellow]"
+        )
     console.print("  * Deployment instructions: [dim]README_OFFLINE.md inside bundle[/dim]")
 
 
@@ -964,11 +1029,19 @@ def audit_verify_cmd(
     checkpoint_head: str | None = typer.Option(
         None, "--checkpoint-head", help="Head hash recorded earlier by `satsa audit head`"
     ),
+    checkpoint_file: str | None = typer.Option(
+        None, "--checkpoint", help="Signed checkpoint file from `satsa audit checkpoint --sign`"
+    ),
+    pubkey: str | None = typer.Option(
+        None, "--pubkey", help="Public key that signed the checkpoint (from `satsa audit keygen`)"
+    ),
 ) -> None:
     """Verify the audit hash chain (each row checked with its own recorded algorithm).
 
-    The chain alone cannot detect deletion of its newest rows; pass a checkpoint
-    recorded off-box with `satsa audit head` to detect that too.
+    The chain alone cannot detect deletion of its newest rows or a full recomputation of the
+    chain. A signed checkpoint (--checkpoint FILE --pubkey KEY) or a recorded head
+    (--checkpoint-count N --checkpoint-head H) detects both: the live chain must match or
+    extend the recorded head. Tamper-evident, not tamper-proof (DECISIONS.md ADR-005, ADR-008).
     """
     from satsa.store.sqlite import SQLiteStore
 
@@ -976,6 +1049,15 @@ def audit_verify_cmd(
     if (checkpoint_count is None) != (checkpoint_head is None):
         console.print("[bold red][!] --checkpoint-count and --checkpoint-head go together.[/bold red]")
         raise typer.Exit(code=2)
+    if checkpoint_file and checkpoint_count is not None:
+        console.print("[bold red][!] Use either --checkpoint FILE or --checkpoint-count/--checkpoint-head.[/bold red]")
+        raise typer.Exit(code=2)
+    if checkpoint_file and not pubkey:
+        console.print("[bold red][!] --checkpoint needs --pubkey: the signature is always checked.[/bold red]")
+        raise typer.Exit(code=2)
+    if checkpoint_file:
+        _verify_signed_checkpoint(db_path, checkpoint_file, str(pubkey))
+        return
     store = SQLiteStore(db_path)
     try:
         if checkpoint_count is not None and checkpoint_head is not None:
@@ -1026,6 +1108,111 @@ def audit_head_cmd(
         f"[dim]Verify later with: satsa audit verify --chain {chain} "
         f"--checkpoint-count {head.count} --checkpoint-head {head.head_hash}[/dim]"
     )
+
+
+def _verify_signed_checkpoint(db_path: str, checkpoint_file: str, pubkey: str) -> None:
+    from satsa.audit import checkpoint as cp
+    from satsa.audit.keys import load_verifier
+    from satsa.audit.signing import AlgorithmUnavailableError, KeyFormatError, UnknownAlgorithmError
+    from satsa.store.sqlite import SQLiteStore
+
+    try:
+        payload = cp.load(checkpoint_file)
+        sig = payload.get("signature")
+        algorithm = sig.get("alg") if isinstance(sig, dict) else None
+        if not algorithm:
+            raise cp.CheckpointError("checkpoint is not signed")
+        verifier = load_verifier(pubkey, algorithm=str(algorithm))
+    except (cp.CheckpointError, KeyFormatError, UnknownAlgorithmError, AlgorithmUnavailableError, OSError) as exc:
+        console.print(f"[bold red][!] Checkpoint not verified:[/bold red] {exc}")
+        raise typer.Exit(code=1) from None
+    store = SQLiteStore(db_path)
+    try:
+        result = cp.verify_checkpoint_file(store, checkpoint_file, verifier)
+    finally:
+        store.close()
+    if result.ok:
+        console.print(f"[bold green][+] Signed checkpoint verified:[/bold green] {result.message}")
+    else:
+        console.print(f"[bold red][!] Checkpoint not verified:[/bold red] {result.message}")
+        raise typer.Exit(code=1)
+
+
+@audit_app.command("keygen")
+def audit_keygen_cmd(
+    out_dir: str = typer.Option("audit-keys", "--out-dir", "-o", help="Directory for the key pair"),
+    algorithm: str = typer.Option("ed25519", "--alg", help="Signature algorithm (only ed25519 is implemented)"),
+    force: bool = typer.Option(False, "--force", help="Replace an existing key pair"),
+) -> None:
+    """Create a signing key pair for audit checkpoints, readable by its owner only.
+
+    Keep the private key OFF the supervisory host (removable media held by the examiner) and
+    give the public key to whoever verifies checkpoints. See DECISIONS.md ADR-008.
+    """
+    from satsa.audit.keys import KeyPermissionError, generate_keypair
+    from satsa.audit.signing import AlgorithmUnavailableError, UnknownAlgorithmError
+
+    try:
+        private_path, public_path = generate_keypair(out_dir, algorithm=algorithm, force=force)
+    except (UnknownAlgorithmError, AlgorithmUnavailableError, FileExistsError, KeyPermissionError) as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    console.print(f"[bold green][+] Private key:[/bold green] {private_path} (owner-only; keep it off-box)")
+    console.print(f"[bold green][+] Public key:[/bold green]  {public_path}")
+
+
+@audit_app.command("checkpoint")
+def audit_checkpoint_cmd(
+    db_path: str = typer.Option("data/satsa.db", "--db-path", help="Path to SQLite database"),
+    chain: str = typer.Option("audit", "--chain", help="Which chain: 'audit' (SAT-SA) or 'admin'"),
+    sign: bool = typer.Option(False, "--sign", help="Sign the checkpoint (needs --key)"),
+    key: str | None = typer.Option(None, "--key", help="Private key from `satsa audit keygen`"),
+    algorithm: str = typer.Option("ed25519", "--alg", help="Signature algorithm (only ed25519 is implemented)"),
+    out: str | None = typer.Option(None, "--out", "-o", help="Write the checkpoint here (default: print it)"),
+) -> None:
+    """Emit a JSON checkpoint of the chain head (entry count, head hash, time, tool version).
+
+    Store it OFF-BOX. With --sign --key it is signed, and `satsa audit verify --checkpoint FILE
+    --pubkey KEY` later checks the signature and that the live chain matches or extends it.
+    """
+    from pathlib import Path
+
+    from satsa.audit import checkpoint as cp
+    from satsa.audit.keys import KeyPermissionError, load_signer
+    from satsa.audit.signing import AlgorithmUnavailableError, KeyFormatError, UnknownAlgorithmError
+    from satsa.store.sqlite import SQLiteStore
+
+    if sign != bool(key):
+        console.print("[bold red][!] --sign and --key go together.[/bold red]")
+        raise typer.Exit(code=2)
+    _chain_table(chain)
+    signer = None
+    if sign:
+        try:
+            signer = load_signer(str(key), algorithm=algorithm)
+        except (KeyPermissionError, KeyFormatError, UnknownAlgorithmError, AlgorithmUnavailableError, OSError) as exc:
+            console.print(f"[bold red][!] {exc}[/bold red]")
+            raise typer.Exit(code=1) from None
+    store = SQLiteStore(db_path)
+    try:
+        payload = cp.build_checkpoint(store, chain=chain)
+    except cp.CheckpointError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    finally:
+        store.close()
+    if signer is not None:
+        payload = cp.sign_checkpoint(payload, signer)
+    text = cp.dumps(payload)
+    if out:
+        Path(out).parent.mkdir(parents=True, exist_ok=True)
+        Path(out).write_text(text, encoding="utf-8")
+        console.print(
+            f"[bold green][+] Checkpoint written:[/bold green] {out} ({payload['entries']} entries, "
+            f"{'signed' if signer else 'UNSIGNED'}). Copy it off-box."
+        )
+    else:
+        typer.echo(text, nl=False)
 
 
 if __name__ == "__main__":

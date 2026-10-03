@@ -62,10 +62,11 @@ demonstration:
 
 - `/queue`: the examiner status "Escalate to Statutory Notice". What instrument that refers to,
   and who may issue it, is not established here.
-- `docs/functional_design.md` Section 3 and `README.md` ("Regulatory Compliance & Statutory
-  Boundary"): describe SAT-SA as operating "under the statutory authority of Section 70A". The
-  supportable statement is the chain above.
-- `docs/demo_script.md`: "strictly grounded under Section 70A of the IT Act, 2000".
+
+Earlier versions of this list also named "under the statutory authority of Section 70A"
+(`docs/functional_design.md`, `README.md`) and "strictly grounded under Section 70A of the IT Act,
+2000" (`docs/demo_script.md`). Neither phrase is in those files any more (checked 2026-10-03); they
+now say only that NCIIPC is the agency designated under Section 70A, which is the chain above.
 
 ## 3. Requirement traceability
 
@@ -79,7 +80,7 @@ problem statement, which cites no law; its link to Section 70A is the chain in S
 |---|---|---|---|---|
 | F1 | "Ingest structured data from multiple CSEs" | `IngestionPipeline` (`src/satsa/ingest/pipeline.py`), per-entity Parquet partitions | `tests/test_ingest.py`, `tests/test_connectors.py` | Met |
 | F2 | "Support common formats such as CSV, JSON, database exports and APIs" | `SourceAdapter` (csv, json/ndjson, sqlite, loopback-only REST); SQLite exports (`.db/.sqlite/.sqlite3`) read by `IngestionPipeline` table by table; `satsa ingest --api-config` stages local REST endpoints and ingests them; product mappings for Splunk ES, ServiceNow SIR, TheHive 5 | `tests/test_ingest.py` (`test_read_api_from_local_fixture` and neighbours), `tests/test_connectors.py`, `tests/test_anomaly_scan.py` (SQLite export ingests to the same row counts as the CSV files; API submission staged and ingested; non-loopback endpoint refused) | Met end to end for all four. Product mappings tested on hand-built samples only (`docs/connectors.md`); the API path is tested on fixture responses, not a live ticketing system. (Updated: SQLite and API used to be tested as adapters only, not wired into `satsa ingest`.) |
-| F3 | "Support analysis of large datasets spanning multiple entities and time periods" | Chunked ingest, DuckDB over Parquet, analytics cache | `docs/benchmarks.md`: 50 entities x 100,000 alerts (5,000,000 alerts, 21.4M rows) ingested in 603 s and assessed in 310 s on the machine described there | Met on one machine, synthetic uniform data |
+| F3 | "Support analysis of large datasets spanning multiple entities and time periods" | Chunked ingest, DuckDB over Parquet, analytics cache | `docs/benchmarks.md`: 50 entities x 100,000 alerts (5,000,000 alerts, 21.4M rows) ingested in 46.6 s and assessed in 124.0 s, anomaly scan included (recorded 2026-10-02; assessment time varies widely between runs) on the machine described there | Met on one machine, synthetic uniform data |
 | F4 | "Identify indicators of detection, investigation and escalation weaknesses" | 20 rules across 8 domains (`src/satsa/rules/`) | `tests/test_rules.py`, `tests/test_validation_integrity.py` | Met on synthetic data only |
 | F5 | "Detect potential execution gaps" | EG01-EG12 (`rules/execution_gaps.py`) | `tests/test_rules.py::test_injected_defects_detection`, `docs/validation_report.md` | Met on synthetic data only |
 | F6 | "Detect potential negative space" | NS01-NS08 (`rules/negative_space.py`) | same | Met on synthetic data only |

@@ -2,8 +2,12 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-Measured on 2026-09-30. This page says what was tested, what the numbers are, what they do and
-do not prove, and what a real-data pilot still has to supply. Detail is in the reports it cites.
+> **Synthetic data only; a real-data pilot is pending.**
+
+Primary, stress and hard sets measured on 2026-09-30; the independent-generator set re-run on
+2026-10-02 on the final code of the quality pass. This page says what was tested, what the
+numbers are, what they do and do not prove, and what a real-data pilot still has to supply.
+Detail is in the reports it cites.
 
 ## 1. The one thing to know first
 
@@ -21,7 +25,8 @@ real SOC data, and no such figure exists yet.
 | Primary ("easy") | 10 entities, seed 42, 1,500 base alerts each, 21 defects (one or more per rule), each well over its threshold; 3 clean entities | `satsa validate` | `docs/validation_report.md` |
 | Stress | 3 entities: an EG04 defect one alert over its threshold, a case that satisfies EG02 and EG04 at once, a noisy clean entity | `satsa validate-stress` | `docs/validation_stress_report.md` |
 | Hard | The portfolio generator under 8 other seeds at 1,500, 600 and 300 base alerts per entity (24 runs), and the stress scenario under 20 seeds (20 runs). Kept apart from the primary set; no run uses its seed. | `python scripts/validate_hard.py` | `docs/validation_hard_report.md` |
-| Threshold sweep | Every tunable threshold moved by -20% and +20%, one at a time, in every run above | part of each command | Section 7 of the first two reports; Section 3 of the hard report |
+| Independent generator | A second generator written from the documentation only (no shared code with the first): 20 seeds x 15 entities, different names, volumes and timing, defects built 1.08-1.9x over threshold and **decoys built just under it**; compared with three one-line baselines and with each rule family removed | `satsa validate-independent --seeds 20` | `docs/validation_independent_report.md` |
+| Threshold sweep | Every tunable threshold moved by -20% and +20%, one at a time, in every run above | part of each command | Section 7 of the first two reports; Section 3 of the hard report; Section 5 of the independent report |
 | Shadow-pilot rehearsal | The shadow-pilot evaluation run on a stand-in workpaper built from the generator's ground truth | `python scripts/build_shadow_standin.py`, then `satsa validate --shadow-csv ...` | `docs/validation_report.md` Section 5 |
 | Product exports | Hand-built Splunk ES, ServiceNow SIR and TheHive 5 sample exports, ingested and assessed | `tests/test_connectors.py` | `docs/connectors.md` |
 
@@ -132,12 +137,47 @@ All four are fixed and tested. The point for validation is that **the first cont
 realistic exports found rule and privacy defects at once**; a real pilot should be expected to
 find more.
 
+### 3.7 Independent generator (20 seeds, 487 defects, 245 decoys)
+
+`satsa validate-independent --seeds 20 --start-seed 1`, re-run on 2026-10-02 (409 s); every
+result was the same as in its first run on 2026-10-01 (only timings differ).
+
+| Measure | Result (95% CI) |
+|---|---|
+| Recall | 100.0% (487/487; 99.2-100.0%) |
+| Precision | 100.0% (487/487; 99.2-100.0%) |
+| Decoys flagged (built just under a threshold) | 0 of 245 (0.0-1.5%) |
+| Clean entities flagged | 0 of 57 (0.0-6.3%) |
+| Entity ranking precision@k | 100.0% (243/243) |
+
+- **Against one-line baselines** on the same data, each baseline ties its rule on recall and
+  loses on precision: fast closures 87.0% (EG01: 100%), short comments 76.9% (EG02: 100%),
+  critical alerts without escalation 6.7% (EG03: 100%). Ranking entities by baseline flags gives
+  precision@k 81.8%, against 100% for the engine.
+- **Ablation:** without the execution-gap rules recall falls to 40.7%; without the
+  negative-space rules, to 59.3%. Neither family is redundant on this data.
+- **Threshold sweep:** NS08 `review_period_months` -20% loses every defect (20 of 20 seeds);
+  EG05 `min_unaddressed_pairs`, EG08, EG12, NS04 and NS06 add false alarms in 14 to 17 of 20
+  seeds when lowered 20%. `docs/threshold_rationale.md` discusses them; no threshold was changed.
+- **Relabelled by the documented criterion:** for EG05, EG11 and NS03 some entities built
+  without a defect met the documented criterion by chance (1, 9 and 8 times). They count as
+  defects, because the rule is right to flag them under its own specification.
+
+What it adds to the sets above: data whose shape the rule authors did not choose for the
+original generator, and defects placed just under the thresholds as well as over them. What it
+does not add: independence of mind. The same AI-assisted team wrote it after reading the rule
+code, so 100% here means the code does what its documentation says, not that it is accurate.
+
 ## 4. What these numbers do and do not prove
 
 **They do show:**
 
 - Each of the 20 rules fires on a defect built for it and stays quiet otherwise across 25
-  seeds and three volumes, with one exception (EG05 on the noisy stress entity).
+  seeds and three volumes, with one exception (EG05 on the noisy stress entity), and on a
+  second, separately written generator across 20 more seeds, including decoys built just under
+  each threshold.
+- The 20-rule engine is more precise than one-line rules testing the same ideas, on the same
+  synthetic data (Section 3.7).
 - Results are reproducible: same data and configuration, same findings (no rule reads the
   clock; the assessment date is recorded).
 - Where the rules are closest to failing: EG05's thresholds, EG07's and NS05's margins.

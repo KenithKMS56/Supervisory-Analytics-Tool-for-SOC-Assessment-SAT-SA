@@ -88,7 +88,8 @@ class EG01FastClosure(BaseRule):
               AND a.closed_at >= a.created_at
             GROUP BY a.alert_id, a.severity_final, a.closed_by, a.closed_at, a.created_at
         )
-        SELECT * FROM alt_events
+        -- Ordered so the evidence sample does not depend on how rows happen to be stored.
+        SELECT * FROM alt_events ORDER BY alert_id
         """
         df = store.query(target_sql, [entity_id])
         if df.is_empty():
@@ -181,7 +182,8 @@ class EG02AckWithoutInvestigation(BaseRule):
             WHERE a.entity_id = ? AND a.closed_by_type = 'human' AND a.closed_at IS NOT NULL
             GROUP BY a.alert_id, c.comment_len
         )
-        SELECT * FROM alert_summary
+        -- Ordered so the evidence sample does not depend on how rows happen to be stored.
+        SELECT * FROM alert_summary ORDER BY alert_id, comment_len
         """
         df = store.query(sql, [entity_id])
         if df.is_empty():
@@ -260,6 +262,7 @@ class EG03CriticalWithoutEscalation(BaseRule):
           AND a.disposition = 'true_positive'
         GROUP BY a.alert_id, a.category, a.disposition
         HAVING count(e.esc_id) = 0
+        ORDER BY a.alert_id
         """
         df = store.query(sql, [entity_id])
         if df.is_empty():
@@ -340,7 +343,7 @@ class EG04TemplateDrivenInvestigations(BaseRule):
         WHERE a.entity_id = ? AND a.closed_by_type = 'human' AND a.closed_at IS NOT NULL
         GROUP BY c.comment_norm_hash
         HAVING count(*) >= ?
-        ORDER BY repeats DESC
+        ORDER BY repeats DESC, sample_alert, c.comment_norm_hash
         """
         df = store.query(sql, [entity_id, min_hash_group_size])
         if df.is_empty():
@@ -452,7 +455,7 @@ class EG05RepeatAlertsNoRootCause(BaseRule):
         FROM pairs p
         LEFT JOIN remediated r ON p.asset_id = r.linked_asset_id AND p.rule_id = r.linked_rule_id
         WHERE r.linked_asset_id IS NULL
-        ORDER BY p.pair_count DESC
+        ORDER BY p.pair_count DESC, p.asset_id, p.rule_id
         """
         df = store.query(sql, [entity_id, effective_min_repeats, entity_id])
         if df.is_empty():
@@ -544,6 +547,7 @@ class EG06MetricGaming(BaseRule):
         WHERE entity_id = ? AND closed_by_type = 'human' AND closed_at IS NOT NULL
         GROUP BY closed_by, date_trunc('minute', closed_at)
         HAVING count(*) >= ?
+        ORDER BY close_minute, closed_by
         """
         df_bulk = store.query(sql_bulk, [entity_id, min_bulk_closures_per_minute])
 
@@ -630,6 +634,7 @@ class EG07AnalystImplausibility(BaseRule):
         WHERE entity_id = ? AND closed_by_type = 'human' AND closed_at IS NOT NULL
         GROUP BY closed_by, date_trunc('hour', closed_at)
         HAVING count(*) >= ?
+        ORDER BY hourly_closures DESC, closed_by, close_hour
         """
         df = store.query(sql, [entity_id, min_closures_per_analyst_hour])
         if df.is_empty():
@@ -641,7 +646,9 @@ class EG07AnalystImplausibility(BaseRule):
         # analyst-hours crossed the line: one hour with 35 closures is 35 observations.
         score, conf = self.compute_rule_score(max_hourly / 30.0, max_hourly)
         f_id = f"FND-EG07-{entity_id}-{run_id}"
-        analysts = df["closed_by"].unique().to_list()
+        # Busiest analyst first (then by name), so the rationale names the analyst whose hour
+        # gave max_hourly; unique() without maintain_order could name any of them.
+        analysts = df["closed_by"].unique(maintain_order=True).to_list()
 
         rationale = (
             f"Analyst productivity exceeds plausible cognitive limits: up to {max_hourly} "
@@ -696,6 +703,7 @@ class EG08EscalationWithoutFollowThrough(BaseRule):
         SELECT esc_id, ref_id
         FROM escalation
         WHERE entity_id = ? AND acknowledged_at IS NULL
+        ORDER BY esc_id
         """
         df = store.query(sql, [entity_id])
         if df.is_empty():
@@ -772,6 +780,7 @@ class EG09BacklogAndAging(BaseRule):
         FROM "case"
         WHERE entity_id = ? AND status = 'open'
           AND epoch(CAST(? AS TIMESTAMP)) - epoch(opened_at) > ? * 86400
+        ORDER BY opened_at, case_id
         """
         df = store.query(sql, [entity_id, as_of, stale_case_days])
         if df.is_empty():
@@ -1089,6 +1098,7 @@ class EG12WorkflowNonConformance(BaseRule):
             GROUP BY c.case_id
         )
         SELECT case_id FROM case_actions WHERE contain_cnt = 0
+        ORDER BY case_id
         """
         df = store.query(sql, [entity_id])
         if df.is_empty():
