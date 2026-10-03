@@ -208,9 +208,9 @@
             </span>
           </td>
           <td>
-            <div style="display: flex; align-items: center; gap: 0.45rem;">
-              <span style="width: 8px; height: 8px; border-radius: 50%; background-color: {% if a.disposition == 'true_positive' %}var(--risk-crit){% elif a.disposition == 'false_positive' %}var(--text-tertiary){% else %}var(--accent-primary){% endif %};"></span>
-              <span style="font-size: 0.85rem; color: {% if a.disposition == 'true_positive' %}var(--risk-crit){% elif a.disposition == 'false_positive' %}var(--text-secondary){% else %}var(--accent-primary){% endif %};">
+            <div class="{% if a.disposition == 'true_positive' %}disp-true-positive{% elif a.disposition == 'false_positive' %}disp-false-positive{% endif %}" style="display: flex; align-items: center; gap: 0.45rem;">
+              <span class="disp-dot"></span>
+              <span class="disp-label">
                 {{ a.disposition|replace('_', ' ')|capitalize }}
               </span>
             </div>
@@ -236,7 +236,7 @@
           </td>
           <td style="font-size: 0.85rem; color: var(--text-secondary); font-family: var(--font-mono);">{{ a.created_at }}</td>
           <td>
-            <span style="font-size: 0.85rem; font-weight: 600; color: {% if a.duration_str == 'In Progress' %}var(--risk-mod){% else %}var(--text-primary){% endif %};">
+            <span class="duration-label{% if a.duration_str == 'In Progress' %} duration-in-progress{% endif %}">
               {{ a.duration_str }}
             </span>
           </td>
