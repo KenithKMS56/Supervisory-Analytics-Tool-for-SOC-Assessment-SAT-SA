@@ -1211,6 +1211,32 @@ tr:hover td {
   box-shadow: none;
 }
 
+/* Alert disposition: status dot + label, coloured by disposition */
+.disp-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--accent-primary);
+}
+
+.disp-label {
+  font-size: 0.85rem;
+  color: var(--accent-primary);
+}
+
+.disp-true-positive .disp-dot { background-color: var(--risk-crit); }
+.disp-true-positive .disp-label { color: var(--risk-crit); }
+.disp-false-positive .disp-dot { background-color: var(--text-tertiary); }
+.disp-false-positive .disp-label { color: var(--text-secondary); }
+
+.duration-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.duration-label.duration-in-progress { color: var(--risk-mod); }
+
 /* ==========================================================================
    Buttons (Dala Electric Iris Pill & Outlined Secondary: 24px)
    ========================================================================== */
