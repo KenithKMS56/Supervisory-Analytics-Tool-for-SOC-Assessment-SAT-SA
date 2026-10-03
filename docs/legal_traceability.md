@@ -62,10 +62,11 @@ demonstration:
 
 - `/queue`: the examiner status "Escalate to Statutory Notice". What instrument that refers to,
   and who may issue it, is not established here.
-- `docs/functional_design.md` Section 3 and `README.md` ("Regulatory Compliance & Statutory
-  Boundary"): describe SAT-SA as operating "under the statutory authority of Section 70A". The
-  supportable statement is the chain above.
-- `docs/demo_script.md`: "strictly grounded under Section 70A of the IT Act, 2000".
+
+Earlier versions of this list also named "under the statutory authority of Section 70A"
+(`docs/functional_design.md`, `README.md`) and "strictly grounded under Section 70A of the IT Act,
+2000" (`docs/demo_script.md`). Neither phrase is in those files any more (checked 2026-10-03); they
+now say only that NCIIPC is the agency designated under Section 70A, which is the chain above.
 
 ## 3. Requirement traceability
 
