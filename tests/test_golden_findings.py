@@ -177,7 +177,26 @@ def test_ingest_and_assessment_match_the_golden_snapshot(name, tmp_path):
     expected = golden[name]
     actual = json.loads(json.dumps(actual))  # the same JSON round trip the snapshot went through
     for section in ("tables", "dq_issues", "findings", "entity_scores", "review_queue", "systemic"):
-        assert actual[section] == expected[section], f"{name}: {section} differ from the golden snapshot"
+        detail = _parquet_on_disk(tmp_path, actual, expected) if section == "tables" else ""
+        assert actual[section] == expected[section], f"{name}: {section} differ from the golden snapshot{detail}"
+
+
+def _parquet_on_disk(tmp_path: Path, actual: dict[str, Any], expected: dict[str, Any]) -> str:
+    """For each table that differs: its Parquet files and the rows they hold, so a failure
+    says whether data was never written or was written but did not load."""
+    import polars as pl
+
+    lines = []
+    for table, value in sorted(actual["tables"].items()):
+        if value == expected["tables"].get(table):
+            continue
+        files = sorted(tmp_path.glob(f"ws/pq/**/{table}/**/*.parquet"))
+        try:
+            rows: int | str = sum(pl.read_parquet(f).height for f in files)
+        except Exception as exc:  # noqa: BLE001 - reported, not handled
+            rows = f"unreadable ({type(exc).__name__}: {exc})"
+        lines.append(f"\n  {table}: {len(files)} Parquet file(s) on disk, rows in them: {rows}")
+    return "".join(lines)
 
 
 def test_the_golden_snapshot_is_not_trivial():

@@ -1,5 +1,6 @@
 """DuckDB columnar storage interface for SAT-SA."""
 
+import logging
 import os
 import threading
 from collections.abc import Iterator
@@ -11,6 +12,8 @@ import duckdb
 import polars as pl
 
 from satsa.security import require_entity_id
+
+logger = logging.getLogger(__name__)
 
 # Tables holding one record per entity (keyed by entity_id) rather than an
 # append-only stream of events.
@@ -376,7 +379,13 @@ class DuckDBStore:
                 self.conn.execute(
                     f"{verb} INTO {escaped_table_name} BY NAME SELECT {select} FROM {source}"
                 )
-            except duckdb.Error:
+            except duckdb.Error as exc:
+                # Skipped so the other group still loads, but never silently: a skipped
+                # group leaves those rows out of the table.
+                logger.warning(
+                    "Could not load %d %s Parquet file(s) of table %r: %s",
+                    len(group), "partitioned" if hive else "unpartitioned", table_name, exc,
+                )
                 continue
 
     def load_all_tables(self) -> None:
