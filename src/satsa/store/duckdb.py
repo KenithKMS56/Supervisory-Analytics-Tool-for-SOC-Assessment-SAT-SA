@@ -78,6 +78,12 @@ class DuckDBStore:
         # ADR-003, so determinism is pinned explicitly rather than left to
         # incidental single-threaded scheduling.
         self.conn.execute("PRAGMA threads=1")
+        # No external file cache. A re-ingest rewrites each entity's data.parquet at the
+        # same path and reloads it on this connection; the cache, checked by path and
+        # modification time, could then serve bytes of the previous file. On Linux CI that
+        # read failed ("ZSTD Decompression failure") and the table loaded empty. Every
+        # table is copied into memory on load, so the cache saves nothing here.
+        self.conn.execute("SET enable_external_file_cache = false")
         self._init_schemas()
 
     def _init_schemas(self) -> None:

@@ -79,6 +79,24 @@ def test_stray_unpartitioned_file_does_not_empty_table(tmp_path):
     store.close()
 
 
+def test_rewritten_parquet_reloads_from_disk_not_a_file_cache(tmp_path):
+    """A re-ingest rewrites data.parquet at the same path and reloads it on the same
+    connection. DuckDB's external file cache could serve the old file's bytes (on Linux CI
+    the golden test's double ingest failed with "ZSTD Decompression failure" and loaded an
+    empty table), so the store turns it off; the reload must see exactly the new rows."""
+    store = DuckDBStore(tmp_path)
+    assert store.conn.execute("SELECT current_setting('enable_external_file_cache')").fetchone()[0] is False
+    for version in range(1, 6):
+        frame = pl.DataFrame({"entity_id": ["CSE-01"] * 50, "alert_id": [f"A{version}-{i}" for i in range(50)]})
+        file_path = tmp_path / "parquet" / "alert" / "entity_id=CSE-01" / "data.parquet"
+        if file_path.exists():
+            file_path.unlink()  # a rewrite at the same path, as re-ingest does
+        store.write_partitioned_parquet("alert", frame)
+        ids = store.query("SELECT alert_id FROM alert ORDER BY alert_id")["alert_id"].to_list()
+        assert ids == sorted(frame["alert_id"].to_list())
+    store.close()
+
+
 def _legacy_db(tmp_path, supervisor_passphrase):
     """A database as it looked before `supervisor` was renamed to `analyst`."""
     db = tmp_path / "legacy.db"
