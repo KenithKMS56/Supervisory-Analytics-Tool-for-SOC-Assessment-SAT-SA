@@ -1,7 +1,10 @@
 """DuckDB columnar storage interface for SAT-SA."""
 
+import logging
 import os
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -10,9 +13,34 @@ import polars as pl
 
 from satsa.security import require_entity_id
 
+logger = logging.getLogger(__name__)
+
 # Tables holding one record per entity (keyed by entity_id) rather than an
 # append-only stream of events.
 KEYED_BY_ENTITY = frozenset({"entity"})
+
+
+# A text timestamp ending in a UTC offset: "Z", "+05:30", "+0530" or "+05" after a time of day.
+_OFFSET_SUFFIX = r"[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|z|[+-][0-9]{2}(:?[0-9]{2})?)$"
+
+
+def _quoted(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
+
+
+def text_timestamp_sql(column: str) -> str:
+    """SQL reading the text column `column` (a quoted identifier) as a naive UTC TIMESTAMP.
+
+    Canonical timestamps are UTC (docs/data_requirements.md). Text that carries an offset is
+    converted to UTC with that offset; a plain `TRY_CAST(... AS TIMESTAMP)` drops the offset
+    and keeps the wall-clock time. Text without an offset is read exactly as before (as UTC,
+    never by the session time zone), and text DuckDB cannot read becomes NULL.
+    """
+    return (
+        f"CASE WHEN regexp_matches({column}, '{_OFFSET_SUFFIX}') "
+        f"THEN timezone('UTC', TRY_CAST({column} AS TIMESTAMPTZ)) "
+        f"ELSE TRY_CAST({column} AS TIMESTAMP) END"
+    )
 
 
 def _upsert_entity_row(frames: list[pl.DataFrame]) -> pl.DataFrame:
@@ -50,6 +78,12 @@ class DuckDBStore:
         # ADR-003, so determinism is pinned explicitly rather than left to
         # incidental single-threaded scheduling.
         self.conn.execute("PRAGMA threads=1")
+        # No external file cache. A re-ingest rewrites each entity's data.parquet at the
+        # same path and reloads it on this connection; the cache, checked by path and
+        # modification time, could then serve bytes of the previous file. On Linux CI that
+        # read failed ("ZSTD Decompression failure") and the table loaded empty. Every
+        # table is copied into memory on load, so the cache saves nothing here.
+        self.conn.execute("SET enable_external_file_cache = false")
         self._init_schemas()
 
     def _init_schemas(self) -> None:
@@ -223,8 +257,22 @@ class DuckDBStore:
         for stmt in ddl_statements:
             self.conn.execute(stmt)
 
+    @contextmanager
+    def deferred_reload(self) -> Iterator[None]:
+        """Within the block, write_partitioned_parquet does not reload the table into DuckDB.
+
+        For a caller writing several tables (ingest), which reloads them itself once all are
+        written, so a submission is not held as frames and as DuckDB tables at the same time.
+        """
+        self._defer_reload = True
+        try:
+            yield
+        finally:
+            self._defer_reload = False
+
     def write_partitioned_parquet(self, table_name: str, df: pl.DataFrame) -> None:
-        """Write DataFrame to Parquet partitioned by entity_id where applicable."""
+        """Write DataFrame to Parquet partitioned by entity_id where applicable, then reload it
+        into DuckDB (unless inside `deferred_reload`)."""
         if df.is_empty():
             return
 
@@ -272,7 +320,8 @@ class DuckDBStore:
                 df.write_parquet(file_path)
 
         # Refresh DuckDB in-memory table/view
-        self.load_table_from_parquet(table_name)
+        if not getattr(self, "_defer_reload", False):
+            self.load_table_from_parquet(table_name)
 
     def table_columns(self, table_name: str) -> list[str]:
         """Column names of a canonical table, in schema order (empty for an unknown table)."""
@@ -308,7 +357,8 @@ class DuckDBStore:
         # every entity vanished from the UI after a single upload lacking an
         # entity_id). Likewise only the table's own columns are selected, with
         # TRY_CAST, so a pass-through source column or an unparseable timestamp
-        # in one file can't fail the insert for all the others.
+        # in one file can't fail the insert for all the others. Text timestamps go
+        # through text_timestamp_sql, which applies a UTC offset instead of dropping it.
         partitioned = [f for f in files if f.parent.name.startswith("entity_id=")]
         unpartitioned = [f for f in files if not f.parent.name.startswith("entity_id=")]
         verb = "INSERT OR REPLACE" if table_name in KEYED_BY_ENTITY else "INSERT"
@@ -322,15 +372,26 @@ class DuckDBStore:
                 f"read_parquet([{file_list}], hive_partitioning={str(hive).lower()}, union_by_name=true)"
             )
             try:
-                source_cols = [r[0] for r in self.conn.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()]
-                cols = [c for c in source_cols if c in table_types]
+                source_types = {r[0]: r[1] for r in self.conn.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()}
+                cols = [c for c in source_types if c in table_types]
                 if not cols:
                     continue
-                select = ", ".join(f'TRY_CAST("{c}" AS {table_types[c]}) AS "{c}"' for c in cols)
+                select = ", ".join(
+                    f'{text_timestamp_sql(_quoted(c))} AS "{c}"'
+                    if table_types[c] == "TIMESTAMP" and source_types[c] == "VARCHAR"
+                    else f'TRY_CAST("{c}" AS {table_types[c]}) AS "{c}"'
+                    for c in cols
+                )
                 self.conn.execute(
                     f"{verb} INTO {escaped_table_name} BY NAME SELECT {select} FROM {source}"
                 )
-            except duckdb.Error:
+            except duckdb.Error as exc:
+                # Skipped so the other group still loads, but never silently: a skipped
+                # group leaves those rows out of the table.
+                logger.warning(
+                    "Could not load %d %s Parquet file(s) of table %r: %s",
+                    len(group), "partitioned" if hive else "unpartitioned", table_name, exc,
+                )
                 continue
 
     def load_all_tables(self) -> None:

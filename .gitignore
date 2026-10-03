@@ -42,3 +42,4 @@ wheelhouse/
 !tests/fixtures/**
 __pycache__/
 *.pyc
+.hypothesis/

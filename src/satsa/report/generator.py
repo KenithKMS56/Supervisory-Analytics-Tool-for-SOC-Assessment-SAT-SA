@@ -20,6 +20,7 @@ from reportlab.platypus import (
 )
 
 from satsa import FINDING_NOTICE
+from satsa.explain.finding_card import WHY_IT_MATTERS
 from satsa.peers.anomaly_scan import format_value
 from satsa.report.pdf_charts import (
     CRITICAL_THRESHOLD,
@@ -841,6 +842,11 @@ class ReportGenerator:
             hero,
             Spacer(1, 12),
         ]
+        why = WHY_IT_MATTERS.get(f["rule_id"])
+        if why:
+            story += section("Why it matters")
+            story.append(Paragraph(esc(why), st["body"]))
+            story.append(Spacer(1, 10))
         cmp = comparison_block(f, pc, CONTENT_W)
         if cmp:
             story += section("How this CSE compares")

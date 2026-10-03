@@ -23,7 +23,7 @@ python -m coverage run --branch --source=src/satsa -m pytest tests -q
 ```
 
 (A short path is needed because four report tests write file names that exceed Windows'
-260-character limit under a long working directory.)
+260-character limit under a long working directory. Those four are fixed in the quality pass, Phase 1.)
 
 | After | Tests passed | Skipped | Failed | Primary set | Stress set |
 |---|---:|---:|---:|---|---|
@@ -33,7 +33,8 @@ python -m coverage run --branch --source=src/satsa -m pytest tests -q
 | Phase 3 | 847 | 33 | 0 | 21/21, 0 FP | 3/3, 0 FP |
 | Phase 4 | 847 | 33 | 0 | 21/21, 0 FP | 3/3, 0 FP |
 | Phases 5-7 | 866 | 33 | 0 | 21/21, 0 FP | 3/3, 0 FP |
-| Phase 8 (final) | **871** | 33 | **0** | 21/21, 0 FP | 3/3, 0 FP |
+| Phase 8 (end of feasibility pass) | **871** | 33 | **0** | 21/21, 0 FP | 3/3, 0 FP |
+| Quality pass, final (2026-10-02) | **1,130** | 33 | **0** | 21/21, 0 FP | 3/3, 0 FP |
 
 The 33 skips are public routes in the RBAC matrix, exercised once anonymously instead of once
 per role. The primary and stress sets are single-seed synthetic sets built around the rules'
@@ -144,6 +145,9 @@ practical minimum. Assessment time grows faster than volume (16 s, 105 s, 310 s)
 page after a run or an ingest still pays the full reload (27 s at 5M alerts). The data is
 uniform and clean. `docs/infrastructure.md` used to promise 10.1 minutes by extrapolating from
 a 5,650-alert run; that is withdrawn.
+
+*Superseded by the quality pass:* on its final code, 5,000,000 alerts took 46.6 s to ingest
+(5,425 MiB peak) and 124.0 s to assess (`docs/benchmarks.md`, "Final code (2026-10-02)").
 
 ## Phase 5: Accuracy evidence
 
@@ -302,6 +306,71 @@ rules**. It is still synthetic data built by people who knew the thresholds.
 
 ---
 
+## Quality pass, Phase 7: coverage, property tests, offline install (2 October 2026)
+
+Branch `quality/10of10`, same machine, run from the worktree (the suite now copies its inputs
+to a temporary directory and bootstraps its own data, `tests/conftest.py`):
+
+```bash
+uv run coverage run --branch --source=src/satsa -m pytest tests -q -p no:cacheprovider
+uv run coverage report --precision=1
+```
+
+| Measure | Result |
+|---|---|
+| Tests | 1,104 passed, 33 skipped, 0 failed (995.6 s under coverage) |
+| Coverage, statements and branches | **89.2%** (9,157 statements, 809 missed; 2,550 branches, 304 partial) |
+| Lowest modules | `cli.py` 42%, `validate/independent.py` 44%, `audit/keys.py` 75% |
+
+Subprocesses are not measured (subprocess coverage is not enabled), so code that tests reach
+only through `python -m satsa.cli` (the suite's data bootstrap, some CLI tests) counts as
+missed; that is most of why `cli.py` is low. Branch coverage of 89.2% says which lines ran, not
+that their results were checked.
+
+Three property tests (EG06, NS01, NS06) were added after that coverage run. The final suite
+for this phase, `uv run pytest tests -q -p no:cacheprovider`, gave **1,107 passed, 33 skipped,
+0 failed** (866.5 s), with `data/`, `reports/` and `.satsa_salt` hashing the same before and
+after; `satsa validate` 21/21, `satsa validate-stress` 3/3, `satsa audit verify` OK (388
+entries), `ruff check .` clean, `mypy src` clean (73 files).
+
+Property tests (`tests/test_property_rules.py`, `tests/test_property_ingest.py`) and the
+offline install are described in `docs/CHANGES_quality_pass.md` (Phase 7) and
+`docs/offline_install.md`. The CI workflow gained a coverage upload and a no-network install
+job; **no CI run was executed** from this machine.
+
+---
+
+## Quality pass, Phase 8: final figures (2 October 2026)
+
+Branch `quality/10of10`, final code, same machine (Python 3.11.16, Windows 11). Every row was
+run in this phase; the full account of the pass is `docs/CHANGES_quality_pass.md`.
+
+| Command | Result |
+|---|---|
+| `uv run coverage run --branch --source=src/satsa -m pytest tests -q -p no:cacheprovider` | Final code, with the anomaly scan: **1,130 passed, 33 skipped, 0 failed** (869.8 s; before the scan was merged, 1,107 passed); `data/`, `reports/` and `.satsa_salt` hash the same before and after |
+| `uv run coverage report --precision=1` | **89.3%** statements and branches (9,576 statements, 832 missed; 2,688 branches, 319 partial; before the scan, 89.2%); rules 94.3-100%, scoring 82.7-100%, `store/sqlite.py` 91.2%; lowest `cli.py` 42.1% (subprocesses not measured) |
+| `uv run satsa validate` | Recall 21/21, precision 21 of 21 findings, entity rank precision@k 100% |
+| `uv run satsa validate-stress` | Recall 3/3, precision 3 of 3 findings |
+| `uv run satsa audit verify` | 388 entries intact |
+| `uv run ruff check .` / `uv run mypy src` | clean / clean (73 files) |
+| `uv run satsa validate-independent --seeds 20 --start-seed 1` | Recall 487/487, precision 487/487, 0 of 245 decoys, 0 of 57 clean entities flagged (409 s); identical to the 2026-10-01 run |
+| `python scripts/benchmark_scale.py --configs 10x50000,50x100000 --workdir build/bench ...` | Final code, with the anomaly scan: 5,000,000 alerts: ingest **46.6 s** (5,425 MiB peak), assess **124.0 s** (3,751 MiB peak), 150 findings, first page after a run 17.4 s; 500,000 alerts: 6.5 s, 805 MiB, 10.6 s. (Before the scan was merged: 54.5 s, 107.3 s, 3,301 MiB.) |
+
+Before and after the pass (baseline: `docs/baseline_before.md`, 2026-09-30/10-01):
+
+| Measure | Baseline | Final |
+|---|---|---|
+| Tests | 871 passed, 33 skipped, 0 failed (Python 3.13) | 1,130 passed, 33 skipped, 0 failed (Python 3.11) |
+| Coverage (statements and branches) | 89% (7,417 statements) | 89.3% (9,576 statements) |
+| Primary / stress validation | 21/21, 3/3 | 21/21, 3/3 |
+| Independent generator (20 seeds) | did not exist | 487/487 recall and precision, 0 of 245 decoys |
+| Ingest, 5,000,000 alerts | 603.0 s, 13,248 MiB (2026-09-30, Python 3.13) | 46.6 s, 5,425 MiB |
+| Assess, 5,000,000 alerts | 310.2 s (2026-09-30) | 124.0 s with the anomaly scan (time varies 106-191 s between runs; not claimed as an improvement) |
+
+All of it is synthetic data. **Synthetic only; a real-data pilot is pending.**
+
+---
+
 ## Open items
 
 1. **No real data.** No real SOC submission and no real examiner finding has been run through
@@ -317,26 +386,50 @@ rules**. It is still synthetic data built by people who knew the thresholds.
 7. **Docker not run.** No Docker on the test machine: the image was not built, and the compose
    file was checked by parsing only. Whether `python:3.11-slim` includes the `openssl` command
    was not checked.
-8. **Python 3.11 and Linux not re-run** in this pass (3.11 last passed at an earlier step).
-   The GitHub CI result was not visible.
-9. **Scale limits**: 13.2 GB peak to ingest 5M alerts; first page after a run takes 27 s at 5M;
-   assessment grows faster than linearly; measured on one machine with uniform data; closure
-   comments were pre-hashed, so free-text redaction cost is not in the ingest time.
+8. **Linux not run; CI never run.** The baseline ran on Python 3.13 (Windows); the quality
+   pass's own worktree (from after Phase 2) runs Python 3.11 (Windows). Neither ran on Linux. The CI
+   workflow (3.11 and 3.13 on Linux, coverage, offline install in an empty network namespace)
+   has not been run, so none of its jobs is known to pass.
+9. **Scale limits** (final code, 2026-10-02): 5,425 MiB peak to ingest 5M alerts; first page
+   after a run takes 17.4 s at 5M; assessment time varied from 106 s to 191 s between runs of
+   the same code; measured on one machine with uniform data; closure comments were pre-hashed,
+   so free-text redaction cost is not in the ingest time.
 10. **Legal review** of everything marked so in `docs/legal_traceability.md`, including the
     "Escalate to Statutory Notice" label on the review queue, which was left unchanged.
 11. **Problem-statement wording** was read through a summarising tool; re-check the quotes
     against the page before submitting them.
-12. **Peer comparison and outlier statistics are partial**: 4 and 2 of 20 rules.
+12. **Anomaly leads are unvalidated.** Peer comparison and outlier detection now also come from
+    the exploratory anomaly scan (about 40 rates per entity), but its leads are not scored and
+    their false-positive rate on real submissions is unknown. Among the rules, 4 of 20 judge
+    against peers and 2 use an outlier statistic.
 13. **Unreferenced code left in place** (Phase 7).
 14. **Band-floor policy** in `config/scoring.yaml` still awaits confirmation by the project owner.
-15. **Tests share one working database** and sign in with the seeded passphrases; the
-    first-login flag is lifted for them in `tests/conftest.py`.
+15. **Tests sign in with the seeded passphrases**; the first-login flag is lifted for them in
+    `tests/conftest.py`. (They no longer share the working database: since the quality pass
+    the suite copies its inputs to a temporary directory and bootstraps its own data.)
 16. **Nothing has been pushed.** The branch is local.
 17. **Offline bundle under a deep path (quality pass).** From a 181-character working directory,
     `tests/test_bundle.py::test_offline_packager` fails on Windows: `satsa offline-bundle` copies
     the source tree under `dist/satsa_offline_bundle/`, which pushes the deepest file past 260
     characters. The four PDF-route tests that failed the same way are fixed (shorter report
     names, `docs/CHANGES_quality_pass.md` Phase 1); this one is not.
+18. **The "independent" generator is not independent of mind** (quality pass, Phase 4). It
+    shares no code with the original generator, but the same AI-assisted team wrote it after
+    reading the rule code. Its 100% results test the code against its documentation, not
+    accuracy.
+19. **Threshold proposals not applied.** `docs/threshold_rationale.md` reviews EG04, EG05,
+    EG07, NS05, NS08 and EG11; it proposes keeping most values and two changes to consider
+    (EG04 `min_hash_group_size` scaled with volume, EG11 `min_spread` 0.02 once real spreads are
+    known). No threshold or weight in `config/` was changed.
+20. **No usability session run.** `docs/usability_protocol.md` and its template exist; there
+    is no usability figure.
+21. **Audit checkpoints:** only Ed25519 is implemented (ML-DSA names are reserved). On Windows
+    the private-key permission check parses `icacls` output, which is less robust than POSIX
+    mode bits. Key custody is a procedure (DECISIONS.md ADR-008), not something the tool
+    enforces.
+22. **Offline install checked without a physical disconnect.** The Windows bundle install ran
+    with the package index pointed at a closed port; the no-network-namespace check exists only
+    as an unrun CI job. A wheelhouse serves one OS family and Python minor version.
 
 ## Suggested re-rating
 
@@ -344,8 +437,8 @@ Based only on the evidence in this file.
 
 | Dimension | Rating | Justification |
 |---|---|---|
-| Technical | **High** | 871 tests pass with 89% coverage, lint and type checks are clean, and results are reproducible with the reference date recorded. |
-| Operational | **Medium-High** | First-login rotation, loopback default and TLS are enforced and tested, and 5M alerts run in about 15 minutes on a laptop; Docker was not run and the first page after a run takes 27 s at that size. |
+| Technical | **High** | 1,130 tests pass (including property-based tests) with 89.3% coverage, lint and type checks are clean, and findings and evidence are reproducible with the reference date recorded (2026-10-02). CI has not been run. |
+| Operational | **Medium-High** | First-login rotation, loopback default and TLS are enforced and tested, and 5M alerts were ingested and assessed in under 3 minutes on a laptop (2026-10-02); Docker was not run, the offline install was not tried on a disconnected machine, and the first page after a run takes 15 s at that size. |
 | Legal | **Medium** | The notice is now on every output and unsupported legal wording is removed, but the statutory basis rests on unread Rules and unverified text, all marked for legal review. |
 | Economic | **Medium-High** | Runs offline on one commodity machine with open-source components and no licences or cloud cost; staffing and integration cost were not measured. |
 | Data | **Medium** | Three product exports ingest end to end with gaps reported per rule, but on hand-built samples only, and none supports more than 10 of 20 rules alone. |
@@ -355,8 +448,8 @@ Based only on the evidence in this file.
 
 | Dimension | Rating | Evidence |
 |---|---|---|
-| Technical | **High** | 20 rules; 871 tests pass, 89% coverage (statements and branches) |
-| Operational | **High** for speed; Medium-High overall | Assesses 50 entities (5,000,000 alerts) in 310 seconds, plus 603 s ingest; Docker not run |
+| Technical | **High** | 20 rules plus an unscored anomaly scan; 1,130 tests pass, 89.3% coverage (statements and branches), 2026-10-02 |
+| Operational | **High** for speed; Medium-High overall | Assesses 50 entities (5,000,000 alerts) in 124 s, plus 46.6 s ingest (2026-10-02; assessment varied 106-191 s between runs); Docker not run |
 | Legal | **Medium** | Mapped to the problem statement in `docs/legal_traceability.md`; **reviewed by: nobody yet** |
 | Accuracy | **Medium** | Precision 100%, recall 100% on the synthetic hard set (24 runs, 503 defects); 93.8% precision on the stress set |
 | Footer note | | **synthetic** |

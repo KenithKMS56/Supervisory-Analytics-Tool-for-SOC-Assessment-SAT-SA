@@ -1,0 +1,1418 @@
+{
+ "independent": {
+  "dq_issues": [],
+  "entity_scores": [
+   [
+    "ORG-A",
+    0.0,
+    "Low Supervisory Concern",
+    0
+   ],
+   [
+    "ORG-B",
+    17.7,
+    "High Supervisory Concern",
+    2
+   ],
+   [
+    "ORG-C",
+    3.4,
+    "Low Supervisory Concern",
+    1
+   ],
+   [
+    "ORG-D",
+    4.0,
+    "Moderate Supervisory Concern",
+    1
+   ],
+   [
+    "ORG-E",
+    12.5,
+    "Moderate Supervisory Concern",
+    2
+   ],
+   [
+    "ORG-F",
+    32.9,
+    "Moderate Supervisory Concern",
+    3
+   ],
+   [
+    "ORG-G",
+    5.9,
+    "Moderate Supervisory Concern",
+    1
+   ],
+   [
+    "ORG-H",
+    0.0,
+    "Low Supervisory Concern",
+    0
+   ],
+   [
+    "ORG-I",
+    12.9,
+    "High Supervisory Concern",
+    2
+   ],
+   [
+    "ORG-J",
+    15.9,
+    "Moderate Supervisory Concern",
+    2
+   ],
+   [
+    "ORG-K",
+    29.6,
+    "High Supervisory Concern",
+    3
+   ],
+   [
+    "ORG-L",
+    8.3,
+    "Moderate Supervisory Concern",
+    1
+   ],
+   [
+    "ORG-M",
+    27.0,
+    "High Supervisory Concern",
+    3
+   ],
+   [
+    "ORG-N",
+    28.5,
+    "High Supervisory Concern",
+    3
+   ],
+   [
+    "ORG-O",
+    13.2,
+    "Moderate Supervisory Concern",
+    2
+   ]
+  ],
+  "findings": [
+   [
+    "ORG-B",
+    "NS01",
+    "asset",
+    "critical",
+    95.0,
+    1.0,
+    2,
+    "126bc85eb7df1461"
+   ],
+   [
+    "ORG-B",
+    "NS06",
+    "entity",
+    "high",
+    42.5,
+    1.0,
+    2,
+    "7585e8c8c0bcadce"
+   ],
+   [
+    "ORG-C",
+    "EG05",
+    "entity",
+    "medium",
+    35.0,
+    1.0,
+    2,
+    "3036c2ce254fbd3b"
+   ],
+   [
+    "ORG-D",
+    "NS08",
+    "entity",
+    "high",
+    22.5,
+    1.0,
+    2,
+    "c62b17ced0a27e4e"
+   ],
+   [
+    "ORG-E",
+    "EG07",
+    "entity",
+    "medium",
+    42.5,
+    1.0,
+    1,
+    "424352be8508c5fe"
+   ],
+   [
+    "ORG-E",
+    "NS03",
+    "entity",
+    "high",
+    85.0,
+    1.0,
+    15,
+    "124da13061705340"
+   ],
+   [
+    "ORG-F",
+    "EG01",
+    "entity",
+    "high",
+    79.6,
+    1.0,
+    10,
+    "0fbe81d987e7faf9"
+   ],
+   [
+    "ORG-F",
+    "EG08",
+    "entity",
+    "high",
+    85.0,
+    1.0,
+    5,
+    "48d7f55f9607ff84"
+   ],
+   [
+    "ORG-F",
+    "NS03",
+    "entity",
+    "high",
+    85.0,
+    1.0,
+    13,
+    "81eb7eb104dc450c"
+   ],
+   [
+    "ORG-G",
+    "EG11",
+    "entity",
+    "high",
+    36.0,
+    1.0,
+    10,
+    "4c3f5f4367592c9b"
+   ],
+   [
+    "ORG-I",
+    "EG03",
+    "alert",
+    "critical",
+    23.8,
+    1.0,
+    1,
+    "907e4dd15b650ea9"
+   ],
+   [
+    "ORG-I",
+    "NS03",
+    "entity",
+    "high",
+    85.0,
+    1.0,
+    13,
+    "80e93fab7c8098d5"
+   ],
+   [
+    "ORG-J",
+    "EG09",
+    "entity",
+    "medium",
+    58.3,
+    1.0,
+    5,
+    "552cc2cefe7ba3e1"
+   ],
+   [
+    "ORG-J",
+    "NS04",
+    "entity",
+    "high",
+    45.0,
+    1.0,
+    3,
+    "e3d7c862685b12da"
+   ],
+   [
+    "ORG-K",
+    "EG10",
+    "entity",
+    "critical",
+    95.0,
+    1.0,
+    2,
+    "23d1b0377e4ab2ab"
+   ],
+   [
+    "ORG-K",
+    "NS05",
+    "entity",
+    "medium",
+    54.3,
+    1.0,
+    10,
+    "363c465fa6606123"
+   ],
+   [
+    "ORG-K",
+    "NS07",
+    "entity",
+    "critical",
+    47.5,
+    1.0,
+    1,
+    "b8badc8abb3ead85"
+   ],
+   [
+    "ORG-L",
+    "EG06",
+    "entity",
+    "high",
+    54.0,
+    1.0,
+    1,
+    "63c2f1e49729148f"
+   ],
+   [
+    "ORG-M",
+    "EG02",
+    "entity",
+    "medium",
+    54.4,
+    1.0,
+    10,
+    "04f8c099209833f1"
+   ],
+   [
+    "ORG-M",
+    "NS02",
+    "entity",
+    "high",
+    28.3,
+    1.0,
+    1,
+    "df8f0fbb01b1751e"
+   ],
+   [
+    "ORG-M",
+    "NS07",
+    "entity",
+    "critical",
+    95.0,
+    1.0,
+    2,
+    "231e52310a46aaa5"
+   ],
+   [
+    "ORG-N",
+    "EG04",
+    "entity",
+    "medium",
+    51.1,
+    1.0,
+    3,
+    "5393f8546642ecc8"
+   ],
+   [
+    "ORG-N",
+    "EG12",
+    "entity",
+    "high",
+    64.0,
+    0.8,
+    4,
+    "f4a5176f1c8cffbf"
+   ],
+   [
+    "ORG-N",
+    "NS07",
+    "entity",
+    "critical",
+    95.0,
+    1.0,
+    2,
+    "7cc427ad337cad0e"
+   ],
+   [
+    "ORG-O",
+    "EG08",
+    "entity",
+    "high",
+    42.5,
+    1.0,
+    3,
+    "56b2ea9583056c8f"
+   ],
+   [
+    "ORG-O",
+    "EG11",
+    "entity",
+    "high",
+    40.4,
+    1.0,
+    10,
+    "b667d1766a02ef2f"
+   ]
+  ],
+  "review_queue": {
+   "ORG-A": [
+    9,
+    "2d9447a7a3c9b2f2"
+   ],
+   "ORG-B": [
+    13,
+    "3b428a55cfd940a9"
+   ],
+   "ORG-C": [
+    11,
+    "2cb0a5ec18c067c1"
+   ],
+   "ORG-D": [
+    11,
+    "a13ef24f96ee37e8"
+   ],
+   "ORG-E": [
+    25,
+    "ad5cf4a855bae4ef"
+   ],
+   "ORG-F": [
+    30,
+    "95b2600761d375a6"
+   ],
+   "ORG-G": [
+    19,
+    "988388b9f3eecf9f"
+   ],
+   "ORG-H": [
+    9,
+    "18df4a28bacd1ac7"
+   ],
+   "ORG-I": [
+    23,
+    "2fb422887641959f"
+   ],
+   "ORG-J": [
+    17,
+    "332beeee1f229606"
+   ],
+   "ORG-K": [
+    22,
+    "4e86811c57a59372"
+   ],
+   "ORG-L": [
+    10,
+    "3fb720a7f5d70d32"
+   ],
+   "ORG-M": [
+    22,
+    "416ea4b170367e63"
+   ],
+   "ORG-N": [
+    18,
+    "a7be102b917d055e"
+   ],
+   "ORG-O": [
+    22,
+    "46c8e514eead82cc"
+   ]
+  },
+  "systemic": [
+   "bf3ac89a1212bc50"
+  ],
+  "tables": {
+   "alert": {
+    "rows": 17585,
+    "sha256": "591f533fddad976ef91d24ad37755aff19e90bb4eb880649e8a70abb5ad839ae"
+   },
+   "asset": {
+    "rows": 642,
+    "sha256": "48b6ea3cf6fe32062cb781bcf87799880375be81cd0ae4db8354450cb393c90c"
+   },
+   "case": {
+    "rows": 434,
+    "sha256": "80172357c5dc9c6e36195a3341234dc04e8ad68061740abe158900a76b3c4661"
+   },
+   "case_alert_link": {
+    "rows": 426,
+    "sha256": "112d9b16c0add2ffd8b159078cd80cb268125b201a3d9e4454dad0c2eca17e83"
+   },
+   "closure": {
+    "rows": 17585,
+    "sha256": "0ee42774e499a7dc3d2809454afcd12e2e261dfc69f384d04d5e11ce354f894f"
+   },
+   "declared_kpi": {
+    "rows": 30,
+    "sha256": "42883fc664ee452d69c83430e197df25fd90529bfbc5c767d0dfb2738a4f47c7"
+   },
+   "detection_rule": {
+    "rows": 514,
+    "sha256": "14983314747bd7bae7c05ef8d139f30a8ec7b104f6afbad9ec8de7854f9110da"
+   },
+   "entity": {
+    "rows": 15,
+    "sha256": "8ad4a893cdee9a0a0603a5217416423c1471b9dd7e4e856e93393f17cd7b8347"
+   },
+   "escalation": {
+    "rows": 180,
+    "sha256": "dc13063c1423adafb03f0a69f08be9849f354fc7e8de56cd4fcb7489fc95e576"
+   },
+   "external_report": {
+    "rows": 114,
+    "sha256": "de8d3e6ccae78e11c621291c8a7aab9cf08793184ea4a66d482669909c81dadf"
+   },
+   "log_source_daily": {
+    "rows": 116937,
+    "sha256": "ddbcebd9f3eff3a936741afeb78a3310c6d28b8a1777182a383c9302153b51e0"
+   },
+   "remediation": {
+    "rows": 78,
+    "sha256": "1fa6525e6dff05a3e24ac66e19b057ce529d550e0e1790092934c56769e5d15f"
+   },
+   "sla_policy": {
+    "rows": 60,
+    "sha256": "1468aeb03ce2c31ffe886259fff28797ccd0553b5f973dc9b597b9fe69caf29e"
+   },
+   "workflow_event": {
+    "rows": 46721,
+    "sha256": "b8a5d045b5b215078430be45ab2c66a425975e52383863ee806952b36a43f2b0"
+   }
+  }
+ },
+ "primary": {
+  "dq_issues": [
+   [
+    "CSE-02",
+    "orphan_foreign_keys",
+    "error",
+    1,
+    "630d447b1b3a37ca"
+   ],
+   [
+    "CSE-02",
+    "orphan_foreign_keys",
+    "error",
+    1,
+    "ae2870ca5f1fef0c"
+   ],
+   [
+    "CSE-02",
+    "orphan_foreign_keys",
+    "error",
+    1,
+    "d0a5267d634aa787"
+   ],
+   [
+    "CSE-02",
+    "orphan_foreign_keys",
+    "error",
+    3,
+    "a611a20960a86a29"
+   ],
+   [
+    "CSE-05",
+    "orphan_foreign_keys",
+    "error",
+    2,
+    "c05ebabf47b54291"
+   ],
+   [
+    "CSE-05",
+    "orphan_foreign_keys",
+    "error",
+    5,
+    "ee374d7357cd23ce"
+   ],
+   [
+    "CSE-08",
+    "id_sequence_gap",
+    "warning",
+    1,
+    "97e1e4bebb7f1b2e"
+   ],
+   [
+    "CSE-08",
+    "orphan_foreign_keys",
+    "error",
+    1,
+    "ade1ee14aac5cbf9"
+   ],
+   [
+    "CSE-08",
+    "orphan_foreign_keys",
+    "error",
+    92,
+    "ca412f7b21db66b6"
+   ],
+   [
+    "CSE-08",
+    "orphan_foreign_keys",
+    "error",
+    200,
+    "2db8f363d3949284"
+   ],
+   [
+    "CSE-08",
+    "rule_dependency_empty",
+    "warning",
+    1,
+    "ea02f690c1a174aa"
+   ],
+   [
+    "CSE-08",
+    "rule_dependency_empty",
+    "warning",
+    3,
+    "958ad6ed39e92db4"
+   ],
+   [
+    "CSE-09",
+    "orphan_foreign_keys",
+    "error",
+    1,
+    "6b6c56e2a207c564"
+   ],
+   [
+    "CSE-09",
+    "orphan_foreign_keys",
+    "error",
+    1,
+    "d9ad027c97ac9fca"
+   ],
+   [
+    "CSE-09",
+    "orphan_foreign_keys",
+    "error",
+    3,
+    "be956b9a61c62b93"
+   ],
+   [
+    "CSE-09",
+    "orphan_foreign_keys",
+    "error",
+    8,
+    "1a18bf730cc724e8"
+   ],
+   [
+    "CSE-10",
+    "orphan_foreign_keys",
+    "error",
+    9,
+    "13cc04405834da51"
+   ],
+   [
+    "CSE-10",
+    "orphan_foreign_keys",
+    "error",
+    9,
+    "cab092b17e099f7e"
+   ],
+   [
+    "CSE-10",
+    "orphan_foreign_keys",
+    "error",
+    208,
+    "5fcaf6be6726b371"
+   ],
+   [
+    "CSE-10",
+    "orphan_foreign_keys",
+    "error",
+    454,
+    "5970a09f360e15c3"
+   ],
+   [
+    "CSE-10",
+    "rule_dependency_empty",
+    "warning",
+    1,
+    "db3ef45e5cf63d9c"
+   ]
+  ],
+  "entity_scores": [
+   [
+    "CSE-01",
+    0.0,
+    "Low Supervisory Concern",
+    0
+   ],
+   [
+    "CSE-02",
+    41.5,
+    "High Supervisory Concern",
+    3
+   ],
+   [
+    "CSE-03",
+    27.7,
+    "High Supervisory Concern",
+    3
+   ],
+   [
+    "CSE-04",
+    0.0,
+    "Low Supervisory Concern",
+    0
+   ],
+   [
+    "CSE-05",
+    26.4,
+    "High Supervisory Concern",
+    3
+   ],
+   [
+    "CSE-06",
+    0.0,
+    "Low Supervisory Concern",
+    0
+   ],
+   [
+    "CSE-07",
+    25.9,
+    "Moderate Supervisory Concern",
+    3
+   ],
+   [
+    "CSE-08",
+    29.6,
+    "High Supervisory Concern",
+    3
+   ],
+   [
+    "CSE-09",
+    24.9,
+    "High Supervisory Concern",
+    4
+   ],
+   [
+    "CSE-10",
+    12.7,
+    "Moderate Supervisory Concern",
+    2
+   ]
+  ],
+  "findings": [
+   [
+    "CSE-02",
+    "EG10",
+    "entity",
+    "critical",
+    95.0,
+    1.0,
+    4,
+    "c988ba7d4c16a2e9"
+   ],
+   [
+    "CSE-02",
+    "NS01",
+    "asset",
+    "critical",
+    95.0,
+    1.0,
+    1,
+    "8009fd25567e983b"
+   ],
+   [
+    "CSE-02",
+    "NS07",
+    "entity",
+    "critical",
+    95.0,
+    1.0,
+    2,
+    "65f62c646fecd309"
+   ],
+   [
+    "CSE-03",
+    "EG01",
+    "entity",
+    "high",
+    85.0,
+    1.0,
+    10,
+    "b397567dde0d1009"
+   ],
+   [
+    "CSE-03",
+    "EG03",
+    "alert",
+    "critical",
+    95.0,
+    1.0,
+    4,
+    "e68e118d731c838e"
+   ],
+   [
+    "CSE-03",
+    "EG08",
+    "entity",
+    "high",
+    56.7,
+    1.0,
+    4,
+    "e30948d97f0c89ab"
+   ],
+   [
+    "CSE-05",
+    "EG09",
+    "entity",
+    "medium",
+    46.7,
+    1.0,
+    4,
+    "3b6f1966371bd1d0"
+   ],
+   [
+    "CSE-05",
+    "NS01",
+    "asset",
+    "critical",
+    95.0,
+    1.0,
+    1,
+    "097f97bab46c2950"
+   ],
+   [
+    "CSE-05",
+    "NS06",
+    "entity",
+    "high",
+    63.8,
+    1.0,
+    3,
+    "a74aef7aec758575"
+   ],
+   [
+    "CSE-07",
+    "EG04",
+    "entity",
+    "high",
+    75.0,
+    1.0,
+    1,
+    "630811fcc3df92d6"
+   ],
+   [
+    "CSE-07",
+    "EG06",
+    "entity",
+    "high",
+    54.0,
+    1.0,
+    1,
+    "73f3f560794b18b5"
+   ],
+   [
+    "CSE-07",
+    "EG11",
+    "entity",
+    "high",
+    40.8,
+    1.0,
+    10,
+    "baf6ee803393cab9"
+   ],
+   [
+    "CSE-08",
+    "EG07",
+    "entity",
+    "medium",
+    43.8,
+    1.0,
+    1,
+    "a3f914be4941251b"
+   ],
+   [
+    "CSE-08",
+    "NS02",
+    "entity",
+    "high",
+    85.0,
+    1.0,
+    3,
+    "0f25566cd4feefef"
+   ],
+   [
+    "CSE-08",
+    "NS04",
+    "entity",
+    "critical",
+    90.0,
+    1.0,
+    5,
+    "4b16109a09c6347c"
+   ],
+   [
+    "CSE-09",
+    "EG05",
+    "entity",
+    "medium",
+    35.0,
+    1.0,
+    2,
+    "0563fe51c202d546"
+   ],
+   [
+    "CSE-09",
+    "EG12",
+    "entity",
+    "high",
+    60.0,
+    1.0,
+    3,
+    "15d74476d3b5a565"
+   ],
+   [
+    "CSE-09",
+    "NS01",
+    "asset",
+    "critical",
+    95.0,
+    1.0,
+    1,
+    "5219e2cad73333e7"
+   ],
+   [
+    "CSE-09",
+    "NS05",
+    "entity",
+    "medium",
+    42.6,
+    1.0,
+    10,
+    "16704a25194ad86d"
+   ],
+   [
+    "CSE-10",
+    "NS03",
+    "entity",
+    "high",
+    85.0,
+    1.0,
+    10,
+    "127f15bcc4f45078"
+   ],
+   [
+    "CSE-10",
+    "NS08",
+    "entity",
+    "high",
+    22.5,
+    1.0,
+    1,
+    "b82db99feb6d83ac"
+   ]
+  ],
+  "review_queue": {
+   "CSE-01": [
+    9,
+    "d0303412b43d7b3c"
+   ],
+   "CSE-02": [
+    16,
+    "08829de3db0dbd5d"
+   ],
+   "CSE-03": [
+    26,
+    "4579635f7dc02ce9"
+   ],
+   "CSE-04": [
+    9,
+    "86caaeea5ee6091a"
+   ],
+   "CSE-05": [
+    17,
+    "6e5898b4d5e50e12"
+   ],
+   "CSE-06": [
+    9,
+    "77a9ce8c55680497"
+   ],
+   "CSE-07": [
+    21,
+    "79badb181d6c30a7"
+   ],
+   "CSE-08": [
+    18,
+    "e13dcb61abfa91c2"
+   ],
+   "CSE-09": [
+    24,
+    "f14ebb03c0b5bf66"
+   ],
+   "CSE-10": [
+    19,
+    "5640ddd64889acd1"
+   ]
+  },
+  "systemic": [
+   "dd300946161d52a4"
+  ],
+  "tables": {
+   "alert": {
+    "rows": 16253,
+    "sha256": "338f1b8ca29b546be07708eb40c1571304d431f09bff5294ed6c9a57122a8141"
+   },
+   "asset": {
+    "rows": 438,
+    "sha256": "96639f06bb5e01c00c677a8e68477c7fbbb4efdeef6f41683986025e4410ac53"
+   },
+   "case": {
+    "rows": 776,
+    "sha256": "dd02eefb0be9bfecb2be911bcc865cc71dbe7b790a501a0a7b6fc10fda4cfbab"
+   },
+   "case_alert_link": {
+    "rows": 776,
+    "sha256": "2f4218981268c2dbff4eeb4602c0bb484d21158ee21f3eae6fff70b45a829f1c"
+   },
+   "closure": {
+    "rows": 16535,
+    "sha256": "b3ea5ddf6fd379a38fc24e1179281216f732083d70e921bc39083ee7e03c16ca"
+   },
+   "declared_kpi": {
+    "rows": 80,
+    "sha256": "ed08ed969eec43efd59899c81a6701c960574a0e795f6fa1686676d3a419f556"
+   },
+   "detection_rule": {
+    "rows": 325,
+    "sha256": "ce774515f12e3c80bbab93ac8fddd94053a23c0cc135b00f59b245a854d067c7"
+   },
+   "entity": {
+    "rows": 10,
+    "sha256": "0c8043d15abadda3adf0d32af319482441ea4ce4537a10a2f327e7dce21345ba"
+   },
+   "escalation": {
+    "rows": 788,
+    "sha256": "934827a0f519f19bc8a9db18fb7b0072ded857619ca629139721dc3c00645720"
+   },
+   "external_report": {
+    "rows": 157,
+    "sha256": "8fc129461650540a10a69b256ab039251581acde32d63abeea0e57c459220768"
+   },
+   "log_source_daily": {
+    "rows": 78735,
+    "sha256": "356062021542dfbd08e4fd4ef13cb7ea46cb80e498e39f6e17164525db8aae9c"
+   },
+   "remediation": {
+    "rows": 40,
+    "sha256": "370e6ba6f38971e6aeb36bb8612c85b3f1281daddbc37fda649fc2fffc773acc"
+   },
+   "sla_policy": {
+    "rows": 40,
+    "sha256": "70181e3b22b44e5b255ce6872337267b9a7dbba43b2adf5b99524b764aaea1a8"
+   },
+   "workflow_event": {
+    "rows": 39461,
+    "sha256": "9efb450ea66729fefc8025efed91a74e909454dd869160e99218be29654a84f1"
+   }
+  }
+ },
+ "splunk": {
+  "dq_issues": [
+   [
+    "CSE-SPL",
+    "high_null_rate",
+    "warning",
+    34,
+    "299ca664479437b6"
+   ],
+   [
+    "CSE-SPL",
+    "high_null_rate",
+    "warning",
+    34,
+    "ef71fa21e800f879"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "25c8a1bf2d8532e6"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "37af1d6ee21f018c"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "4363b518cfeda53a"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "6512c5b2970d03a7"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "6b55ec13cb8c7a00"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "74c0039f3424d870"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "b363c3843a3ba772"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "e20a768f77bca625"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "ec95dcb6414e2097"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    2,
+    "2ee610118279c9e7"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    2,
+    "c3056a35527a1882"
+   ],
+   [
+    "CSE-SPL",
+    "rule_not_assessed",
+    "warning",
+    2,
+    "c728bd8816f5d11e"
+   ]
+  ],
+  "entity_scores": [
+   [
+    "CSE-SPL",
+    12.9,
+    "Low Supervisory Concern",
+    2
+   ]
+  ],
+  "findings": [
+   [
+    "CSE-SPL",
+    "EG02",
+    "entity",
+    "medium",
+    58.5,
+    1.0,
+    10,
+    "a5265e6a4c3eb308"
+   ],
+   [
+    "CSE-SPL",
+    "EG07",
+    "entity",
+    "medium",
+    45.0,
+    1.0,
+    1,
+    "814cb18f2cc12151"
+   ]
+  ],
+  "review_queue": {
+   "CSE-SPL": [
+    20,
+    "dfb6dd124071ae23"
+   ]
+  },
+  "systemic": [],
+  "tables": {
+   "alert": {
+    "rows": 209,
+    "sha256": "6b9aaa41dd5d9eb2d4b53817b2fcf572efcfd790db272301cd5d6505d70024f0"
+   },
+   "asset": {
+    "rows": 0,
+    "sha256": "b7c0c06ba262e66a297586aadca7e2169ade48beb92f7f0d11ece15de955e51d"
+   },
+   "case": {
+    "rows": 0,
+    "sha256": "321e4c75996e7914f80659c28888efc216165a26667ded2d0af2ebd00abe5970"
+   },
+   "case_alert_link": {
+    "rows": 0,
+    "sha256": "59d10870e84c6270c32b852f0e2eaa72f4d6e9c48cac35371b246e2c2b244d99"
+   },
+   "closure": {
+    "rows": 175,
+    "sha256": "5c4093658a3abb2545a19422c2594cd4ff9146243b1e966661d3b0f3695a2a61"
+   },
+   "declared_kpi": {
+    "rows": 0,
+    "sha256": "eff5eba755c4deb4dbf841acbcc25b1123c5de9047354252ddce688e0c003d3e"
+   },
+   "detection_rule": {
+    "rows": 0,
+    "sha256": "f8846423072f8ab4511df3821ca52210629939197e113286fc7962e6017f69ea"
+   },
+   "entity": {
+    "rows": 1,
+    "sha256": "43aa3ec52ebf89e9e04343eef9a31e0aff2994215ab35e5c5a5e2b7416cb59f0"
+   },
+   "escalation": {
+    "rows": 0,
+    "sha256": "abf325de350a96855c70979a3cde069ff9e102a1672893c42b8a6f76fa1a8427"
+   },
+   "external_report": {
+    "rows": 0,
+    "sha256": "a89749baf05b45825a61097faba83021d2c848e5958678a7860efcf47026946e"
+   },
+   "log_source_daily": {
+    "rows": 0,
+    "sha256": "d92e9a5ed8ceb2f4a701e02233d2448448b1c5a79e2375843150c48d3fa89740"
+   },
+   "remediation": {
+    "rows": 0,
+    "sha256": "b6ff92ee39c7db3f09713c1e68965c312a179c7d401c3cdbb462bd1f50e1c6bc"
+   },
+   "sla_policy": {
+    "rows": 0,
+    "sha256": "8735089247d325b377541fb78b3466d82b6574fbe947ddd269f393f37774feaf"
+   },
+   "workflow_event": {
+    "rows": 314,
+    "sha256": "4cfd74eef995f85c07c1dab3485b9f62a8d92574a387efbfa1254c7a932d55fc"
+   }
+  }
+ },
+ "thehive": {
+  "dq_issues": [
+   [
+    "CSE-HIVE",
+    "high_null_rate",
+    "warning",
+    94,
+    "2072fd0a255e5c80"
+   ],
+   [
+    "CSE-HIVE",
+    "high_null_rate",
+    "warning",
+    94,
+    "806a46d1c0c43174"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_input_missing",
+    "warning",
+    94,
+    "92e31403f02cdcd1"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "137f36086c7e755f"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "426dede6659dc2f2"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "4363b518cfeda53a"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "59412cba58e9801c"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "6512c5b2970d03a7"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "6b55ec13cb8c7a00"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "74c0039f3424d870"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "9185e7823a64dfff"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "b363c3843a3ba772"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    1,
+    "ec95dcb6414e2097"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    2,
+    "2ee610118279c9e7"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    2,
+    "a218347c16f0994a"
+   ],
+   [
+    "CSE-HIVE",
+    "rule_not_assessed",
+    "warning",
+    2,
+    "c3056a35527a1882"
+   ]
+  ],
+  "entity_scores": [
+   [
+    "CSE-HIVE",
+    9.9,
+    "Low Supervisory Concern",
+    2
+   ]
+  ],
+  "findings": [
+   [
+    "CSE-HIVE",
+    "EG07",
+    "entity",
+    "medium",
+    42.5,
+    1.0,
+    1,
+    "f2a297ab19373c0c"
+   ],
+   [
+    "CSE-HIVE",
+    "EG09",
+    "entity",
+    "medium",
+    37.3,
+    0.8,
+    4,
+    "18dc80f117bfcfcc"
+   ]
+  ],
+  "review_queue": {
+   "CSE-HIVE": [
+    14,
+    "e6a64a0a40a37e35"
+   ]
+  },
+  "systemic": [],
+  "tables": {
+   "alert": {
+    "rows": 94,
+    "sha256": "a799c7f67e23c9351f32c3767e775f58a4e0cfbd5e65660d1350b70df58cdf0a"
+   },
+   "asset": {
+    "rows": 0,
+    "sha256": "b7c0c06ba262e66a297586aadca7e2169ade48beb92f7f0d11ece15de955e51d"
+   },
+   "case": {
+    "rows": 8,
+    "sha256": "58b5d7a34da1224bc199921211517d7acef5acd4b144a9927ebdc1181d6ad7bc"
+   },
+   "case_alert_link": {
+    "rows": 6,
+    "sha256": "2d294fb364d754acb799c1059acfdd500680f251558ccc8d9a2b86789396bd2c"
+   },
+   "closure": {
+    "rows": 0,
+    "sha256": "7fad7c3c4ee9a65e6dfe34249c4f9cce150af0c03bc9ed80015f8539424e99ab"
+   },
+   "declared_kpi": {
+    "rows": 0,
+    "sha256": "eff5eba755c4deb4dbf841acbcc25b1123c5de9047354252ddce688e0c003d3e"
+   },
+   "detection_rule": {
+    "rows": 0,
+    "sha256": "f8846423072f8ab4511df3821ca52210629939197e113286fc7962e6017f69ea"
+   },
+   "entity": {
+    "rows": 1,
+    "sha256": "e48ee28af44b70c0b2a82648b6f555845ad9fa81f4a2052a67de6310fc7d9031"
+   },
+   "escalation": {
+    "rows": 0,
+    "sha256": "abf325de350a96855c70979a3cde069ff9e102a1672893c42b8a6f76fa1a8427"
+   },
+   "external_report": {
+    "rows": 0,
+    "sha256": "a89749baf05b45825a61097faba83021d2c848e5958678a7860efcf47026946e"
+   },
+   "log_source_daily": {
+    "rows": 0,
+    "sha256": "d92e9a5ed8ceb2f4a701e02233d2448448b1c5a79e2375843150c48d3fa89740"
+   },
+   "remediation": {
+    "rows": 0,
+    "sha256": "b6ff92ee39c7db3f09713c1e68965c312a179c7d401c3cdbb462bd1f50e1c6bc"
+   },
+   "sla_policy": {
+    "rows": 0,
+    "sha256": "8735089247d325b377541fb78b3466d82b6574fbe947ddd269f393f37774feaf"
+   },
+   "workflow_event": {
+    "rows": 0,
+    "sha256": "8f3efcfd092edfb48b29585f6d3edd97e6d5ec8106c416f850bcc8626eb8bbd3"
+   }
+  }
+ }
+}

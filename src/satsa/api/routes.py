@@ -37,7 +37,7 @@ from satsa.auth.session import (
     require_role,
 )
 from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
-from satsa.explain.finding_card import FindingCard
+from satsa.explain.finding_card import WHY_IT_MATTERS, FindingCard
 from satsa.ingest.pipeline import IngestionPipeline, default_entity_record
 from satsa.models.canonical import Entity
 from satsa.models.outputs import ExaminerFeedback
@@ -47,6 +47,7 @@ from satsa.peers.grouping import PeerResolver
 from satsa.report.generator import ReportGenerator, ReportNotFoundError
 from satsa.report.naming import entity_pdf_name, finding_pdf_name, portfolio_pdf_name
 from satsa.rules.negative_space import REVIEW_PERIOD_MONTHS_RANGE
+from satsa.rules.registry import RuleRegistry
 from satsa.scoring.control_priorities import rank_controls, rank_processes
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
@@ -932,6 +933,29 @@ def _kpi_reconciliation(duckdb_store: DuckDBStore, entity_id: str) -> list[dict[
     ]
 
 
+def _rule_parameters(rule_id: str) -> dict[str, Any]:
+    """The rule's parameters as the current configuration sets them (defaults included)."""
+    rule = RuleRegistry(RULES_CONFIG_PATH).get_rule(rule_id) if RULES_CONFIG_PATH.exists() else None
+    return dict(rule.params) if rule is not None else {}
+
+
+def _config_status(run_config_hash: str | None) -> dict[str, Any]:
+    """Whether the rule configuration is the one the run used.
+
+    A run records only a hash of config/rules.yaml (as AssessmentRunner computes it), not the
+    parameter values, so the finding page shows the current values and says whether they are
+    the ones the run applied.
+    """
+    current = (
+        hashlib.sha256(RULES_CONFIG_PATH.read_bytes()).hexdigest()[:16] if RULES_CONFIG_PATH.exists() else None
+    )
+    return {
+        "run_hash": run_config_hash,
+        "current_hash": current,
+        "unchanged": run_config_hash is not None and run_config_hash == current,
+    }
+
+
 @app.get("/finding/{finding_id}", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
 async def view_finding_detail(request: Request, finding_id: str) -> Response:
     sqlite_store = get_sqlite_store()
@@ -976,13 +1000,18 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
         severity=f_row["severity"],
         title=f_row["title"],
         rationale=f_row["rationale"],
+        why_it_matters=WHY_IT_MATTERS.get(f_row["rule_id"], ""),
         peer_comparison=json.loads(f_row["peer_comparison_json"] or "{}"),
+        parameters_used=_rule_parameters(f_row["rule_id"]),
         limitations=f_row["limitations"]
         or "Evaluated on ingested metadata; raw payload inspection not performed.",
         benign_explanations=json.loads(f_row["benign_explanations_json"] or "[]"),
         examiner_check=f_row["examiner_check"],
         evidence_records=evidences,
     )
+    cur.execute("SELECT config_hash FROM runs WHERE run_id = ?", (card.run_id,))
+    run_row = cur.fetchone()
+    config_status = _config_status(run_row["config_hash"] if run_row else None)
     identity = get_current_identity(request)
     if identity:
         sqlite_store.record_live_event(
@@ -997,7 +1026,7 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
     return templates.TemplateResponse(
         request=request,
         name="finding_detail.html",
-        context={"active_tab": "portfolio", "card": card},
+        context={"active_tab": "portfolio", "card": card, "config": config_status},
     )
 
 
