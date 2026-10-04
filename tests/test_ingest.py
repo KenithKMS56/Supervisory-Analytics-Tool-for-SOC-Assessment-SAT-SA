@@ -355,6 +355,104 @@ def test_an_unreadable_file_is_reported_and_kept_out_of_the_manifest(tmp_path, m
     assert ingest["unreadable_files"] == ["escalation.csv"] and "escalation" not in ingest["submitted_tables"]
     assert any("escalation.csv" in d for d in notes["file_unreadable"].values())
     assert not eg03_fired and "DQ-NOT-ASSESSED-DEP-ENT-EG03" in notes["rule_not_assessed"]
+    # A one-entity batch is that entity's: its batch id and issue ids name it, with no shared-batch note.
+    assert ingest["batch_id"].startswith("BATCH-DEP-ENT-")
+    assert list(notes["file_unreadable"]) == ["DQ-UNREADABLE-DEP-ENT-escalation.csv"]
+    assert "shared by" not in notes["file_unreadable"]["DQ-UNREADABLE-DEP-ENT-escalation.csv"]
+
+
+_TWO_ENTITY_ALERTS = (
+    "entity_id,alert_id,created_at,severity_final,disposition",
+    ["CSE-A,A-1,2026-01-05T09:00:00,critical,true_positive", "CSE-B,B-1,2026-01-05T09:00:00,critical,true_positive"],
+)
+_ESCALATION_HEADER = "entity_id,esc_id,ref_id,escalated_at"
+
+
+def test_batch_level_issues_reach_every_entity_in_a_shared_batch(tmp_path, monkeypatch):
+    """An unreadable file or a row with a bad entity_id cannot be traced to one entity, so every
+    entity in the batch gets the issue. It used to be filed only under the alphabetically first
+    entity, which left the others' DQ record looking clean."""
+    from satsa.ingest import pipeline as pipeline_module
+
+    real_read = pipeline_module.SourceAdapter.read_csv_frame
+
+    def flaky(path):
+        if path.name == "escalation.csv":
+            raise ValueError("corrupt file")
+        return real_read(path)
+
+    monkeypatch.setattr(pipeline_module.SourceAdapter, "read_csv_frame", staticmethod(flaky))
+    header, rows = _TWO_ENTITY_ALERTS
+    ingest, _, notes = _assess(
+        tmp_path,
+        {
+            "alert.csv": (header, [*rows, "bad id!,X-1,2026-01-05T09:00:00,high,true_positive"]),
+            "escalation.csv": (_ESCALATION_HEADER, ["CSE-B,E-1,B-1,2026-01-05T09:05:00"]),
+        },
+    )
+    assert ingest["batch_id"].startswith("BATCH-MULTI_CSE-")
+    assert sorted(notes["file_unreadable"]) == [
+        "DQ-UNREADABLE-CSE-A-escalation.csv",
+        "DQ-UNREADABLE-CSE-B-escalation.csv",
+    ]
+    assert sorted(notes["invalid_entity_id"]) == ["DQ-INVALID-ENTITY-ID-CSE-A-alert", "DQ-INVALID-ENTITY-ID-CSE-B-alert"]
+    for details in [*notes["file_unreadable"].values(), *notes["invalid_entity_id"].values()]:
+        assert "Submitted in a batch shared by 2 entities (CSE-A, CSE-B)." in details
+
+
+def test_a_write_failure_is_filed_under_the_entities_whose_rows_were_lost(tmp_path, monkeypatch):
+    from satsa.ingest.pipeline import IngestionPipeline
+    from satsa.store.duckdb import DuckDBStore
+    from satsa.store.sqlite import SQLiteStore
+
+    src = tmp_path / "in"
+    src.mkdir()
+    _write_csv(src / "alert.csv", *_TWO_ENTITY_ALERTS)
+    _write_csv(
+        src / "escalation.csv",
+        _ESCALATION_HEADER,
+        ["CSE-B,E-1,B-1,2026-01-05T09:05:00", "CSE-B,E-2,B-1,2026-01-05T09:06:00"],
+    )
+    sqlite_store = SQLiteStore(tmp_path / "s.db")
+    duck = DuckDBStore(tmp_path / "d")
+    real_write = duck.write_partitioned_parquet
+
+    def flaky(table, df):
+        if table == "escalation":
+            raise OSError("disk full")
+        return real_write(table, df)
+
+    monkeypatch.setattr(duck, "write_partitioned_parquet", flaky)
+    res = IngestionPipeline(duck, sqlite_store).ingest_directory(src)
+    issues = sqlite_store.conn.execute(
+        "SELECT issue_id, entity_id, count, details FROM dq_issues WHERE check_name = 'table_write_failed'"
+    ).fetchall()
+    duck.close()
+    sqlite_store.close()
+    assert res["failed_tables"] == ["escalation"]
+    assert [(r["issue_id"], r["entity_id"], r["count"]) for r in issues] == [
+        ("DQ-WRITE-FAILED-CSE-B-escalation", "CSE-B", 2)
+    ]
+    assert "(2 rows)" in issues[0]["details"]
+
+
+def test_a_shared_table_with_no_rows_for_an_entity_is_flagged_for_that_entity(tmp_path):
+    """The manifest credits a batch's tables to every entity in it (a CSE with no case rows in a
+    shared batch is how NS04's 'no cases at all' is seen). The entity whose share is empty gets a
+    rule_dependency_empty note saying so; the entity with rows does not."""
+    ingest, eg03_fired, notes = _assess(
+        tmp_path,
+        {
+            "alert.csv": _TWO_ENTITY_ALERTS,
+            "escalation.csv": (_ESCALATION_HEADER, ["CSE-A,E-1,A-1,2026-01-05T09:05:00"]),
+        },
+    )
+    assert "escalation" in ingest["submitted_tables"]
+    empty = notes.get("rule_dependency_empty", {})
+    assert "was submitted for this entity but holds no records" in empty["DQ-DEPENDENCY-CSE-B-escalation"]
+    assert "DQ-DEPENDENCY-CSE-A-escalation" not in empty
+    assert not any(k.endswith("-EG03") for k in notes.get("rule_not_assessed", {}))
+    assert eg03_fired  # CSE-B's unescalated critical true positive
 
 
 def test_empty_files_are_identified_by_name_or_header_not_defaulted_to_alert(tmp_path):

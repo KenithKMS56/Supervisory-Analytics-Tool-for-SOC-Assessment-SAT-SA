@@ -838,13 +838,13 @@ def offline_bundle_cmd(
     ),
 ) -> None:
     """Package SAT-SA for air-gapped installation: sources, configs, wheelhouse, containerfiles, and scripts."""
-    from satsa.bundle.packager import OfflinePackager, WheelhouseError
+    from satsa.bundle.packager import BundlePathTooLongError, OfflinePackager, WheelhouseError
 
     console.print("[bold blue]Building SAT-SA offline deployment bundle...[/bold blue]")
     packager = OfflinePackager(dist_dir=output_dir, wheelhouse=wheelhouse)
     try:
         archive = packager.create_bundle(output_tar=True)
-    except WheelhouseError as exc:
+    except (WheelhouseError, BundlePathTooLongError) as exc:
         console.print(f"[bold red][!] {exc}[/bold red]")
         raise typer.Exit(code=1) from None
     console.print(
