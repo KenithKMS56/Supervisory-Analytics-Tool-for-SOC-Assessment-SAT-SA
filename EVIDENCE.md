@@ -35,6 +35,7 @@ python -m coverage run --branch --source=src/satsa -m pytest tests -q
 | Phases 5-7 | 866 | 33 | 0 | 21/21, 0 FP | 3/3, 0 FP |
 | Phase 8 (end of feasibility pass) | **871** | 33 | **0** | 21/21, 0 FP | 3/3, 0 FP |
 | Quality pass, final (2026-10-02) | **1,130** | 33 | **0** | 21/21, 0 FP | 3/3, 0 FP |
+| External-review fixes (2026-10-04) | **1,136** | 33 | **0** | 21/21, 0 FP | 3/3, 0 FP |
 
 The 33 skips are public routes in the RBAC matrix, exercised once anonymously instead of once
 per role. The primary and stress sets are single-seed synthetic sets built around the rules'
@@ -386,10 +387,12 @@ All of it is synthetic data. **Synthetic only; a real-data pilot is pending.**
 7. **Docker not run.** No Docker on the test machine: the image was not built, and the compose
    file was checked by parsing only. Whether `python:3.11-slim` includes the `openssl` command
    was not checked.
-8. **Linux not run; CI never run.** The baseline ran on Python 3.13 (Windows); the quality
-   pass's own worktree (from after Phase 2) runs Python 3.11 (Windows). Neither ran on Linux. The CI
-   workflow (3.11 and 3.13 on Linux, coverage, offline install in an empty network namespace)
-   has not been run, so none of its jobs is known to pass.
+8. ~~Linux not run; CI never run~~: resolved after the quality pass. The branch was pushed and
+   merged (PR #12, 2026-10-03). Both CI jobs passed after `5c1f9bd`, which fixed a re-ingest
+   fault seen only on Linux: `test` on Ubuntu with Python 3.11 and 3.13 (suite with branch
+   coverage, both validations, audit verify, ruff, mypy) and `offline-install` (install from
+   the wheelhouse in an empty network namespace). This result is as reported by the project
+   owner; the run log is not reproduced here.
 9. **Scale limits** (final code, 2026-10-02): 5,425 MiB peak to ingest 5M alerts; first page
    after a run takes 17.4 s at 5M; assessment time varied from 106 s to 191 s between runs of
    the same code; measured on one machine with uniform data; closure comments were pre-hashed,
@@ -407,12 +410,21 @@ All of it is synthetic data. **Synthetic only; a real-data pilot is pending.**
 15. **Tests sign in with the seeded passphrases**; the first-login flag is lifted for them in
     `tests/conftest.py`. (They no longer share the working database: since the quality pass
     the suite copies its inputs to a temporary directory and bootstraps its own data.)
-16. **Nothing has been pushed.** The branch is local.
-17. **Offline bundle under a deep path (quality pass).** From a 181-character working directory,
-    `tests/test_bundle.py::test_offline_packager` fails on Windows: `satsa offline-bundle` copies
-    the source tree under `dist/satsa_offline_bundle/`, which pushes the deepest file past 260
-    characters. The four PDF-route tests that failed the same way are fixed (shorter report
-    names, `docs/CHANGES_quality_pass.md` Phase 1); this one is not.
+16. ~~Nothing has been pushed~~: resolved; merged as PR #12 (see item 8).
+17. ~~Offline bundle under a deep path~~: resolved (2026-10-04). On unfixed `main`, from a
+    181-character working directory, `test_offline_packager` (run in place) and
+    `satsa offline-bundle` both still failed: `src/satsa/admin/templates/admin_change_password.html`
+    landed at exactly 260 characters, and the copied `__pycache__/*.pyc` files went deeper. The
+    bundle now ships no bytecode (it is rebuilt on install), and its folder and archive are
+    `satsa_bundle` (was `satsa_offline_bundle`). From the same root the deepest bundled path is
+    252 characters, and the test, the rest of the bundle tests and the command all pass. A
+    wheelhouse of Linux wheels (names of about 80 characters) can still go past 260 from such a
+    root. `satsa offline-bundle` then stops, gives the path length, and suggests
+    `--output-dir` or enabling Windows long paths, where it used to stop with a copy traceback.
+    Checked from that root with a 79-character manylinux wheel name: 290 characters, refused;
+    with `--output-dir` set to a short directory, built. Since the quality pass the suite runs
+    from a scratch directory under `%TEMP%`, so a default `pytest` run no longer tests how deep
+    the checkout is; `SATSA_TESTS_IN_PLACE=1` does.
 18. **The "independent" generator is not independent of mind** (quality pass, Phase 4). It
     shares no code with the original generator, but the same AI-assisted team wrote it after
     reading the rule code. Its 100% results test the code against its documentation, not
@@ -428,8 +440,30 @@ All of it is synthetic data. **Synthetic only; a real-data pilot is pending.**
     mode bits. Key custody is a procedure (DECISIONS.md ADR-008), not something the tool
     enforces.
 22. **Offline install checked without a physical disconnect.** The Windows bundle install ran
-    with the package index pointed at a closed port; the no-network-namespace check exists only
-    as an unrun CI job. A wheelhouse serves one OS family and Python minor version.
+    with the package index pointed at a closed port. The CI `offline-install` job installs on
+    Linux in an empty network namespace and passed (item 8). Neither is a physically
+    disconnected machine. A wheelhouse serves one OS family and Python minor version.
+23. ~~Mixed-entity batch attribution~~: found by an external review (2026-10-04), missing from
+    this list until then, now resolved. `ingest_directory` filed every batch-level DQ issue
+    under the alphabetically first entity in the batch (`min(entities_present)`). That covered
+    unreadable and unmapped files, rows with an invalid or missing entity_id, and tables that
+    failed to store. The batch id and the audit entry also named that entity. The synthetic
+    bootstrap ingests 10 CSEs in one batch, so a CSE-08 file failure would have been listed as
+    CSE-01's, and CSE-08's DQ record would have looked clean. It was a mislabelling, not a data
+    exposure: `/dq` is analyst-only and lists every entity's issues, and no CSE-scoped view
+    reads `dq_issues`. Now:
+    - File and row issues are filed under every entity in the batch, with a note naming the
+      shared batch.
+    - A table that fails to store is filed under the entities whose rows it held, with their
+      row counts.
+    - A batch with several entities has the id `BATCH-MULTI_CSE-…`.
+    - Single-entity batches are unchanged.
+
+    One behaviour is kept on purpose: the submission manifest still credits every table in a
+    batch to every entity in it. Crediting only the entities with rows would make NS04 "not
+    assessed" for an entity with no case rows at all, which is the defect NS04 exists to find
+    (CSE-08 in the synthetic set). Such an entity gets a `rule_dependency_empty` note saying its
+    share is empty (tested in `tests/test_ingest.py`).
 
 ## Suggested re-rating
 
@@ -437,7 +471,7 @@ Based only on the evidence in this file.
 
 | Dimension | Rating | Justification |
 |---|---|---|
-| Technical | **High** | 1,130 tests pass (including property-based tests) with 89.3% coverage, lint and type checks are clean, and findings and evidence are reproducible with the reference date recorded (2026-10-02). CI has not been run. |
+| Technical | **High** | 1,136 tests pass (2026-10-04, including property-based tests) with 89.3% coverage (measured 2026-10-02), lint and type checks are clean, and findings and evidence are reproducible with the reference date recorded. CI passed on Linux with Python 3.11 and 3.13, as reported by the project owner (item 8). |
 | Operational | **Medium-High** | First-login rotation, loopback default and TLS are enforced and tested, and 5M alerts were ingested and assessed in under 3 minutes on a laptop (2026-10-02); Docker was not run, the offline install was not tried on a disconnected machine, and the first page after a run takes 15 s at that size. |
 | Legal | **Medium** | The notice is now on every output and unsupported legal wording is removed, but the statutory basis rests on unread Rules and unverified text, all marked for legal review. |
 | Economic | **Medium-High** | Runs offline on one commodity machine with open-source components and no licences or cloud cost; staffing and integration cost were not measured. |
@@ -448,7 +482,7 @@ Based only on the evidence in this file.
 
 | Dimension | Rating | Evidence |
 |---|---|---|
-| Technical | **High** | 20 rules plus an unscored anomaly scan; 1,130 tests pass, 89.3% coverage (statements and branches), 2026-10-02 |
+| Technical | **High** | 20 rules plus an unscored anomaly scan; 1,136 tests pass (2026-10-04), 89.3% coverage (statements and branches, 2026-10-02) |
 | Operational | **High** for speed; Medium-High overall | Assesses 50 entities (5,000,000 alerts) in 124 s, plus 46.6 s ingest (2026-10-02; assessment varied 106-191 s between runs); Docker not run |
 | Legal | **Medium** | Mapped to the problem statement in `docs/legal_traceability.md`; **reviewed by: nobody yet** |
 | Accuracy | **Medium** | Precision 100%, recall 100% on the synthetic hard set (24 runs, 503 defects); 93.8% precision on the stress set |
