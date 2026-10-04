@@ -14,9 +14,21 @@ PIP_INSTALL_REQUIREMENTS = (
 )
 PIP_INSTALL_SATSA = "pip install --no-index --no-deps --find-links=wheelhouse satsa"
 
+# Bytecode built on the packaging machine is not shipped: it is rebuilt on install, and its
+# `__pycache__/<module>.cpython-3NN.pyc` names were the deepest paths in the bundle.
+_NOT_SHIPPED = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo")
+
+# Windows refuses a path of 260 characters or more unless long paths are enabled.
+_WINDOWS = os.name == "nt"
+_WINDOWS_MAX_PATH = 260
+
 
 class WheelhouseError(ValueError):
     """The wheelhouse given to the packager is not one scripts/build_wheelhouse.sh produced."""
+
+
+class BundlePathTooLongError(OSError):
+    """A file could not be copied into the bundle because its path is too long for Windows."""
 
 
 class OfflinePackager:
@@ -30,7 +42,7 @@ class OfflinePackager:
     ):
         self.root_dir = Path(root_dir).resolve()
         self.dist_dir = Path(dist_dir).resolve() if dist_dir is not None else self.root_dir / "dist"
-        self.bundle_dir = self.dist_dir / "satsa_offline_bundle"
+        self.bundle_dir = self.dist_dir / "satsa_bundle"
         # Default: the root's wheelhouse/ when there is one (the build scripts' default output).
         if wheelhouse is None and (self.root_dir / "wheelhouse").is_dir():
             wheelhouse = self.root_dir / "wheelhouse"
@@ -43,39 +55,49 @@ class OfflinePackager:
             shutil.rmtree(self.bundle_dir)
         self.bundle_dir.mkdir(parents=True, exist_ok=True)
 
-        # 1. Copy src
-        shutil.copytree(self.root_dir / "src", self.bundle_dir / "src")
+        try:
+            # 1. Copy src
+            shutil.copytree(self.root_dir / "src", self.bundle_dir / "src", ignore=_NOT_SHIPPED)
 
-        # 2. Copy config
-        shutil.copytree(self.root_dir / "config", self.bundle_dir / "config")
+            # 2. Copy config
+            shutil.copytree(self.root_dir / "config", self.bundle_dir / "config", ignore=_NOT_SHIPPED)
 
-        # 3. Copy project files
-        for f in ["pyproject.toml", "README.md", "LICENSE"]:
-            src_f = self.root_dir / f
-            if src_f.exists():
-                shutil.copy(src_f, self.bundle_dir / f)
+            # 3. Copy project files
+            for f in ["pyproject.toml", "README.md", "LICENSE"]:
+                src_f = self.root_dir / f
+                if src_f.exists():
+                    shutil.copy(src_f, self.bundle_dir / f)
 
-        # 4. Copy or write Containerfile
-        containerfile_path = self.root_dir / "Containerfile"
-        if not containerfile_path.exists():
-            self._write_containerfile(self.root_dir / "Containerfile")
-        shutil.copy(self.root_dir / "Containerfile", self.bundle_dir / "Containerfile")
+            # 4. Copy or write Containerfile
+            containerfile_path = self.root_dir / "Containerfile"
+            if not containerfile_path.exists():
+                self._write_containerfile(self.root_dir / "Containerfile")
+            shutil.copy(self.root_dir / "Containerfile", self.bundle_dir / "Containerfile")
 
-        # 5. Copy the wheelhouse, the only package source the install scripts use
-        if self.wheelhouse is not None:
-            self._copy_wheelhouse(self.wheelhouse, self.bundle_dir / "wheelhouse")
+            # 5. Copy the wheelhouse, the only package source the install scripts use
+            if self.wheelhouse is not None:
+                self._copy_wheelhouse(self.wheelhouse, self.bundle_dir / "wheelhouse")
+        except OSError as exc:
+            longest = self._longest_destination() if _WINDOWS else ""
+            if len(longest) >= _WINDOWS_MAX_PATH:
+                raise BundlePathTooLongError(
+                    f"the bundle needs a {len(longest)}-character path ({longest}), and Windows refuses "
+                    f"paths of {_WINDOWS_MAX_PATH} characters or more. Build it into a shorter directory "
+                    "with --output-dir (e.g. --output-dir C:\\satsa-dist), or enable Windows long paths."
+                ) from exc
+            raise
 
         # 6. Create offline install scripts and instructions
         self._write_offline_scripts(self.bundle_dir)
 
         # 7. Create archive
         if output_tar:
-            archive_path = self.dist_dir / "satsa_offline_bundle.tar.gz"
+            archive_path = self.dist_dir / "satsa_bundle.tar.gz"
             with tarfile.open(archive_path, "w:gz") as tar:
-                tar.add(self.bundle_dir, arcname="satsa_offline_bundle")
+                tar.add(self.bundle_dir, arcname="satsa_bundle")
             return archive_path
         else:
-            archive_path = self.dist_dir / "satsa_offline_bundle.zip"
+            archive_path = self.dist_dir / "satsa_bundle.zip"
             with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zip_f:
                 for root, _, files in os.walk(self.bundle_dir):
                     for file in files:
@@ -83,6 +105,20 @@ class OfflinePackager:
                         rel_p = abs_p.relative_to(self.dist_dir)
                         zip_f.write(abs_p, rel_p)
             return archive_path
+
+    def _longest_destination(self) -> str:
+        """The longest path the bundle writes, for explaining a copy that Windows refused."""
+        targets: list[Path] = []
+        for folder in ("src", "config"):
+            source = self.root_dir / folder
+            for root, dirs, files in os.walk(source):
+                skipped = _NOT_SHIPPED(root, dirs + files)
+                dirs[:] = [d for d in dirs if d not in skipped]
+                rel = Path(root).relative_to(source)
+                targets.extend(self.bundle_dir / folder / rel / f for f in files if f not in skipped)
+        if self.wheelhouse is not None:
+            targets.extend(self.bundle_dir / "wheelhouse" / w.name for w in self.wheelhouse.glob("*.whl"))
+        return max((str(t) for t in targets), key=len, default="")
 
     @staticmethod
     def _copy_wheelhouse(source: Path, target: Path) -> None:
@@ -202,15 +238,15 @@ echo [+] Run 'satsa serve' to launch offline dashboard.
 ## 2. Installation
 ### Linux:
 ```bash
-tar -xzf satsa_offline_bundle.tar.gz
-cd satsa_offline_bundle
+tar -xzf satsa_bundle.tar.gz
+cd satsa_bundle
 bash install_offline.sh
 ```
 
 ### Windows:
 ```cmd
-tar -xzf satsa_offline_bundle.tar.gz
-cd satsa_offline_bundle
+tar -xzf satsa_bundle.tar.gz
+cd satsa_bundle
 install_offline.bat
 ```
 

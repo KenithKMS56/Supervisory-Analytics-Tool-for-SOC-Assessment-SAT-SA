@@ -104,13 +104,13 @@ jobs:
         run: |
           PYTHON="$(command -v python)" sh scripts/build_wheelhouse.sh wheelhouse
           uv run --frozen satsa offline-bundle --wheelhouse wheelhouse --output-dir dist
-          mkdir offline && tar -xzf dist/satsa_offline_bundle.tar.gz -C offline
+          mkdir offline && tar -xzf dist/satsa_bundle.tar.gz -C offline
 
       - name: Install and run with no network
         run: |
           sudo env "PATH=$PATH" "HOME=$HOME" PIP_NO_CACHE_DIR=1 \
             unshare --net --setuid "$(id -u)" --setgid "$(id -g)" -- bash -euo pipefail -c '
-            cd offline/satsa_offline_bundle
+            cd offline/satsa_bundle
             if python3 -c "import socket; socket.create_connection((\"pypi.org\", 443), 5)"; then
               echo "network is reachable: this check would prove nothing" >&2; exit 1
             fi
