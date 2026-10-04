@@ -22,7 +22,7 @@ Each documented behaviour below was checked against the code before anything was
 | M8 | Entity risk index | architecture.md §4: "Weighted sum of 8 capability domain scores plus breadth penalty" | `(1 - breadth_weight) × weighted mean + breadth_weight × breadth score` (`scoring/scorer.py`) | **Doc was imprecise.** Formula stated as implemented. |
 | M9 | Package layout | README directory tree: `src/satsa/core/  # Ingestion, validation, pseudonymisation, scoring` | No `core/` package; that work lives in `ingest/`, `scoring/`, `validate/` | **Doc was wrong.** Tree line corrected. |
 | M10 | Audit hash algorithm | README §10 and admin diagram: "SHA-256 tamper-evident log chain", "Chained SHA-256 prev_hash"; CLI reference: "verify the SHA-256 audit log hash chain" | New entries are SHA3-256; legacy SHA-256 entries still verify (`store/sqlite.py::compute_chain_hash`) | **Doc was stale.** Wording now says SHA3-256 with legacy SHA-256. |
-| M11 | Report file names vs Windows path limit | EVIDENCE.md: the suite had to be run "from a short path" | Reproduced: from a 181-character root, 4 PDF-route tests fail (`reports/SAT-SA_CSE_<entity>_Report_<full run id>.pdf.tmp` > 260 characters) and `test_bundle` fails (the offline bundle mirrors the source tree under `dist/satsa_offline_bundle/`) | **Code fixed for the reports** (`satsa/report/naming.py`; see Phase 1). The bundle depth is recorded as an open item. |
+| M11 | Report file names vs Windows path limit | EVIDENCE.md: the suite had to be run "from a short path" | Reproduced: from a 181-character root, 4 PDF-route tests fail (`reports/SAT-SA_CSE_<entity>_Report_<full run id>.pdf.tmp` > 260 characters) and `test_bundle` fails (the offline bundle mirrors the source tree under `dist/satsa_offline_bundle/`) | **Code fixed for the reports** (`satsa/report/naming.py`; see Phase 1). The bundle depth is recorded as an open item; **fixed after the pass** (see "After the pass" below). |
 | M12 | Submitted entity profile | `docs/data_requirements.md` and the UI: the entity's submitted name, sector, size band and SOC model are what the tool shows and what peer cohorts are built from | On a fresh store, ingest appended a default record ("<id> Operations", "General Infrastructure", "Medium", "inhouse") **after** the submitted rows, and the entity table keeps the newest non-null value per column, so every submitted profile was overwritten. Reproduced by ingesting `data/generated` (the seed-42 demo) with the pre-fix `src` (`git archive` of `37b9bd4`, the commit before the fix): all 10 CSEs came out as "CSE-xx Operations / General Infrastructure / Medium / inhouse"; with the fix, "Northern Power Grid Ltd / power / large / inhouse" etc. Every entity therefore fell into one peer cohort. | **Code bug, fixed** in Phase 4 (`ingest/pipeline.py`: defaults first). Regression tests in `tests/test_entity_profile_ingest.py` fail without the fix. Found because the independent generator gives entities distinct sectors and sizes; the original generator's checks did not depend on cohort membership, and the primary and stress results were the same before and after the fix (21/21, 3/3). |
 | M13 | Canonical schema page | `docs/data_requirements.md` §1.1, §1.5: `soc_model` values `internal`/`hybrid`/`managed_mssp`; criticality 1-5; `declared_kpi(metric_name, declared_value)`; `external_report(report_id, case_id, regulatory_body)`; no `soc_provider`, `comment_len`, `detection_rule`, `remediation`, `sla_policy` | `satsa.models.canonical`: `inhouse`/`hybrid`/`mssp`; criticality 1-4; `declared_kpi(metric, value)`; `external_report(incident_id, reported_to)`; `soc_provider`, `closure.comment_len`, and the three tables exist and are read by rules | **Doc was wrong.** Corrected. Found by writing the independent generator from that page: CSVs built to the page did not load as documented. |
 | M14 | Deterministic output | DECISIONS.md ADR-001: analytics are "strictly deterministic", with "byte-identical reproducibility"; README: "deterministic analytical tool" | Findings, scores and counts were reproducible, but the **evidence records** of EG01, EG02, EG04, EG05, EG08, EG09, NS04 and NS05 were the first rows of a query with no (or no complete) ORDER BY, so they depended on the order rows happened to be stored in. That order changes on a re-ingest (Parquet merge with `unique()`). Reproduced: seed 42 ingested twice, then assessed, in two fresh stores gave different evidence alerts for CSE-03 EG01 (9 of the 10 differed) and therefore different review queues. | **Code fixed** in Phase 5: each of those queries now has a total order (`rules/execution_gaps.py`, `rules/negative_space.py`; EG09 lists the oldest stale case first, the rest by record id). No threshold, count or score changed. `tests/test_golden_findings.py::test_findings_do_not_depend_on_the_order_of_submitted_rows` (same submission, rows shuffled) fails without the fix. Found by the Phase 5 golden test, which failed against its own snapshot before any optimisation. |
@@ -84,7 +84,7 @@ ruff and mypy clean. Matches EVIDENCE.md, so no pause.
   **Verified** by re-running, from the same 181-character root as the baseline, the five tests
   that failed there: the four PDF-route tests now pass; `tests/test_bundle.py::test_offline_packager`
   still fails, because `satsa offline-bundle` copies the source tree under
-  `dist/satsa_offline_bundle/`. That is not a report file name and is left as an **open item**.
+  `dist/satsa_offline_bundle/`. That is not a report file name and is left as an **open item**. (Fixed after the pass; see "After the pass" below.)
 - **Egress guard implemented** (M1): `src/satsa/netguard.py`, installed by both FastAPI
   lifespans (and so by `satsa serve`, `satsa admin`, `entrypoint.py` and bare uvicorn), by
   `satsa serve`/`satsa admin` around `uvicorn.run`, and by `entrypoint.py` when run as a script.
@@ -722,3 +722,36 @@ synthetic data only. Not closable in code: accuracy against real examiner findin
 shadow-pilot method exists and has not been run on real data), usability measured with
 examiners (F14), trends over successive real submissions (F16), a built container image and a
 CI run.
+
+### After the pass: external-review fixes (2026-10-04, `fix/mixed-batch-attribution`)
+
+- **Mixed-entity batch attribution.** An external review found that `ingest_directory` set
+  `primary_entity = min(entities_present)` and filed every batch-level DQ issue under that one
+  entity: `file_unreadable`, `file_not_mapped`, `invalid_entity_id`, `missing_entity_id` and
+  `table_write_failed`. The batch id and the audit entry used it too. The bug was not in
+  EVIDENCE.md's open items; it is now item 23. Changes:
+  - File and row issues go to every entity in the batch, each with its own issue id and a note
+    naming the shared batch.
+  - A failed table goes to the entities whose rows it held, with their row counts, which are
+    taken when the table is written.
+  - A batch with several entities is `BATCH-MULTI_CSE-<hash>` in the manifest and the audit.
+  - A single-entity batch gives the same ids, details and batch id as before.
+
+  The submission manifest is **unchanged on purpose**: crediting tables only to the entities
+  with rows would hide NS04's "no cases at all" defect. Three new tests in
+  `tests/test_ingest.py`; the two attribution tests fail on the old code.
+- **Offline bundle under a deep path** (M11's open remainder, EVIDENCE item 17). The bundle
+  no longer copies `__pycache__`/`*.pyc`, and its folder and archive are renamed from
+  `satsa_offline_bundle` to `satsa_bundle`. The new name is updated in the install README the
+  packager writes, `docs/offline_install.md`, `docs/deployment_ops.md`, the CI workflow and
+  `tests/test_offline_bundle.py`; `docs/baseline_before.md` and the M11 row above keep the old
+  name as recorded. When Windows refuses a copy and the longest destination is 260 characters
+  or more, `satsa offline-bundle` stops with `BundlePathTooLongError`, which gives the length
+  and suggests `--output-dir` or Windows long paths.
+  **Verified** from a 181-character root (a `git worktree`, venv at a short path):
+  - On unfixed `main`, the in-place `test_offline_packager` and `satsa offline-bundle` both
+    failed on `admin_change_password.html` at 260 characters.
+  - With the fix, the bundle tests (in place and default) and the command pass; the deepest
+    bundled path is 252 characters and no `.pyc` is shipped.
+  - A wheelhouse with a 79-character manylinux wheel gives the new error (290 characters),
+    and `--output-dir` with a short directory builds it.

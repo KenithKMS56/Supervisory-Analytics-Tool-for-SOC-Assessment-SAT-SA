@@ -132,6 +132,18 @@ def _partition_by_entity(frame: pl.DataFrame) -> dict[str, pl.DataFrame]:
     return {str(part["entity_id"][0]): part for part in frame.partition_by("entity_id", maintain_order=True)}
 
 
+def _rows_per_entity(frame: pl.DataFrame) -> dict[str, int]:
+    """Row count per entity_id (normalised as the batch's entities are); {} without the column."""
+    if "entity_id" not in frame.columns or frame.height == 0:
+        return {}
+    counts: dict[str, int] = {}
+    for value, n in frame.group_by("entity_id").len().iter_rows():
+        if value is not None and str(value).strip():
+            key = str(value).strip()
+            counts[key] = counts.get(key, 0) + n
+    return counts
+
+
 def _store_table(canonical_table: str) -> str:
     """Name a table is stored and queried under (`case_record` is stored as `case`)."""
     return "case" if canonical_table == "case_record" else canonical_table
@@ -769,7 +781,11 @@ class IngestionPipeline:
         if default_entity_id:
             entities_present.add(default_entity_id)
 
-        primary_entity = min(entities_present) if entities_present else "ALL_CSE"
+        # A batch with several entities is owned by none of them: its batch id and audit entry
+        # say MULTI_CSE. (They used to name the alphabetically first entity, and file every
+        # batch-level DQ issue under it.)
+        batch_entities = sorted(entities_present) or ["ALL_CSE"]
+        batch_owner = batch_entities[0] if len(batch_entities) == 1 else "MULTI_CSE"
 
         # Auto-register newly discovered entities into the entity table
         self.duckdb_store.load_table_from_parquet("entity")
@@ -824,65 +840,73 @@ class IngestionPipeline:
 
         # Run Data Quality checks per entity
         all_dq_issues = []
+
+        # A file that could not be read or mapped, or a row with no usable entity_id, belongs
+        # to no known entity: each entity in the batch gets the issue, since any of its rules
+        # may depend on what was lost.
+        shared_note = (
+            f" Submitted in a batch shared by {len(batch_entities)} entities ({', '.join(batch_entities)})."
+            if len(batch_entities) > 1
+            else ""
+        )
+
+        def batch_issues(prefix: str, suffix: str, details: str, **fields: Any) -> list[DQIssue]:
+            return [
+                DQIssue(issue_id=f"{prefix}-{ent}-{suffix}", entity_id=ent, details=details + shared_note, **fields)
+                for ent in batch_entities
+            ]
+
         if unreadable_files:
-            all_dq_issues.append(
-                DQIssue(
-                    issue_id=f"DQ-UNREADABLE-{primary_entity}-{'-'.join(sorted(unreadable_files))[:80]}",
-                    entity_id=primary_entity,
+            all_dq_issues.extend(
+                batch_issues(
+                    "DQ-UNREADABLE",
+                    "-".join(sorted(unreadable_files))[:80],
+                    f"{len(unreadable_files)} submitted file(s) could not be read and were not ingested: "
+                    f"{', '.join(sorted(unreadable_files))}. Rules that depend on their tables are unreliable "
+                    "until the files are fixed and re-submitted.",
                     check_name="file_unreadable",
                     severity="error",
                     count=len(unreadable_files),
                     sample_records=sorted(unreadable_files)[:5],
-                    details=(
-                        f"{len(unreadable_files)} submitted file(s) could not be read and were not ingested: "
-                        f"{', '.join(sorted(unreadable_files))}. Rules that depend on their tables are unreliable "
-                        "until the files are fixed and re-submitted."
-                    ),
                 )
             )
         if unmapped_files:
-            all_dq_issues.append(
-                DQIssue(
-                    issue_id=f"DQ-UNMAPPED-FILE-{primary_entity}-{'-'.join(sorted(unmapped_files))[:80]}",
-                    entity_id=primary_entity,
+            all_dq_issues.extend(
+                batch_issues(
+                    "DQ-UNMAPPED-FILE",
+                    "-".join(sorted(unmapped_files))[:80],
+                    f"{len(unmapped_files)} file(s) are not described by the source mapping and were not "
+                    f"ingested: {', '.join(sorted(unmapped_files))}.",
                     check_name="file_not_mapped",
                     severity="warning",
                     count=len(unmapped_files),
                     sample_records=sorted(unmapped_files)[:5],
-                    details=(
-                        f"{len(unmapped_files)} file(s) are not described by the source mapping and were not "
-                        f"ingested: {', '.join(sorted(unmapped_files))}."
-                    ),
                 )
             )
         for tbl, bad_ids in sorted(rejected_ids.items()):
-            all_dq_issues.append(
-                DQIssue(
-                    issue_id=f"DQ-INVALID-ENTITY-ID-{primary_entity}-{tbl}",
-                    entity_id=primary_entity,
+            all_dq_issues.extend(
+                batch_issues(
+                    "DQ-INVALID-ENTITY-ID",
+                    tbl,
+                    f"{len(bad_ids)} '{tbl}' rows rejected: entity_id does not match "
+                    "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ (rows were not stored or evaluated).",
                     check_name="invalid_entity_id",
                     severity="error",
                     count=len(bad_ids),
                     sample_records=[repr(b)[:80] for b in bad_ids[:5]],
-                    details=(
-                        f"{len(bad_ids)} '{tbl}' rows rejected: entity_id does not match "
-                        "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ (rows were not stored or evaluated)."
-                    ),
                 )
             )
         for tbl, n in sorted(unattributed.items()):
-            all_dq_issues.append(
-                DQIssue(
-                    issue_id=f"DQ-MISSING-ENTITY-ID-{primary_entity}-{tbl}",
-                    entity_id=primary_entity,
+            all_dq_issues.extend(
+                batch_issues(
+                    "DQ-MISSING-ENTITY-ID",
+                    tbl,
+                    f"{n} '{tbl}' rows rejected: no entity_id and no target entity "
+                    "selected (rows were not stored or evaluated).",
                     check_name="missing_entity_id",
                     severity="error",
                     count=n,
                     sample_records=[],
-                    details=(
-                        f"{n} '{tbl}' rows rejected: no entity_id and no target entity "
-                        "selected (rows were not stored or evaluated)."
-                    ),
                 )
             )
         no_ids = pl.Series([], dtype=pl.String)
@@ -987,48 +1011,52 @@ class IngestionPipeline:
         # only after all are written, so the submission is not held as frames and as DuckDB
         # tables at the same time. A reload that fails counts as a failed store, as it did
         # when the reload was part of each write.
-        failures: dict[str, tuple[int, str]] = {}
-        written: list[tuple[str, int]] = []
+        # A failed table is filed under the entities whose rows it held, each with its own row
+        # count; those counts are taken while the frame is held, for a reload that fails later.
+        failures: dict[str, tuple[int, dict[str, int], str]] = {}
+        written: list[tuple[str, int, dict[str, int]]] = []
         table_order = list(tables)
         with self.duckdb_store.deferred_reload():
             for table_name in table_order:
                 df = tables.pop(table_name)
                 if df.height:
+                    entity_rows = _rows_per_entity(df)
                     try:
                         self.duckdb_store.write_partitioned_parquet(_store_table(table_name), df)
-                        written.append((table_name, df.height))
+                        written.append((table_name, df.height, entity_rows))
                     except Exception as exc:
                         logger.exception("Failed to store table %r (%d rows)", table_name, df.height)
-                        failures[table_name] = (df.height, type(exc).__name__)
+                        failures[table_name] = (df.height, entity_rows, type(exc).__name__)
                 del df
-        for table_name, height in written:
+        for table_name, height, entity_rows in written:
             try:
                 self.duckdb_store.load_table_from_parquet(_store_table(table_name))
             except Exception as exc:
                 logger.exception("Failed to store table %r (%d rows)", table_name, height)
-                failures[table_name] = (height, type(exc).__name__)
+                failures[table_name] = (height, entity_rows, type(exc).__name__)
         failed_tables: list[str] = [t for t in table_order if t in failures]
         for table_name in failed_tables:
-            height, error = failures[table_name]
-            all_dq_issues.append(
-                DQIssue(
-                    issue_id=f"DQ-WRITE-FAILED-{primary_entity}-{table_name}",
-                    entity_id=primary_entity,
-                    check_name="table_write_failed",
-                    severity="error",
-                    count=height,
-                    sample_records=[],
-                    details=(
-                        f"Table '{table_name}' ({height} rows) could not be stored "
-                        f"({error}). Findings that depend on it are unreliable "
-                        "until the submission is re-ingested."
-                    ),
+            height, entity_rows, error = failures[table_name]
+            for ent_id, ent_rows in sorted(entity_rows.items()) or [(ent, height) for ent in batch_entities]:
+                all_dq_issues.append(
+                    DQIssue(
+                        issue_id=f"DQ-WRITE-FAILED-{ent_id}-{table_name}",
+                        entity_id=ent_id,
+                        check_name="table_write_failed",
+                        severity="error",
+                        count=ent_rows,
+                        sample_records=[],
+                        details=(
+                            f"Table '{table_name}' ({ent_rows} rows) could not be stored "
+                            f"({error}). Findings that depend on it are unreliable "
+                            "until the submission is re-ingested."
+                        ),
+                    )
                 )
-            )
 
         # Build manifest and append to audit log
         batch, _manifest_dict = ManifestBuilder.build_manifest(
-            entity_id=primary_entity, files=list(dict.fromkeys(processed_files)), row_counts=row_counts
+            entity_id=batch_owner, files=list(dict.fromkeys(processed_files)), row_counts=row_counts
         )
         # Submission manifest: every entity in this batch submitted these tables. A table whose
         # file failed to store is not counted, so its rules are not assessed on missing data.
@@ -1072,7 +1100,7 @@ class IngestionPipeline:
             actor="pipeline",
             details={
                 "batch_id": batch.batch_id,
-                "entity_id": primary_entity,
+                "entity_id": batch_owner,
                 "files_count": len(set(processed_files)),
                 "row_counts": row_counts,
                 "entities_detected": sorted(entities_present),

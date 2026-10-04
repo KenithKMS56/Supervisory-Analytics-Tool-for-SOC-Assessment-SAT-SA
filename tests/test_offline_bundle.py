@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from satsa.bundle.packager import OfflinePackager, WheelhouseError
+import satsa.bundle.packager as packager_module
+from satsa.bundle.packager import BundlePathTooLongError, OfflinePackager, WheelhouseError
 from satsa.cli import app
 
 PIP_INSTALL = re.compile(r"\bpip install\b[^\n]*")
@@ -100,8 +101,8 @@ def test_the_wheelhouse_is_copied_into_the_bundle_and_archive(tmp_path):
     assert (copied / "requirements.txt").read_bytes() == (wheelhouse / "requirements.txt").read_bytes()
     with tarfile.open(archive) as tar:
         names = set(tar.getnames())
-    assert "satsa_offline_bundle/wheelhouse/satsa-0.1.0-py3-none-any.whl" in names
-    assert "satsa_offline_bundle/wheelhouse/requirements.txt" in names
+    assert "satsa_bundle/wheelhouse/satsa-0.1.0-py3-none-any.whl" in names
+    assert "satsa_bundle/wheelhouse/requirements.txt" in names
     assert "wheelhouse: included" in (packager.bundle_dir / "README_OFFLINE.md").read_text(encoding="utf-8")
 
 
@@ -122,9 +123,59 @@ def test_offline_bundle_command_honours_output_dir_and_wheelhouse(tmp_path):
     out = tmp_path / "out"
     result = CliRunner().invoke(app, ["offline-bundle", "--output-dir", str(out), "--wheelhouse", str(wheelhouse)])
     assert result.exit_code == 0, result.output
-    assert (out / "satsa_offline_bundle.tar.gz").exists()
-    assert (out / "satsa_offline_bundle" / "wheelhouse" / "satsa-0.1.0-py3-none-any.whl").exists()
+    assert (out / "satsa_bundle.tar.gz").exists()
+    assert (out / "satsa_bundle" / "wheelhouse" / "satsa-0.1.0-py3-none-any.whl").exists()
 
     bad = CliRunner().invoke(app, ["offline-bundle", "--output-dir", str(out), "--wheelhouse", str(tmp_path)])
     assert bad.exit_code == 1
     assert "is not a wheelhouse" in " ".join(bad.output.split())
+
+
+def _fake_root(root: Path) -> Path:
+    """A project root holding sources, their bytecode and a config: enough to bundle."""
+    package = root / "src" / "pkg"
+    (package / "__pycache__").mkdir(parents=True)
+    (package / "mod.py").write_text("X = 1\n", encoding="utf-8")
+    (package / "__pycache__" / "mod.cpython-313.pyc").write_bytes(b"bytecode")
+    (package / "stale.pyc").write_bytes(b"bytecode")
+    (root / "config").mkdir()
+    (root / "config" / "rules.yaml").write_text("rules: {}\n", encoding="utf-8")
+    (root / "Containerfile").write_text("FROM scratch\n", encoding="utf-8")
+    return root
+
+
+def test_bytecode_is_not_shipped_in_the_bundle(tmp_path):
+    # Bytecode made the deepest paths in the bundle (EVIDENCE.md item 17) and is rebuilt on install.
+    packager = OfflinePackager(root_dir=_fake_root(tmp_path / "root"), dist_dir=tmp_path / "out")
+    archive = packager.create_bundle(output_tar=True)
+    shipped = [p.relative_to(packager.bundle_dir).as_posix() for p in packager.bundle_dir.rglob("*")]
+    assert "src/pkg/mod.py" in shipped
+    assert not [p for p in shipped if "__pycache__" in p or p.endswith((".pyc", ".pyo"))], shipped
+    with tarfile.open(archive) as tar:
+        names = tar.getnames()
+    assert "satsa_bundle/src/pkg/mod.py" in names
+    assert not [n for n in names if "__pycache__" in n or n.endswith(".pyc")], names
+
+
+def test_a_path_too_long_for_windows_is_explained_not_crashed_on(tmp_path, monkeypatch):
+    def refused(*_args, **_kwargs):
+        raise FileNotFoundError("[WinError 3] The system cannot find the path specified")
+
+    monkeypatch.setattr(packager_module.shutil, "copytree", refused)
+    monkeypatch.setattr(packager_module, "_WINDOWS", True)
+    packager = OfflinePackager(root_dir=_fake_root(tmp_path / "root"), dist_dir=tmp_path / "out")
+    shipped = [packager.bundle_dir / "src" / "pkg" / "mod.py", packager.bundle_dir / "config" / "rules.yaml"]
+    deepest = max(map(str, shipped), key=len)  # the bytecode, not shipped, would be deeper still
+
+    monkeypatch.setattr(packager_module, "_WINDOWS_MAX_PATH", len(deepest))
+    with pytest.raises(BundlePathTooLongError) as raised:
+        packager.create_bundle(output_tar=False)
+    message = str(raised.value)
+    assert f"{len(deepest)}-character path ({deepest})" in message
+    assert "--output-dir" in message and "long paths" in message
+
+    # A copy that fails for another reason is not passed off as a path-length problem.
+    monkeypatch.setattr(packager_module, "_WINDOWS_MAX_PATH", len(deepest) + 1)
+    with pytest.raises(FileNotFoundError) as other:
+        packager.create_bundle(output_tar=False)
+    assert not isinstance(other.value, BundlePathTooLongError)
