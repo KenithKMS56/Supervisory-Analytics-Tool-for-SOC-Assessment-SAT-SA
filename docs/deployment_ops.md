@@ -16,8 +16,8 @@ they stop with an error. Full procedure and its limits: [offline_install.md](off
 
 1. Extract the offline distribution archive:
    ```bash
-   tar -xzf dist/satsa_offline_bundle.tar.gz
-   cd satsa_offline_bundle
+   tar -xzf dist/satsa_bundle.tar.gz
+   cd satsa_bundle
    ```
 2. Run the automated air-gapped setup script:
    - **Linux / RHEL / Ubuntu:** `bash install_offline.sh`

@@ -38,7 +38,7 @@ from the lock), and `uv build --wheel` for SAT-SA itself.
 uv run satsa offline-bundle --wheelhouse wheelhouse --output-dir dist
 ```
 
-This writes `dist/satsa_offline_bundle.tar.gz` with the sources, `config/`, the wheelhouse, the
+This writes `dist/satsa_bundle.tar.gz` with the sources, `config/`, the wheelhouse, the
 `Containerfile`, `install_offline.sh`, `install_offline.bat` and `README_OFFLINE.md`. Without
 `--wheelhouse` the command uses `./wheelhouse` if it exists; otherwise it builds a bundle
 without one, warns, and the install scripts in that bundle refuse to run.
@@ -48,8 +48,8 @@ Move the archive to the air-gapped machine on approved media.
 ## 3. Install (on the air-gapped machine)
 
 ```bash
-tar -xzf satsa_offline_bundle.tar.gz
-cd satsa_offline_bundle
+tar -xzf satsa_bundle.tar.gz
+cd satsa_bundle
 bash install_offline.sh          # Windows: install_offline.bat
 ```
 
