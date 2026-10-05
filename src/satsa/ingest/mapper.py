@@ -14,6 +14,13 @@ from typing import Any
 import yaml
 
 from satsa.ingest.normaliser import TaxonomyNormaliser
+from satsa.ingest.sanitise import (
+    header_key,
+    parse_bool,
+    parse_datetime_text,
+    parse_literal,
+    parse_number,
+)
 
 TIMESTAMP_FIELDS = frozenset(
     {
@@ -38,6 +45,10 @@ TAXONOMY_KIND = {
 }
 
 
+# Value transforms a mapping column may name (`transform: <name>`).
+TRANSFORMS = frozenset({"length", "boolean", "number"})
+
+
 class MappingError(ValueError):
     """The mapping file is unusable. Raised when it is loaded, before any row is read."""
 
@@ -58,8 +69,11 @@ def _parse_utc_offset(text: str) -> timezone:
 def parse_source_timestamp(val: Any, ts_format: str, source_tz: timezone = UTC) -> datetime | None:
     """Parse a source timestamp into a naive UTC datetime (what the stores hold).
 
-    `ts_format` is `epoch_ms`, `epoch_s`, `iso`, or a strptime pattern. A value that carries no
-    offset of its own is read as local time in `source_tz`. Unparseable values give None.
+    `ts_format` is `epoch_ms`, `epoch_s`, `iso`, or a strptime pattern. A value that does not
+    match it is tried against the common written forms (`sanitise.parse_datetime_text`:
+    "Oct 1st 2026 22:53:09", "1 Oct 2026", ...); an ambiguous numeric date such as 03/04/2026
+    still gives None unless the pattern states the order. A value that carries no offset of its
+    own is read as local time in `source_tz`. Unparseable values give None.
     """
     if val is None or val == "":
         return None
@@ -83,7 +97,9 @@ def parse_source_timestamp(val: Any, ts_format: str, source_tz: timezone = UTC) 
             try:
                 parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
             except ValueError:
-                return None
+                parsed = parse_datetime_text(text)
+        if parsed is None:
+            return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=source_tz)
     return parsed.astimezone(UTC).replace(tzinfo=None)
@@ -123,9 +139,18 @@ class TableSpec:
     columns: dict[str, dict[str, Any]]
     required: list[str] = field(default_factory=list)
     where: dict[str, list[str]] = field(default_factory=dict)
+    # Columns that identify the export whatever the file is called (compared by header_key).
+    headers: list[str] = field(default_factory=list)
 
-    def matches(self, file_stem: str) -> bool:
+    def matches(self, file_stem: str, headers: list[str] | None = None) -> bool:
+        return self.matches_name(file_stem) or self.matches_headers(headers or [])
+
+    def matches_name(self, file_stem: str) -> bool:
         return any(fnmatch(file_stem.lower(), pattern.lower()) for pattern in self.files)
+
+    def matches_headers(self, headers: list[str]) -> bool:
+        present = {header_key(h) for h in headers}
+        return bool(self.headers) and all(header_key(h) in present for h in self.headers)
 
     def source_columns(self) -> set[str]:
         """Raw columns this spec reads (mapped columns and the ones its conditions look at)."""
@@ -147,6 +172,9 @@ class MappedTable:
     skipped_by_filter: int
     dropped_missing_required: int
     filled: dict[str, int]
+    # "missing created_at" -> positions in the file's rows of the rows dropped for it
+    rejected: dict[str, list[int]] = field(default_factory=dict)
+    positions: list[int] = field(default_factory=list)  # of each row in `rows`
 
 
 class SourceMapping:
@@ -193,14 +221,22 @@ class SourceMapping:
             table = entry.get("table")
             files = entry.get("files") or []
             columns = entry.get("columns") or {}
-            if not table or not files or not columns:
-                raise MappingError(f"{self.path.name}: every table needs `table`, `files` and `columns`.")
+            if not table or not (files or entry.get("headers")) or not columns:
+                raise MappingError(
+                    f"{self.path.name}: every table needs `table`, `files` and `columns` (`headers` can stand in for `files`)."
+                )
             normalised: dict[str, dict[str, Any]] = {}
             for canonical, spec in columns.items():
                 spec = {"column": spec} if isinstance(spec, str | list) else dict(spec or {})
                 if "column" not in spec and "const" not in spec:
                     raise MappingError(
                         f"{self.path.name}: {table}.{canonical} needs a source `column` or a `const`."
+                    )
+                transform = spec.get("transform")
+                if transform is not None and transform not in TRANSFORMS:
+                    raise MappingError(
+                        f"{self.path.name}: {table}.{canonical} transform {transform!r} is not one of "
+                        f"{', '.join(sorted(TRANSFORMS))}."
                     )
                 values = spec.get("values")
                 if values is not None and values not in self.value_maps:
@@ -219,12 +255,18 @@ class SourceMapping:
                     columns=normalised,
                     required=list(entry.get("required") or []),
                     where={k: [str(x) for x in _as_list(v)] for k, v in (entry.get("where") or {}).items()},
+                    headers=[str(h) for h in _as_list(entry.get("headers") or [])],
                 )
             )
         return specs
 
-    def specs_for_file(self, file_stem: str) -> list[TableSpec]:
-        return [spec for spec in self.tables if spec.matches(file_stem)]
+    def specs_for_file(self, file_stem: str, headers: list[str] | None = None) -> list[TableSpec]:
+        """Tables a file feeds: by its name, or by the columns a table lists under `headers:`."""
+        return [spec for spec in self.tables if spec.matches(file_stem, headers)]
+
+    def identifies(self, headers: list[str]) -> bool:
+        """True if these columns are the export a table of this mapping lists under `headers:`."""
+        return any(spec.matches_headers(headers) for spec in self.tables)
 
     def build_lookups(self, files: dict[str, list[dict[str, Any]]]) -> None:
         """Index the batch's files for columns that translate an id through another export.
@@ -251,8 +293,16 @@ class SourceMapping:
     def _convert(self, canonical: str, spec: dict[str, Any], raw: Any) -> Any:
         if spec.get("transform") == "length":
             return 0 if _blank(raw) else len(str(raw))
+        if "extract" in spec:
+            raw = _extract(raw, spec["extract"])
         if _blank(raw):
             return spec.get("default")
+        if spec.get("transform") == "boolean":
+            flag = parse_bool(raw)
+            return spec.get("default") if flag is None else flag
+        if spec.get("transform") == "number":
+            number = parse_number(raw)
+            return spec.get("default") if number is None else number
         lookup = spec.get("lookup")
         if lookup:
             ident = (str(lookup["files"]), str(lookup["key"]), str(lookup["value"]))
@@ -272,14 +322,18 @@ class SourceMapping:
         if canonical in TAXONOMY_KIND:
             normalise = getattr(self.normaliser, f"normalise_{TAXONOMY_KIND[canonical]}")
             return normalise(text)
-        return text if isinstance(raw, str) else raw
+        # Identifiers are text in every canonical table, even where an export's ids look like
+        # numbers (XSIAM case 241806): a numeric id would clash with the same table's text ids.
+        return text if isinstance(raw, str) or canonical.endswith("_id") else raw
 
     def map_rows(self, raw_rows: list[dict[str, Any]], spec: TableSpec, entity_id: str) -> MappedTable:
         """Canonical rows for `spec.table`. Only mapped fields are emitted: no raw column passes through."""
         rows: list[dict[str, Any]] = []
         filled = dict.fromkeys(spec.columns, 0)
         skipped = dropped = 0
-        for raw in raw_rows:
+        rejected: dict[str, list[int]] = {}
+        positions: list[int] = []
+        for position, raw in enumerate(raw_rows):
             if any(str(_lookup(raw, col)).strip() not in allowed for col, allowed in spec.where.items()):
                 skipped += 1
                 continue
@@ -293,13 +347,16 @@ class SourceMapping:
                     row[canonical] = col_spec["const"]
                 else:
                     row[canonical] = self._convert(canonical, col_spec, _lookup(raw, col_spec["column"]))
-            if any(_blank(row.get(name)) for name in spec.required):
+            missing = [name for name in spec.required if _blank(row.get(name))]
+            if missing:
                 dropped += 1
+                rejected.setdefault(f"missing {', '.join(missing)}", []).append(position)
                 continue
             for canonical in spec.columns:
                 if not _blank(row.get(canonical)):
                     filled[canonical] += 1
             rows.append(row)
+            positions.append(position)
         return MappedTable(
             table=spec.table,
             rows=rows,
@@ -307,7 +364,27 @@ class SourceMapping:
             skipped_by_filter=skipped,
             dropped_missing_required=dropped,
             filled=filled,
+            rejected=rejected,
+            positions=positions,
         )
+
+
+def _extract(raw: Any, path: Any) -> Any:
+    """Value inside a cell that holds a dict/list literal: `extract: total_duration` or `a.0.b`.
+
+    `{'total_duration': 1295, 'status': 'ended'}` (a Python repr, as some exports write it) and
+    JSON are both read; a cell that is not such a literal, or lacks the key, gives None.
+    """
+    current = parse_literal(raw) if isinstance(raw, str) else raw
+    for part in str(path).split("."):
+        if isinstance(current, dict):
+            current = current.get(part)
+        elif isinstance(current, list) and part.lstrip("-").isdigit():
+            index = int(part)
+            current = current[index] if -len(current) <= index < len(current) else None
+        else:
+            return None
+    return current
 
 
 def _as_list(value: Any) -> list[Any]:

@@ -1,20 +1,28 @@
-# SAT-SA Source Connectors: Splunk ES, ServiceNow SIR, TheHive 5
+# SAT-SA Source Connectors: Splunk ES, ServiceNow SIR, TheHive 5, Cortex XSIAM
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-A CSE does not have to re-shape its data into SAT-SA's canonical CSV layout. For three products,
+A CSE does not have to re-shape its data into SAT-SA's canonical CSV layout. For four products,
 a mapping in `config/mappings/` translates the product's own export:
 
 ```bash
 satsa ingest --data-dir <export dir> --source splunk     --entity CSE-07
 satsa ingest --data-dir <export dir> --source servicenow --entity CSE-07
 satsa ingest --data-dir <export dir> --source thehive    --entity CSE-07
+satsa ingest --data-dir <export dir> --source xsiam      --entity CSE-07
 satsa ingest --data-dir <export dir> --mapping my_mapping.yaml --entity CSE-07   # any other product
 ```
 
 `--entity` is required: a product export does not say which CSE it belongs to. Several exports
 can be ingested for the same entity (a SIEM export and a ticketing export); what the entity has
 submitted accumulates, and so does the set of rules that can be assessed.
+
+**Recognised by its columns.** A mapping can list, per table, the columns that identify its
+export (`headers:`). When every file of a submission is one product's export and at least one
+file carries those columns, `satsa ingest` without `--source` and the `/upload` page use that
+mapping, whatever the files are called (`detect_source_mapping`). This is an exact match on
+column names the mapping declares; a canonical submission, or one mixing a product export with
+canonical files, is read in the canonical layout. The XSIAM mapping is the first to use it.
 
 **What has and has not been verified.** The sample exports in `tests/fixtures/connectors/` are
 hand-built (`build_fixtures.py`) to the field names of each product's export or API schema as
@@ -104,6 +112,36 @@ Files: `thehive_alerts*.json` (`listAlert`) and `thehive_cases*.json` (`listCase
 Not in these exports: workflow events (TheHive's audit trail is a separate API), closures,
 escalations, external reports and the supporting tables.
 
+### 1.4 Cortex XSIAM (`config/mappings/cse_cortex_xsiam.yaml`)
+
+File: the case list exported from the Cases page (CSV, 57 columns), under any name: it is
+recognised by its `Case ID`, `Creation Time`, `Resolution Reason` and `Case Domain` columns.
+The export is Windows-1252 text with dates such as `Oct 1st 2026 22:31:34`; both are read as
+they are.
+
+**Built from one real export holding one case.** That export also held 5,476 rows of empty cells
+and 1,266 rows with only a pasted `Investigation_time` value and no case id: these are reported
+as rejected rows (`rows_rejected`, with their row numbers), not stored. The tests use a synthetic
+export with the same columns, encoding and quirks (`tests/test_xsiam_mapping.py`); the real one
+is not committed, since it names people and a customer. Values the mapping names but that export
+did not contain (statuses `New`, `Under Investigation`) are marked "not seen" in the file.
+
+| Canonical field | Source column | Note |
+|---|---|---|
+| `case.case_id` | `Case ID` | stored as text |
+| `case.severity` | `Severity` | Low / Medium / High / Critical |
+| `case.status` | `Status` | Resolved is `closed`; New and Under Investigation are `open` |
+| `case.owner` | `Assignee` | pseudonymised |
+| `case.opened_at` | `Creation Time` | local time at `utc_offset` (+05:30 assumed: the export does not record its zone), converted to UTC |
+| `case.closed_at` | `Resolved Timestamp` | |
+
+Not mapped, on purpose: `Resolution Reason` and `Resolution Comment` (SAT-SA's closure table
+belongs to alerts, and EG02/EG04 join it to alert ids: closures keyed by case id would never be
+read, yet would mark those rules as assessed); `Total Issues` and the per-severity issue counts
+(counts, not alerts: alerts come from the XSIAM Issues export, which this mapping does not
+cover); `Assignee Email`, `Users`, `Case Description`, `Indicator IDs` (personal or free-text data
+no rule reads). The ingest report lists every unused column.
+
 ---
 
 ## 2. Which rules each source can support
@@ -121,6 +159,7 @@ Measured on the sample exports, one entity each:
 | Splunk ES | 8: EG01, EG02, EG04, EG07, EG11, NS02, NS03, NS08 | none | 12: EG03, EG08 (escalation); EG05 (remediation); EG06 (sla_policy); EG09, EG12 (case); EG10 (declared_kpi); NS01, NS06 (asset, log_source_daily); NS04 (case_alert_link); NS05 (detection_rule); NS07 (case, external_report) |
 | ServiceNow SIR | 2: EG09, EG12 | none | 18: the 15 alert-based rules (no alert table); EG08 (escalation); NS01 (asset, log_source_daily); NS07 (external_report) |
 | TheHive 5 | 5: EG07, EG09, NS02, NS03, NS08 | 2: EG11, NS04 (`alert.disposition` empty) | 13: EG01, EG12 (workflow_event); EG02 (workflow_event, closure); EG04 (closure); EG03, EG08 (escalation); EG05 (remediation); EG06 (sla_policy); EG10 (declared_kpi); NS01, NS06 (asset, log_source_daily); NS05 (detection_rule); NS07 (external_report) |
+| Cortex XSIAM case list | 1: EG09 | none | 19: the 15 alert-based rules (no alert table); EG08 (escalation); EG12 (workflow_event); NS01 (asset, log_source_daily); NS07 (external_report) |
 | Splunk ES + ServiceNow SIR, same entity | 10: the Splunk eight plus EG09, EG12 | none | 10 |
 
 No single product export supports all 20 rules. The tables a product does not hold (asset
@@ -188,6 +227,7 @@ sequential_ids: false                      # ids are not a running counter: skip
 tables:
   - table: alert                           # canonical table this file feeds
     files: ["alerts_export*"]              # file-name patterns (without extension)
+    headers: ["Alert Id", "Detected On"]   # optional: columns that identify the export by content
     required: [alert_id, created_at]       # rows lacking these are dropped
     where: {record_type: [alert]}          # optional row filter on source columns
     columns:
@@ -210,6 +250,8 @@ A mapping with no `tables:` section, an undefined value map, a named time zone (
 Values not covered by `value_mappings` fall back to `config/taxonomy.yaml`; what that does not
 recognise becomes `unmapped` and shows up in the field report.
 
-**Not covered yet:** the `/upload` page of the web UI accepts the canonical layout only;
-product exports go through the CLI. The REST ticketing mapping (`cse_api_ticketing.yaml`) is a
-single-record mapping for `SourceAdapter.read_api` and is not a pipeline mapping.
+**Not covered yet:** the `/upload` page translates a product export only when its mapping
+lists `headers:` (so far XSIAM); other product exports go through the CLI. A submission mixing a
+product export with canonical files is read in the canonical layout. The REST ticketing mapping
+(`cse_api_ticketing.yaml`) is a single-record mapping for `SourceAdapter.read_api` and is not a
+pipeline mapping.
