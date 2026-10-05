@@ -14,7 +14,7 @@
 <div class="card" style="margin-bottom: 1.5rem;">
   <form method="get" action="/blind-review" style="display: flex; gap: 1rem; align-items: center;">
     <label style="font-weight: 600;">Select Entity to Audit:</label>
-    <select name="entity_id" class="form-control" style="width: 250px;" onchange="this.form.submit()">
+    <select name="entity_id" class="form-control" style="width: 250px;" onchange="this.form.requestSubmit()">
       {% for ent in all_entities %}
         <option value="{{ ent }}" {% if selected_entity == ent %}selected{% endif %}>{{ ent }}</option>
       {% endfor %}

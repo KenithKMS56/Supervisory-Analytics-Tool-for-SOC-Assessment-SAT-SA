@@ -316,6 +316,149 @@
     })();
   </script>
   {% endif %}
+
+  <script>
+    /* In-place form actions. The routes answer every form with Post/Redirect/Get,
+       which on its own reloads the whole page: a flash, a jump to the top, and no
+       sign of progress during a long upload. Here a submit goes through fetch and
+       only <main> is swapped for the page the server sends back, keeping the
+       scroll position and the nav. A redirect to a different page (a lapsed
+       session, the demo run) still navigates for real, as do the auth forms and
+       any form marked data-full-reload. */
+    (function () {
+      var FULL_RELOAD_PATHS = ['/login', '/logout', '/change-password'];
+      var pushedHistory = false;
+
+      function runScripts(root) {
+        root.querySelectorAll('script').forEach(function (old) {
+          var fresh = document.createElement('script');
+          for (var i = 0; i < old.attributes.length; i++) {
+            fresh.setAttribute(old.attributes[i].name, old.attributes[i].value);
+          }
+          fresh.textContent = old.textContent;
+          old.replaceWith(fresh);
+        });
+      }
+
+      function swapMain(html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        var next = doc.querySelector('main');
+        var main = document.querySelector('main');
+        if (!next || !main) return false;
+        var y = window.scrollY;
+        main.innerHTML = next.innerHTML;
+        if (doc.title) document.title = doc.title;
+        runScripts(main);
+        window.scrollTo(0, y);
+        // The action's outcome is reported in a banner at the top of the page.
+        var banner = main.querySelector('.notice-banner');
+        if (banner && banner.getBoundingClientRect().top < 0) {
+          banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        return true;
+      }
+
+      function showError(text) {
+        var main = document.querySelector('main');
+        if (!main) return;
+        var old = main.querySelector('.satsa-action-error');
+        if (old) old.remove();
+        var div = document.createElement('div');
+        div.className = 'notice-banner satsa-action-error';
+        div.setAttribute('role', 'alert');
+        div.style.borderColor = 'var(--risk-crit)';
+        var strong = document.createElement('strong');
+        strong.textContent = 'Action failed: ';
+        div.appendChild(strong);
+        div.appendChild(document.createTextNode(text));
+        main.insertBefore(div, main.firstChild);
+        div.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+
+      function errorText(res, body) {
+        try {
+          var detail = JSON.parse(body).detail;
+          if (typeof detail === 'string') return detail;
+          if (detail) return JSON.stringify(detail);
+        } catch (e) {}
+        return 'the server answered ' + res.status + ' ' + (res.statusText || '');
+      }
+
+      function setBusy(form, submitter, busy) {
+        form.dataset.satsaBusy = busy ? '1' : '';
+        form.setAttribute('aria-busy', busy ? 'true' : 'false');
+        form.querySelectorAll('button[type="submit"], input[type="submit"], button:not([type])').forEach(function (b) {
+          b.disabled = busy;
+        });
+        if (submitter && submitter.tagName === 'BUTTON') {
+          if (busy) {
+            submitter.dataset.satsaLabel = submitter.innerHTML;
+            submitter.textContent = 'Working…';
+          } else if (submitter.dataset.satsaLabel) {
+            submitter.innerHTML = submitter.dataset.satsaLabel;
+          }
+        }
+        document.body.style.cursor = busy ? 'progress' : '';
+      }
+
+      document.addEventListener('submit', function (evt) {
+        var form = evt.target;
+        // An inline onsubmit="return confirm(...)" that was declined has already cancelled it.
+        if (evt.defaultPrevented || !(form instanceof HTMLFormElement)) return;
+        if (form.hasAttribute('data-full-reload') || (form.target && form.target !== '_self')) return;
+
+        var submitter = evt.submitter || null;
+        var action = new URL((submitter && submitter.getAttribute('formaction')) || form.action, location.href);
+        if (action.origin !== location.origin || FULL_RELOAD_PATHS.indexOf(action.pathname) !== -1) return;
+
+        evt.preventDefault();
+        if (form.dataset.satsaBusy) return; // no double submit while one is in flight
+
+        var method = ((submitter && submitter.getAttribute('formmethod')) || form.method || 'get').toUpperCase();
+        var data;
+        try { data = new FormData(form, submitter); } catch (e) { data = new FormData(form); }
+        var opts = { method: method, credentials: 'same-origin', headers: { 'X-Requested-With': 'fetch' } };
+        if (method === 'GET') {
+          action.search = new URLSearchParams(data).toString();
+        } else {
+          opts.body = data;
+        }
+
+        setBusy(form, submitter, true);
+        fetch(action.href, opts)
+          .then(function (res) {
+            var landed = new URL(res.url);
+            if (res.redirected && landed.pathname !== location.pathname) {
+              location.assign(res.url);
+              return;
+            }
+            return res.text().then(function (body) {
+              var isHtml = (res.headers.get('content-type') || '').indexOf('text/html') !== -1;
+              if (!isHtml || !swapMain(body)) {
+                setBusy(form, submitter, false);
+                showError(errorText(res, body));
+                return;
+              }
+              if (method === 'GET') {
+                history.pushState({ satsaSwap: true }, '', res.url);
+                pushedHistory = true;
+              } else if (res.redirected) {
+                history.replaceState(null, '', res.url);
+              }
+            });
+          })
+          .catch(function () {
+            setBusy(form, submitter, false);
+            showError('could not reach the SAT-SA server. Check it is still running and try again.');
+          });
+      });
+
+      // Back/forward across a swapped filter search: load that URL for real.
+      window.addEventListener('popstate', function () {
+        if (pushedHistory) location.reload();
+      });
+    })();
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
