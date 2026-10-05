@@ -38,7 +38,7 @@ from satsa.auth.session import (
 )
 from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
 from satsa.explain.finding_card import WHY_IT_MATTERS, FindingCard
-from satsa.ingest.pipeline import IngestionPipeline, default_entity_record
+from satsa.ingest.pipeline import IngestionPipeline, default_entity_record, detect_source_mapping
 from satsa.models.canonical import Entity
 from satsa.models.outputs import ExaminerFeedback
 from satsa.netguard import install_egress_guard, uninstall_egress_guard
@@ -1776,14 +1776,29 @@ def handle_upload(
                             safe_archive_member(member)
                         z.extractall(tmp_path)
 
-            res = pipeline.ingest_directory(
-                tmp_path, default_entity_id=target_clean
-            )
+            # A product export (e.g. a Cortex XSIAM case list) is recognised by its own columns
+            # and translated by its mapping; anything else is read in the canonical layout.
+            mapping = detect_source_mapping(tmp_path, MAPPINGS_DIR)
+            if mapping is not None and not (target_clean or mapping.entity_id):
+                res: dict[str, Any] = {
+                    "status": "error",
+                    "message": (
+                        f"This is a {mapping.source} export, which does not say which CSE it "
+                        "belongs to: choose a target entity and upload it again."
+                    ),
+                }
+            else:
+                res = pipeline.ingest_directory(
+                    tmp_path, default_entity_id=target_clean, mapping=mapping
+                )
+                if mapping is not None:
+                    res["detected_source"] = mapping.source
 
             if res.get("status") == "empty":
-                msg = "Warning: No supported CSV/JSON files could be parsed from upload."
+                msg = "Warning: No supported CSV, TSV, Excel (.xlsx) or JSON files could be parsed from upload."
             elif res.get("status") == "error":
-                msg = f"Error: {res.get('message', 'Failed to ingest batch')}"
+                reason = str(res.get("message", "Failed to ingest batch"))
+                msg = f"Error: {reason[:800]}{'...' if len(reason) > 800 else ''}"
             elif res.get("status") == "partial":
                 # Do not assess on a half-stored submission: a missing table reads as a SOC defect.
                 msg = (
@@ -1817,6 +1832,23 @@ def handle_upload(
                     f"Batch ingested successfully! [{row_str}] | Entities: {detected} | "
                     f"Assessment: {run_res.get('findings_count', 0)} findings flagged."
                 )
+                if res.get("detected_source"):
+                    msg += f" | Recognised as a {res['detected_source']} export by its columns."
+                tidied = res.get("file_sanitising") or []
+                if tidied:
+                    notes = "; ".join(f"{f['file']}: {', '.join(f['notes'])}" for f in tidied)
+                    msg += f" | Read notes: {notes[:400]}{'...' if len(notes) > 400 else ''}"
+                not_whole = [
+                    f["summary"]
+                    for f in res.get("file_coverage") or []
+                    if f["status"] not in ("ingested", "empty")
+                ]
+                if not_whole:
+                    notes = "; ".join(not_whole)
+                    msg += (
+                        f" | Not fully ingested (see Data Quality): {notes[:600]}"
+                        f"{'...' if len(notes) > 600 else ''}"
+                    )
                 skipped = res.get("unattributed_rows") or {}
                 if skipped:
                     counts = ", ".join(f"{t}: {n}" for t, n in sorted(skipped.items()))
@@ -2212,6 +2244,8 @@ TUNABLE_PARAMS: list[dict[str, Any]] = [
 ]
 
 RULES_CONFIG_PATH = Path("config/rules.yaml")
+# Source mappings an upload is matched against by its columns (detect_source_mapping).
+MAPPINGS_DIR = Path("config/mappings")
 
 
 def _load_rules_config() -> dict[str, Any]:

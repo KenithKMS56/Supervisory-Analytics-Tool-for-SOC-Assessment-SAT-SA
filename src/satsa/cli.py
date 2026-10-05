@@ -48,11 +48,32 @@ SOURCE_MAPPINGS = {
     "splunk": "config/mappings/cse_splunk.yaml",
     "servicenow": "config/mappings/cse_servicenow.yaml",
     "thehive": "config/mappings/cse_thehive.yaml",
+    "xsiam": "config/mappings/cse_cortex_xsiam.yaml",
 }
+# Mappings whose `headers:` let an export be recognised by its columns (detect_source_mapping).
+MAPPINGS_DIR = "config/mappings"
 
 
 def _print_ingest_coverage(result: dict[str, Any]) -> None:
     """Say plainly what the submission does not contain and which rules that costs."""
+    for report in result.get("file_sanitising", []):
+        colour = "yellow" if report.get("long_rows_truncated") or report.get("records_skipped") else "cyan"
+        console.print(f"  * Read [{colour}]{report['file']}[/{colour}]: {'; '.join(report['notes'])}")
+    files = result.get("file_coverage", [])
+    if files:
+        stored = sum(sum(f["stored"].values()) for f in files)
+        clean = [f for f in files if f["status"] == "ingested" and not f["filtered"]]
+        console.print(
+            f"  * Files: {len(files)} submitted, {stored} rows stored"
+            + ("; every row of every file stored" if len(clean) == len(files) else "")
+        )
+        for f in files:
+            if f in clean:
+                continue
+            colour = {"unreadable": "red", "nothing stored": "red", "empty": "cyan", "ingested": "cyan"}.get(
+                f["status"], "yellow"
+            )
+            console.print(f"    - [{colour}]{f['summary']}[/{colour}]")
     if result.get("source"):
         console.print(f"  * Source mapping: [cyan]{result['source']}[/cyan]")
         for table, info in sorted(result.get("field_coverage", {}).items()):
@@ -118,7 +139,7 @@ def ingest_cmd(
     from pathlib import Path
 
     from satsa.ingest.mapper import MappingError, SourceMapping
-    from satsa.ingest.pipeline import IngestionPipeline
+    from satsa.ingest.pipeline import IngestionPipeline, detect_source_mapping
     from satsa.store.duckdb import DuckDBStore
     from satsa.store.sqlite import SQLiteStore
 
@@ -157,6 +178,17 @@ def ingest_cmd(
             + ", ".join(f"{t} ({n})" for t, n in sorted(counts.items()))
         )
         data_dir = staging.name
+
+    if mapping is None and not api_config:
+        mapping = detect_source_mapping(data_dir, MAPPINGS_DIR)
+        if mapping is not None:
+            console.print(
+                f"[bold blue]Recognised a {mapping.source} export by its columns:[/bold blue] "
+                f"translating it with [cyan]{mapping.path.name}[/cyan]"
+            )
+            if not entity and not mapping.entity_id:
+                console.print("[bold red][!] Give --entity: the export does not say which CSE it belongs to.[/bold red]")
+                raise typer.Exit(code=2)
 
     console.print(f"[bold blue]Starting ingestion from:[/bold blue] [cyan]{api_config or data_dir}[/cyan]")
     duckdb_store = DuckDBStore(parquet_dir)

@@ -4,7 +4,8 @@ Ingest reads the largest CSV of a canonical submission before the others, so tha
 memory a read needs is not added to the tables already held (it set the peak at 5,000,000
 alerts; see docs/benchmarks.md). Files are still processed in their usual order. These tests
 ingest the same submission with the early read on and off: the ingest result, every stored
-table and every DQ issue must be identical, also when the largest file cannot be read.
+table and every DQ issue must be identical, also when the largest file is only partly read
+(a row with too many cells) or cannot be read at all (locked by another program).
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ def _write(path: Path, header: list[str], rows: list[list[Any]]) -> None:
         writer.writerows(rows)
 
 
-def _submission(directory: Path, broken_largest: bool) -> None:
+def _submission(directory: Path, broken: str | None) -> None:
     directory.mkdir(parents=True)
     start = datetime(2026, 4, 1)
     _write(
@@ -58,7 +59,7 @@ def _submission(directory: Path, broken_largest: bool) -> None:
         for i in range(3000)
     ]  # fmt: skip
     _write(directory / "workflow_event.csv", ["entity_id", "ref_type", "ref_id", "ts", "actor", "action"], events)
-    if broken_largest:
+    if broken == "ragged":
         with open(directory / "workflow_event.csv", "a", encoding="utf-8") as fh:
             fh.write("CSE-A,alert,AL-00001,2026-04-01T00:00:00,dave,triage,one,too,many\n")
     alerts = [
@@ -71,17 +72,19 @@ def _submission(directory: Path, broken_largest: bool) -> None:
     (directory / "alert.json").write_text(json.dumps(alerts), encoding="utf-8")
 
 
-def _ingest(root: Path, early: bool, broken_largest: bool, monkeypatch) -> dict[str, Any]:
+def _ingest(root: Path, early: bool, broken: str | None, monkeypatch) -> dict[str, Any]:
     monkeypatch.setattr(pipeline_module, "READ_LARGEST_FIRST", early)
     reads: list[str] = []
     original = SourceAdapter.read_csv_frame
 
     def spy(path):
         reads.append(Path(path).name)
+        if broken == "locked" and Path(path).name == "workflow_event.csv":
+            raise PermissionError(f"{path} is open in another program")
         return original(path)
 
     monkeypatch.setattr(SourceAdapter, "read_csv_frame", staticmethod(spy))
-    _submission(root / "in", broken_largest)
+    _submission(root / "in", broken)
     (root / "salt").write_bytes(b"read-order-test-salt-32-bytes!!!")
     duck, sql = DuckDBStore(root / "pq"), SQLiteStore(root / "satsa.db")
     try:
@@ -103,19 +106,24 @@ def _ingest(root: Path, early: bool, broken_largest: bool, monkeypatch) -> dict[
         monkeypatch.undo()
 
 
-@pytest.mark.parametrize("broken_largest", [False, True])
-def test_reading_the_largest_csv_first_changes_nothing_else(tmp_path, monkeypatch, broken_largest):
-    early = _ingest(tmp_path / "early", True, broken_largest, monkeypatch)
-    plain = _ingest(tmp_path / "plain", False, broken_largest, monkeypatch)
+@pytest.mark.parametrize("broken", [None, "ragged", "locked"])
+def test_reading_the_largest_csv_first_changes_nothing_else(tmp_path, monkeypatch, broken):
+    early = _ingest(tmp_path / "early", True, broken, monkeypatch)
+    plain = _ingest(tmp_path / "plain", False, broken, monkeypatch)
     assert early["reads"][0] == "workflow_event.csv"
     assert plain["reads"][0] != "workflow_event.csv"
     assert sorted(early["reads"]) == sorted(plain["reads"])  # each file read once either way
     assert early["result"] == plain["result"]
     assert early["tables"] == plain["tables"]
     assert early["dq"] == plain["dq"]
-    if broken_largest:
+    if broken == "locked":
         assert early["result"]["unreadable_files"] == ["workflow_event.csv"]
         assert not early["tables"]["workflow_event"]
         assert any(check == "file_unreadable" for _, check, *_ in early["dq"])
+    elif broken == "ragged":
+        # The extra cells are dropped and reported; the rest of the file is kept.
+        assert early["result"]["unreadable_files"] == []
+        assert len(early["tables"]["workflow_event"]) == 3001
+        assert any(check == "file_partly_read" for _, check, *_ in early["dq"])
     else:
         assert len(early["tables"]["workflow_event"]) == 3000

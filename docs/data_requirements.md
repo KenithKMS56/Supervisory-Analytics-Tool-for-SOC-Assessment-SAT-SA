@@ -51,6 +51,70 @@ ingests; a non-loopback endpoint is refused).
 
 ---
 
+### How a file is read (any encoding, separator or format)
+
+Before any table or column is identified, every file passes through `satsa.ingest.sanitise`, so a
+file is not refused for how it was saved. What it does, and what it reports:
+
+| Input | Handling | Reported |
+|---|---|---|
+| UTF-8, UTF-8 with byte-order mark, UTF-16/32, Windows-1252 (Excel "CSV"), Latin-1 | decoded; UTF-8 is tried strictly first | the encoding, if not UTF-8 |
+| comma, semicolon, tab or pipe separators | detected from the first 64 KiB (quoting honoured); `.tsv` is always tab | the separator, if not comma |
+| `.xlsx` workbooks | first sheet read with the standard library (no new dependency); date cells become ISO timestamps; parts with a DOCTYPE, or that expand too far, are refused | the sheet name |
+| JSON array, single object, `{"data": [...]}` envelope, NDJSON | records extracted; NDJSON lines that are not JSON objects are skipped | skipped lines (DQ warning `file_partly_read`) |
+| blank rows (including `,,,` and whitespace-only) | dropped | count |
+| rows shorter than the header | filled with empty cells | count |
+| rows longer than the header | extra cells not read | count (DQ warning `file_partly_read`) |
+| blank or repeated headers; "Alert ID" vs `alert_id` | `column_<n>`, `name_2`; headers are compared case- and punctuation-insensitively | renames and collisions |
+| a column whose type changes after row 1,000 | type inferred from the whole file, else read as text | if read as text |
+| Excel lock files (`~$...`), macOS `._*` / `__MACOSX` copies | ignored | |
+
+A clean canonical CSV (UTF-8, comma, rectangular) is read exactly as before; the added cost on a
+2,000,000-row file is about 0.05 s. The notes appear in `satsa ingest` output, in the upload page's
+message and in the ingest result (`file_sanitising`). Exact-duplicate rows are **not** removed: a
+duplicated record is a data-quality signal, reported by the `duplicate_primary_keys` check.
+
+Sanitising never decides what a column means. Mapping columns to canonical fields is the job of
+the canonical layout or of a source mapping (below); a mapping can also use the value parsers
+(`transform: boolean`, `transform: number`, `extract: <key>` for cells holding a dict/list literal,
+and timestamps written as "Oct 1st 2026 22:53:09", "1 Oct 2026", epoch seconds or milliseconds).
+A numeric date that reads differently day-first and month-first (03/04/2026) is never guessed:
+it stays empty unless the mapping's `timestamp_format` states the order.
+
+### What became of every file and row
+
+Every ingest says, per file, how many rows were read, how many were stored in each table, how
+many the mapping leaves out of a table on purpose, and how many were rejected, with the reason and
+the row as the file numbers it (a spreadsheet's row number with the header as row 1, a JSON
+record, an NDJSON line). It is in the ingest result (`file_coverage`), in `satsa ingest` output
+and in the upload page's message:
+
+```
+cases.csv: 4 row(s) read, 2 into case; 1 rejected, missing case_id for case (rows 4);
+  1 rejected, missing opened_at for case (rows 5)
+thehive_alerts.json: 94 record(s) read, 94 into alert, 6 into case_alert_link;
+  88 not for case_alert_link (by the mapping)
+notes.csv: not recognised (neither its name nor its key columns match a table of the template)
+```
+
+| What happens | Stored? | Reported as |
+|---|---|---|
+| A required field of the source mapping is empty or unreadable, and no other table of the file took the row | no | `rows_rejected` (DQ error when half a file or more, else warning) |
+| A row has no `entity_id` and no target entity was chosen | no | `missing_entity_id` (DQ error) |
+| A row's `entity_id` is not a valid identifier | no | `invalid_entity_id` (DQ error) |
+| A row lacks a field one table requires, but another table of the same file took it (an alert with no case is stored as an alert, not as a case link) | in the other table | "not for <table>", not a rejection |
+| A file whose name and key columns match no table of the template | no | `file_not_recognised` (DQ warning) |
+| A file a source mapping does not describe | no | `file_not_mapped` (DQ warning) |
+| A file that cannot be read at all | no | `file_unreadable` (DQ error) |
+
+A rejected row's other cells are **not** kept for review. They may hold names, comments or
+addresses that SAT-SA only stores pseudonymised or redacted, and a raw copy would bypass that.
+The row number is enough for the entity to find the row in its own export, correct it and submit
+again. A file that nothing identifies is no longer stored as alerts, which used to count rows of
+an unknown kind as alerts.
+
+---
+
 ### Product exports (Splunk ES, ServiceNow SIR, TheHive 5)
 
 `satsa ingest --source splunk|servicenow|thehive --entity <id>` translates a product's own
