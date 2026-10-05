@@ -9,13 +9,25 @@ from typing import Any
 import polars as pl
 
 from satsa.ingest.adapters import SourceAdapter
-from satsa.ingest.columnar import normalise_frame
+from satsa.ingest.columnar import ColumnarResult, normalise_frame
 from satsa.ingest.dq_checks import FrameDQ
+from satsa.ingest.ledger import ROW_SAMPLE, FileLedger, Rejected
 from satsa.ingest.manifest import ManifestBuilder
-from satsa.ingest.mapper import SourceMapping
+from satsa.ingest.mapper import MappingError, SourceMapping
 from satsa.ingest.normaliser import TaxonomyNormaliser
 from satsa.ingest.pseudonymise import Pseudonymiser
 from satsa.ingest.redact import Redactor
+from satsa.ingest.sanitise import (
+    EXCEL_SUFFIXES,
+    SUPPORTED_SUFFIXES,
+    TABULAR_SUFFIXES,
+    UnreadableFile,
+    collect_reports,
+    collected,
+    header_key,
+    read_header,
+    report_for,
+)
 from satsa.models.outputs import DQIssue
 from satsa.rules.registry import RULE_ALERT_FIELDS, rule_coverage
 from satsa.security import is_valid_entity_id, require_entity_id
@@ -35,6 +47,69 @@ def _alert_refs(frame: pl.DataFrame) -> pl.DataFrame:
 
 # Database exports: every table inside is read as if it were a file named after the table.
 DATABASE_SUFFIXES = (".db", ".sqlite", ".sqlite3")
+
+
+FILE_ORDER = (".csv", ".json", ".ndjson", ".tsv", ".xlsx")
+assert set(FILE_ORDER) == set(SUPPORTED_SUFFIXES)
+
+
+# Why a canonical row is set aside. Each reason also has its own DQ check
+# (missing_entity_id, invalid_entity_id); every other reason is reported as rows_rejected.
+NO_ENTITY = "no entity_id"
+BAD_ENTITY = "invalid entity_id"
+
+
+def _why(exc: Exception) -> str:
+    """Why a file could not be read, in words that do not quote its content."""
+    if isinstance(exc, UnreadableFile):
+        return str(exc)
+    if isinstance(exc, OSError):
+        return f"could not be opened ({type(exc).__name__})"
+    return f"could not be parsed ({type(exc).__name__})"
+
+
+def _is_submission_file(path: Path) -> bool:
+    """A data file to read: not an Excel lock file, macOS resource fork or `__MACOSX` copy."""
+    if path.name.startswith(("~$", "._")) or "__MACOSX" in path.parts:
+        return False
+    return path.is_file() and path.suffix.lower() in SUPPORTED_SUFFIXES
+
+
+def _file_headers(path: Path) -> list[str]:
+    """A delimited or Excel file's clean header, without reading its rows (empty otherwise)."""
+    if path.suffix.lower() not in TABULAR_SUFFIXES + EXCEL_SUFFIXES:
+        return []
+    try:
+        return read_header(path)
+    except (OSError, UnicodeError):
+        return []
+
+
+def detect_source_mapping(input_dir: Path | str, mappings_dir: Path | str) -> SourceMapping | None:
+    """The product mapping a submission's own columns identify, or None.
+
+    A mapping is chosen when exactly one qualifies: one of its tables lists `headers:` that a
+    submitted file has, and every submitted file is described by it (by name or columns). It is
+    an exact match on column names the mapping declares, not a guess: a canonical submission has
+    no product's identifying columns, and a mixed one is left to the canonical layout.
+    """
+    files = sorted(f for f in Path(input_dir).rglob("*") if _is_submission_file(f))
+    if not files:
+        return None
+    headers = {f: _file_headers(f) for f in files}
+    found = []
+    for path in sorted(Path(mappings_dir).glob("*.yaml")):
+        try:
+            mapping = SourceMapping(path)
+        except MappingError:
+            continue  # not a pipeline mapping (cse_api_ticketing.yaml is a single-record one)
+        if not any(spec.headers for spec in mapping.tables):
+            continue
+        if any(mapping.identifies(h) for h in headers.values()) and all(
+            mapping.specs_for_file(f.stem, h) for f, h in headers.items()
+        ):
+            found.append(mapping)
+    return found[0] if len(found) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -381,6 +456,16 @@ class IngestionPipeline:
 
     @classmethod
     def resolve_canonical_table(cls, stem: str, headers: list[str]) -> str:
+        """The table a file stands for, `alert` when nothing identifies it (see recognise_table)."""
+        return cls.recognise_table(stem, headers) or "alert"
+
+    @classmethod
+    def recognise_table(cls, stem: str, headers: list[str]) -> str | None:
+        """The canonical table a file's name or key columns identify, or None if neither does.
+
+        A file nothing identifies is not ingested: storing it as alerts (as ingest used to)
+        would count rows of an unknown kind as alerts and let rules read their columns.
+        """
         s = stem.lower().strip()
 
         # Exact stem match first
@@ -426,7 +511,7 @@ class IngestionPipeline:
                 return table
 
         # Header inspection matching
-        lower_headers = {h.lower().strip() for h in headers}
+        lower_headers = {header_key(h) for h in headers}
         if any(h in lower_headers for h in ["alert_id", "notable_id", "alertid"]):
             return "alert"
         if any(h in lower_headers for h in ["case_id", "incident_number", "ticket_id"]):
@@ -446,35 +531,27 @@ class IngestionPipeline:
         if any(h in lower_headers for h in ["sector", "size_band"]):
             return "entity"
 
-        return "alert"  # Default fallback
+        return None
 
     @classmethod
     def table_for_empty_file(cls, path: Path | DatabaseTable) -> str | None:
         """Table a file with no data rows stands for, or None if it cannot be identified.
 
         A header-only file declares "this table is submitted and empty" (see the submission
-        manifest). resolve_canonical_table defaults to `alert` for anything it does not
-        recognise, which is fine for rows but would record an unrelated empty file as the
-        alert table, so that default is accepted only when the name or headers really say alert.
+        manifest). An unrelated empty file must not be recorded as some table, so only a file
+        whose name or headers identify one counts (recognise_table).
         """
         headers: list[str] = []
-        if isinstance(path, Path) and path.suffix.lower() == ".csv":
-            first_line = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()[:1]
-            headers = [h.strip().strip('"') for h in first_line[0].split(",")] if first_line else []
-        table = cls.resolve_canonical_table(path.stem, headers)
-        if table != "alert":
-            return table
-        stem = path.stem.lower()
-        named_alert = any(k in stem for k in ("alert", "notable", "event"))
-        alert_headers = {h.lower() for h in headers} & {"alert_id", "notable_id", "alertid"}
-        return "alert" if named_alert or alert_headers else None
+        if isinstance(path, Path) and path.suffix.lower() in TABULAR_SUFFIXES + EXCEL_SUFFIXES:
+            headers = read_header(path)
+        return cls.recognise_table(path.stem, headers)
 
     @classmethod
     def normalize_row_columns(cls, row: dict[str, Any], target_table: str) -> dict[str, Any]:
         """Map alternative column names and lowercase keys to canonical fields."""
         norm: dict[str, Any] = {}
-        # Clean row keys
-        lower_row = {k.lower().strip(): v for k, v in row.items()}
+        # Clean row keys: "Alert ID", "alert_id" and "ALERT-ID" are the same column.
+        lower_row = {header_key(k): v for k, v in row.items()}
         table_aliases = cls.COLUMN_ALIASES.get(target_table, {})
 
         for canonical_col, aliases in table_aliases.items():
@@ -548,7 +625,19 @@ class IngestionPipeline:
         default_entity_id: str | None = None,
         mapping: SourceMapping | None = None,
     ) -> dict[str, Any]:
-        """Ingest all CSV and JSON tables from directory, validate DQ, and store as Parquet.
+        """Ingest a directory (see `_ingest_directory`), reporting how each file had to be read."""
+        with collect_reports():
+            result = self._ingest_directory(input_dir, default_entity_id, mapping)
+            result["file_sanitising"] = [r.as_dict() for r in collected() if r.noteworthy]
+        return result
+
+    def _ingest_directory(
+        self,
+        input_dir: Path | str,
+        default_entity_id: str | None = None,
+        mapping: SourceMapping | None = None,
+    ) -> dict[str, Any]:
+        """Ingest all CSV, TSV, Excel and JSON tables from directory, validate DQ, and store as Parquet.
 
         Rows whose `entity_id` fails satsa.security.ENTITY_ID_RE are dropped
         (never written, never evaluated) and reported as an `invalid_entity_id`
@@ -572,18 +661,39 @@ class IngestionPipeline:
         if default_entity_id is not None:
             require_entity_id(default_entity_id)
         dir_path = Path(input_dir)
+        # Suffixes are matched case-insensitively ("ALERTS.CSV" is a CSV on every platform).
+        # Files are taken in the order they always were (CSV, then JSON, then NDJSON), with
+        # the newer formats after them.
+        found = [f for f in dir_path.rglob("*") if _is_submission_file(f)]
         raw_files: list[Path | DatabaseTable] = [
-            *dir_path.rglob("*.csv"),
-            *dir_path.rglob("*.json"),
-            *dir_path.rglob("*.ndjson"),
+            f for suffix in FILE_ORDER for f in found if f.suffix.lower() == suffix
         ]
         unreadable_files: list[str] = []
+        # What became of each file and its rows (ledger.py), in the order files were taken.
+        ledgers: dict[Path | DatabaseTable, FileLedger] = {}
+
+        def ledger(f: Path | DatabaseTable) -> FileLedger:
+            if f not in ledgers:
+                report = report_for(f) if isinstance(f, Path) else None
+                ledgers[f] = FileLedger(file=f.name, row_label=report.row_label if report else "record")
+            return ledgers[f]
+
+        def file_rows(f: Path | DatabaseTable, positions: list[int]) -> list[int]:
+            """The file's own numbers (spreadsheet row, JSON record) for positions in what was read."""
+            report = report_for(f) if isinstance(f, Path) else None
+            return report.source_rows(positions) if report else [p + 1 for p in sorted(positions)]
+
+        def unreadable(f: Path | DatabaseTable, exc: Exception) -> None:
+            unreadable_files.append(f.name)
+            book = ledger(f)
+            book.status, book.note = "unreadable", _why(exc)
+
         for db_file in sorted(f for f in dir_path.rglob("*") if f.suffix.lower() in DATABASE_SUFFIXES):
             try:
                 raw_files.extend(DatabaseTable(db_file, t) for t in SourceAdapter.list_sqlite_tables(db_file))
-            except Exception:
+            except Exception as exc:
                 logger.exception("Could not open database export %s", db_file.name)
-                unreadable_files.append(db_file.name)
+                unreadable(db_file, exc)
         if not raw_files and not unreadable_files:
             return {"status": "empty", "message": f"No supported data files found in {input_dir}"}
 
@@ -607,6 +717,7 @@ class IngestionPipeline:
         # says "we submit this table and it is empty", which is different from not sending it.
         declared_tables: set[str] = set()
         unmapped_files: list[str] = []
+        unrecognised_files: list[str] = []
         unused_source_columns: dict[str, list[str]] = {}
 
         def store_rows(table: str, rows: list[dict[str, Any]]) -> None:
@@ -627,9 +738,14 @@ class IngestionPipeline:
             buffers.setdefault(table, []).append(_frame_from_rows(rows))
             row_counts[table] = row_counts.get(table, 0) + len(rows)
 
-        def normalise_chunk(table: str, raw_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        def normalise_chunk(
+            table: str,
+            raw_rows: list[dict[str, Any]],
+            set_aside: dict[str, Rejected] | None = None,
+            offset: int = 0,
+        ) -> list[dict[str, Any]]:
             kept = []
-            for r in raw_rows:
+            for i, r in enumerate(raw_rows):
                 clean_r = self.normalize_row_columns(r, table)
                 # Apply default entity if missing
                 if default_entity_id and not clean_r.get("entity_id"):
@@ -640,20 +756,24 @@ class IngestionPipeline:
                     # attributable to no CSE can't be assessed, and storing it
                     # would land outside the entity partitions.
                     unattributed[table] = unattributed.get(table, 0) + 1
+                    if set_aside is not None:
+                        set_aside.setdefault(NO_ENTITY, Rejected()).add(1, [offset + i])
                     continue
                 if not is_valid_entity_id(str(eid)):
                     rejected_ids.setdefault(table, []).append(str(eid))
+                    if set_aside is not None:
+                        set_aside.setdefault(BAD_ENTITY, Rejected()).add(1, [offset + i])
                     continue
                 kept.append(clean_r)
             return kept
 
-        def store_frame(table: str, frame: pl.DataFrame) -> bool:
-            """The columnar equivalent of normalise_chunk + store_rows; False if it does not apply."""
+        def store_frame(table: str, frame: pl.DataFrame) -> ColumnarResult | None:
+            """The columnar equivalent of normalise_chunk + store_rows; None if it does not apply."""
             if table not in canonical_columns:
                 canonical_columns[table] = self.duckdb_store.table_columns(_store_table(table))
             done = normalise_frame(frame, table, self, default_entity_id, canonical_columns[table])
             if done is None:
-                return False
+                return None
             if done.unattributed:
                 unattributed[table] = unattributed.get(table, 0) + done.unattributed
             if done.rejected:
@@ -663,13 +783,16 @@ class IngestionPipeline:
                     dropped.setdefault(_store_table(table), set()).update(done.dropped)
                 buffers.setdefault(table, []).append(done.frame)
                 row_counts[table] = row_counts.get(table, 0) + done.frame.height
-            return True
+            return done
 
         def read(path: Path | DatabaseTable) -> pl.DataFrame | list[dict[str, Any]]:
             if isinstance(path, DatabaseTable):
                 return SourceAdapter.read_sqlite(path.db_path, path.table)
-            if path.suffix.lower() == ".csv":
+            suffix = path.suffix.lower()
+            if suffix in TABULAR_SUFFIXES:
                 return SourceAdapter.read_csv_frame(path)
+            if suffix in EXCEL_SUFFIXES:
+                return SourceAdapter.read_excel_frame(path)
             return SourceAdapter.read_json(path)
 
         def chunks(data: pl.DataFrame | list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:
@@ -688,9 +811,9 @@ class IngestionPipeline:
                 try:
                     data = read(f)
                     preloaded[f] = data.to_dicts() if isinstance(data, pl.DataFrame) else data
-                except Exception:
+                except Exception as exc:
                     logger.exception("Could not read submission file %s", f.name)
-                    unreadable_files.append(f.name)
+                    unreadable(f, exc)
             mapping.build_lookups({f.stem: rows for f, rows in preloaded.items()})
 
         # The largest CSV of a canonical submission is read before the others, while nothing
@@ -712,9 +835,15 @@ class IngestionPipeline:
             try:
                 if mapping is not None:
                     raw_rows = preloaded.pop(f)
-                    specs = mapping.specs_for_file(f.stem)
+                    book = ledger(f)
+                    book.rows_read = len(raw_rows)
+                    columns = (
+                        list(raw_rows[0]) if raw_rows else _file_headers(f) if isinstance(f, Path) else []
+                    )
+                    specs = mapping.specs_for_file(f.stem, columns)
                     if not specs:
                         unmapped_files.append(f.name)
+                        book.status, book.note = "not mapped", "no table of the source mapping names this file"
                         continue
                     assert default_entity_id is not None
                     if raw_rows:
@@ -723,38 +852,82 @@ class IngestionPipeline:
                         unused = sorted(set(raw_rows[0]) - used)
                         if unused:
                             unused_source_columns[f.name] = unused
+                    # A row one table cannot take is lost only if no other table took it: an
+                    # alert export feeds `alert` with every alert and `case_alert_link` only
+                    # with the alerts that have a case.
+                    stored_somewhere: set[int] = set()
+                    outcomes: list[tuple[str, int, int, dict[str, list[int]]]] = []
                     for spec in specs:
-                        declared_tables.add(_store_table(spec.table))
-                        store_rows(spec.table, mapping.map_rows(raw_rows, spec, default_entity_id).rows)
+                        target = _store_table(spec.table)
+                        declared_tables.add(target)
+                        mapped = mapping.map_rows(raw_rows, spec, default_entity_id)
+                        stored_somewhere.update(mapped.positions)
+                        outcomes.append((target, len(mapped.rows), mapped.skipped_by_filter, mapped.rejected))
+                        store_rows(spec.table, mapped.rows)
+                    # A row no table took is reported once, under the first table that wanted it.
+                    reported: set[int] = set()
+                    for target, stored, not_for_table, missing in outcomes:
+                        book.store(target, stored)
+                        for reason, positions in missing.items():
+                            lost = [p for p in positions if p not in stored_somewhere]
+                            not_for_table += len(positions) - len(lost)
+                            fresh = [p for p in lost if p not in reported]
+                            reported.update(fresh)
+                            book.reject(f"{reason} for {target}", len(fresh), file_rows(f, fresh[:ROW_SAMPLE]))
+                        book.filtered[target] = book.filtered.get(target, 0) + not_for_table
                     continue
 
                 early = read_early.pop(f, None)
                 if isinstance(early, Exception):
                     raise early
                 data = early if early is not None else read(f)
+                book = ledger(f)
+                book.rows_read = len(data)
                 if len(data) == 0:
                     empty_table = self.table_for_empty_file(f)
                     if empty_table:
                         declared_tables.add(_store_table(empty_table))
                     continue
 
-                processed_files.append(f.db_path if isinstance(f, DatabaseTable) else f)
                 headers = data.columns if isinstance(data, pl.DataFrame) else list(data[0].keys())
-                canonical_table = self.resolve_canonical_table(f.stem, headers)
-                declared_tables.add(_store_table(canonical_table))
-                row_counts.setdefault(canonical_table, 0)
-                if isinstance(data, pl.DataFrame) and store_frame(canonical_table, data):
-                    del data  # the file as read is no longer needed
+                recognised = self.recognise_table(f.stem, headers)
+                if recognised is None:
+                    unrecognised_files.append(f.name)
+                    book.status = "not recognised"
+                    book.note = "neither its name nor its key columns match a table of the template"
+                    del data
                     continue
+                canonical_table = recognised
+                target = _store_table(canonical_table)
+                processed_files.append(f.db_path if isinstance(f, DatabaseTable) else f)
+                declared_tables.add(target)
+                row_counts.setdefault(canonical_table, 0)
+                done = store_frame(canonical_table, data) if isinstance(data, pl.DataFrame) else None
+                if done is not None:
+                    del data  # the file as read is no longer needed
+                    book.store(target, done.frame.height)
+                    book.reject(NO_ENTITY, done.unattributed, file_rows(f, done.unattributed_at))
+                    book.reject(BAD_ENTITY, len(done.rejected), file_rows(f, done.rejected_at))
+                    continue
+                set_aside: dict[str, Rejected] = {}
+                offset = 0
                 for raw_rows in chunks(data):
-                    store_rows(canonical_table, normalise_chunk(canonical_table, raw_rows))
+                    kept = normalise_chunk(canonical_table, raw_rows, set_aside, offset)
+                    offset += len(raw_rows)
+                    book.store(target, len(kept))
+                    store_rows(canonical_table, kept)
                 del data
-            except Exception:
+                for reason, rejected in set_aside.items():
+                    book.reject(reason, rejected.count, file_rows(f, rejected.rows))
+            except Exception as exc:
                 # Reported below as a DQ error: a file dropped without trace would make
                 # its table look absent, and rules would read that as a SOC defect.
                 logger.exception("Could not read submission file %s", f.name)
-                unreadable_files.append(f.name)
+                unreadable(f, exc)
 
+        for book in ledgers.values():
+            book.settle()
+        file_coverage = [book.as_dict() for book in ledgers.values()]
         if unattributed and not buffers:
             counts = ", ".join(f"{n} {t}" for t, n in sorted(unattributed.items()))
             return {
@@ -763,9 +936,15 @@ class IngestionPipeline:
                     f"No rows stored: {counts} row(s) have no entity_id. Add an entity_id "
                     "column or choose a target entity for the upload."
                 ),
+                "file_coverage": file_coverage,
             }
         if not buffers and not row_counts:
-            return {"status": "error", "message": "Failed to parse records from uploaded files."}
+            why = "; ".join(book.summary() for book in ledgers.values())
+            return {
+                "status": "error",
+                "message": "No rows could be stored from the submitted files" + (f": {why}" if why else "."),
+                "file_coverage": file_coverage,
+            }
 
         tables: dict[str, pl.DataFrame] = {name: _concat_frames(parts) for name, parts in buffers.items()}
         buffers.clear()
@@ -870,6 +1049,21 @@ class IngestionPipeline:
                     sample_records=sorted(unreadable_files)[:5],
                 )
             )
+        lossy = [r for r in collected() if r.data_lost]
+        if lossy:
+            all_dq_issues.extend(
+                batch_issues(
+                    "DQ-SANITISED",
+                    "-".join(sorted(r.file for r in lossy))[:80],
+                    "Part of these files could not be read and was left out: "
+                    + "; ".join(f"{r.file}: {', '.join(n for n in r.notes() if 'not read' in n or 'skipped' in n)}" for r in lossy)
+                    + ". Counts from these files may be understated.",
+                    check_name="file_partly_read",
+                    severity="warning",
+                    count=sum(r.long_rows_truncated + r.records_skipped for r in lossy),
+                    sample_records=sorted(r.file for r in lossy)[:5],
+                )
+            )
         if unmapped_files:
             all_dq_issues.extend(
                 batch_issues(
@@ -881,6 +1075,58 @@ class IngestionPipeline:
                     severity="warning",
                     count=len(unmapped_files),
                     sample_records=sorted(unmapped_files)[:5],
+                )
+            )
+        if unrecognised_files:
+            all_dq_issues.extend(
+                batch_issues(
+                    "DQ-UNRECOGNISED-FILE",
+                    "-".join(sorted(unrecognised_files))[:80],
+                    f"{len(unrecognised_files)} file(s) were not ingested because neither the file name "
+                    f"nor any key column matches a table of the submission template: "
+                    f"{', '.join(sorted(unrecognised_files))}. Describe the export with a source mapping, "
+                    "or use the template's column names.",
+                    check_name="file_not_recognised",
+                    severity="warning",
+                    count=len(unrecognised_files),
+                    sample_records=sorted(unrecognised_files)[:5],
+                )
+            )
+        # Rows a source mapping could not fill (the entity checks below report their own).
+        left_out = [
+            (book, {r: rej for r, rej in book.rejected.items() if r not in (NO_ENTITY, BAD_ENTITY)})
+            for book in ledgers.values()
+        ]
+        left_out = [(book, reasons) for book, reasons in left_out if reasons]
+        if left_out:
+            per_file: list[str] = []
+            for book, reasons in left_out:
+                reason_notes: list[str] = []
+                for reason, rej in reasons.items():
+                    where = rej.where(book.row_label)
+                    reason_notes.append(f"{rej.count} {reason}" + (f" ({where})" if where else ""))
+                per_file.append(f"{book.file}: {', '.join(reason_notes)}")
+            # Losing half a file or more is not a detail: its tables would mislead every rule.
+            severe = any(
+                2 * sum(rej.count for rej in reasons.values()) >= max(book.rows_read, 1)
+                for book, reasons in left_out
+            )
+            all_dq_issues.extend(
+                batch_issues(
+                    "DQ-ROWS-REJECTED",
+                    "-".join(sorted(book.file for book, _ in left_out))[:80],
+                    "Rows were not stored because a field the source mapping requires is empty or "
+                    "could not be read: " + "; ".join(per_file) + ". Counts from these files are "
+                    "understated until the export (or its mapping) is corrected and submitted again.",
+                    check_name="rows_rejected",
+                    severity="error" if severe else "warning",
+                    count=sum(rej.count for _, reasons in left_out for rej in reasons.values()),
+                    sample_records=[
+                        f"{book.file} {book.row_label} {n}"
+                        for book, reasons in left_out
+                        for rej in reasons.values()
+                        for n in rej.rows[:5]
+                    ][:5],
                 )
             )
         for tbl, bad_ids in sorted(rejected_ids.items()):
@@ -1124,5 +1370,7 @@ class IngestionPipeline:
             "dropped_columns": dropped_columns,
             "source": mapping.source if mapping is not None else None,
             "unmapped_files": sorted(unmapped_files),
+            "unrecognised_files": sorted(unrecognised_files),
             "unused_source_columns": unused_source_columns,
+            "file_coverage": file_coverage,
         }

@@ -1,0 +1,50 @@
+# Cortex XSIAM: the case list exported from the Cases page (Export to file, CSV).
+#
+# The export is Windows-1252 text with dates written "Oct 1st 2026 22:31:34"; the sanitiser and
+# the timestamp parser read both as they are. It may be saved under any file name: it is
+# recognised by its columns (`headers:` below), so it needs no renaming.
+#
+# Use:  satsa ingest --data-dir <export dir> --source xsiam --entity <CSE id>
+#       (or upload it on the /upload page with a target entity: the columns identify it)
+#
+# Built from one real case export (one case, 57 columns). Values the mapping names but that
+# export did not contain are marked "not seen"; check them against a larger export.
+source: "cortex_xsiam"
+# The export does not say which CSE it belongs to: give --entity (or the upload's target entity).
+timestamp_format: "iso"   # ordinal dates ("Oct 1st 2026") are read by the written-form parser
+# The case list is written in the exporting user's time zone, which the file does not record.
+# +05:30 (IST) is assumed; change it if the exporting console is set to another zone.
+utc_offset: "+05:30"
+
+tables:
+  - table: case_record
+    files: ["cortex_xsiam_case*", "xsiam_case*"]
+    headers: ["Case ID", "Creation Time", "Resolution Reason", "Case Domain"]
+    required: [case_id, opened_at]
+    columns:
+      case_id: "Case ID"
+      severity: Severity
+      status: Status
+      owner: Assignee                  # pseudonymised by the pipeline
+      opened_at: "Creation Time"
+      closed_at: "Resolved Timestamp"
+
+# Not mapped, on purpose:
+# - Resolution Reason / Resolution Comment: SAT-SA's closure table belongs to alerts (EG02, EG04
+#   join it to alert ids). Closures keyed by case id would never be read, yet would mark those
+#   rules as assessed. They are listed as unused source columns in the ingest report.
+# - Total Issues and the per-severity issue counts: counts, not alerts. Alerts come from the
+#   XSIAM Issues export, which this mapping does not cover.
+# - Assignee Email, Users, Case Description, Indicator IDs: personal or free-text data no rule
+#   reads; only canonical columns are stored.
+
+value_mappings:
+  severity:
+    "Low": "low"
+    "Medium": "medium"
+    "High": "high"
+    "Critical": "critical"
+  status:
+    "New": "open"                    # not seen
+    "Under Investigation": "open"    # not seen
+    "Resolved": "closed"

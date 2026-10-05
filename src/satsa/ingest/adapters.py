@@ -10,6 +10,8 @@ from urllib.parse import urlparse
 
 import polars as pl
 
+from satsa.ingest.sanitise import read_delimited, read_excel, read_json_records
+
 # Air-gap guarantee: read_api() will only ever contact these hostnames. Any
 # other host raises ValueError before a socket is opened. In a real
 # deployment this points at an entity's own on-prem/local REST endpoint
@@ -23,11 +25,16 @@ class SourceAdapter:
 
     @staticmethod
     def read_csv_frame(file_path: Path | str) -> pl.DataFrame:
-        """Read a CSV file as a columnar frame (an empty frame if the file does not exist)."""
-        path = Path(file_path)
-        if not path.exists():
-            return pl.DataFrame()
-        return pl.read_csv(path, infer_schema_length=1000)
+        """Read a CSV/TSV file as a columnar frame (an empty frame if the file does not exist).
+
+        Any common encoding and separator is accepted; see `sanitise.read_delimited`.
+        """
+        return read_delimited(file_path).frame
+
+    @staticmethod
+    def read_excel_frame(file_path: Path | str) -> pl.DataFrame:
+        """Read the first sheet of an .xlsx workbook as a columnar frame."""
+        return read_excel(file_path).frame
 
     @staticmethod
     def read_csv(file_path: Path | str) -> list[dict[str, Any]]:
@@ -36,27 +43,8 @@ class SourceAdapter:
 
     @staticmethod
     def read_json(file_path: Path | str) -> list[dict[str, Any]]:
-        """Read standard JSON or newline-delimited JSON (NDJSON)."""
-        path = Path(file_path)
-        if not path.exists():
-            return []
-
-        content = path.read_text(encoding="utf-8").strip()
-        if not content:
-            return []
-
-        # Check if standard JSON array
-        if content.startswith("["):
-            data = json.loads(content)
-            return data if isinstance(data, list) else [data]
-
-        # NDJSON
-        records = []
-        for line in content.splitlines():
-            line_str = line.strip()
-            if line_str:
-                records.append(json.loads(line_str))
-        return records
+        """Read a JSON array, object, `{"data": [...]}` envelope or newline-delimited JSON."""
+        return read_json_records(file_path)
 
     @staticmethod
     def list_sqlite_tables(file_path: Path | str) -> list[str]:

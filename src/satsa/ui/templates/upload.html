@@ -174,7 +174,7 @@
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
         </svg>
         <p style="font-weight: 700; font-size: 1rem; margin-bottom: 0.35rem;">Click to browse or drop submission files here</p>
-        <p style="color: var(--text-muted); font-size: 0.82rem;">Accepts <code>alerts.csv</code>, <code>cases.csv</code>, <code>escalations.csv</code>, <code>assets.csv</code>, or <code>.zip</code> bundle</p>
+        <p style="color: var(--text-muted); font-size: 0.82rem;">Accepts <code>.csv</code>, <code>.tsv</code>, <code>.xlsx</code>, <code>.json</code> or a <code>.zip</code> bundle (e.g. <code>alerts.csv</code>, <code>cases.csv</code>). Any encoding or separator; blank rows are dropped and reported. A Cortex XSIAM case export is recognised by its columns (choose a target entity)</p>
         <input type="file" id="file-input" name="files" multiple style="display: none;" onchange="updateFileList(this)">
       </div>
 
