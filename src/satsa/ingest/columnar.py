@@ -8,7 +8,7 @@ the same Python functions, called once per distinct value instead of once per ro
 
 It covers what a canonical CSV contains. For anything where equivalence is not certain, it
 returns None and the caller uses the row-wise path. That happens when:
-- two columns have the same name after lower-casing and trimming;
+- two columns have the same name once compared by `header_key` ("Alert ID" / "alert_id");
 - a column is not text, integer, float, boolean or empty;
 - two alias columns of one canonical column are both present (the row path picks per row);
 - a column the hygiene step rewrites, or the entity ID, is not text.
@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
+from satsa.ingest.ledger import ROW_SAMPLE
+from satsa.ingest.sanitise import header_key
 from satsa.security import is_valid_entity_id
 
 if TYPE_CHECKING:
@@ -53,6 +55,9 @@ class ColumnarResult:
     unattributed: int = 0
     rejected: list[str] = field(default_factory=list)
     dropped: set[str] = field(default_factory=set)
+    # Positions in the file of the first ROW_SAMPLE rows set aside, for the file ledger.
+    unattributed_at: list[int] = field(default_factory=list)
+    rejected_at: list[int] = field(default_factory=list)
 
 
 def _is(dtype: pl.DataType, kinds: tuple[Any, ...]) -> bool:
@@ -80,7 +85,7 @@ def normalise_frame(
     columns: list[str],
 ) -> ColumnarResult | None:
     """The frame the row path would buffer for `frame`, or None where equivalence is not certain."""
-    names = [c.lower().strip() for c in frame.columns]
+    names = [header_key(c) for c in frame.columns]
     if len(set(names)) != len(names):
         return None
     if not all(_is(dtype, _PLAIN) for dtype in frame.dtypes):
@@ -137,8 +142,11 @@ def normalise_frame(
     )
     result = ColumnarResult(frame=frame)
     result.unattributed = int((verdict == "unattributed").sum())
+    if result.unattributed:
+        result.unattributed_at = (verdict == "unattributed").arg_true().head(ROW_SAMPLE).to_list()
     if (verdict == "rejected").any():
         result.rejected = [str(v) for v in frame.filter(verdict == "rejected")["entity_id"].to_list()]
+        result.rejected_at = (verdict == "rejected").arg_true().head(ROW_SAMPLE).to_list()
     frame = frame.filter(verdict == "kept")
     if frame.height == 0:
         result.frame = frame.clear()
