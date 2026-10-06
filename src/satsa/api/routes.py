@@ -1030,23 +1030,75 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
     )
 
 
+# Examiner dispositions the review queue can be filtered by, in the order the filter shows them.
+QUEUE_STATUS_FILTERS: dict[str, str] = {
+    "pending": "Pending Review",
+    "confirmed": "Escalated to Statutory Notice",
+    "not_an_issue": "Marked as Justified",
+    "needs_more_data": "CSE Explanation Requested",
+}
+
+
+def _queue_status(value: str | None) -> str:
+    """A known disposition, or "" for the whole queue."""
+    return value if value in QUEUE_STATUS_FILTERS else ""
+
+
 @app.get("/queue", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
-async def view_review_queue(request: Request) -> Response:
+async def view_review_queue(request: Request, status: str | None = None) -> Response:
+    status_filter = _queue_status(status)
     sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
-    cur.execute("""
+    cur.execute("SELECT examiner_status, COUNT(*) AS n FROM review_queue GROUP BY examiner_status")
+    status_counts = {key: 0 for key in QUEUE_STATUS_FILTERS}
+    for r in cur.fetchall():
+        status_counts[r["examiner_status"]] = r["n"]
+    status_counts[""] = sum(status_counts.values())
+
+    # The filter goes in the query, so the 200-row limit applies to the disposition asked for.
+    cur.execute(
+        f"""
         SELECT queue_id, run_id, entity_id, record_type, record_id, severity, score, selection_reason, is_random, examiner_status
         FROM review_queue
+        {"WHERE examiner_status = ?" if status_filter else ""}
         ORDER BY score DESC, queue_id ASC
         LIMIT 200
-    """)
-    queue_items = [dict(r) for r in cur.fetchall()]
+        """,
+        (status_filter,) if status_filter else (),
+    )
+    queue_items = [dict(r, evidence_cards=[]) for r in cur.fetchall()]
+
+    # The evidence cards of the findings that cite each record, from the same run and entity.
+    # A random control is cited by none: it was drawn regardless of the findings.
+    if queue_items:
+        by_id = {item["queue_id"]: item for item in queue_items}
+        cur.execute(
+            f"""
+            SELECT q.queue_id, f.finding_id, f.rule_id, f.title
+            FROM review_queue q
+            JOIN finding_evidences e ON e.record_type = q.record_type AND e.record_id = q.record_id
+            JOIN findings f ON f.finding_id = e.finding_id AND f.run_id = q.run_id AND f.entity_id = q.entity_id
+            WHERE q.queue_id IN ({", ".join("?" for _ in by_id)})
+            ORDER BY f.score DESC, f.rule_id ASC
+            """,
+            list(by_id),
+        )
+        for r in cur.fetchall():
+            by_id[r["queue_id"]]["evidence_cards"].append(
+                {"finding_id": r["finding_id"], "rule_id": r["rule_id"], "title": r["title"]}
+            )
     sqlite_store.close()
 
     return templates.TemplateResponse(
         request=request,
         name="review_queue.html",
-        context={"active_tab": "queue", "queue_items": queue_items},
+        context={
+            "active_tab": "queue",
+            "queue_items": queue_items,
+            "status_filter": status_filter,
+            "status_filters": QUEUE_STATUS_FILTERS,
+            "status_counts": status_counts,
+        },
     )
 
 
@@ -1318,6 +1370,7 @@ async def api_submit_feedback(
     queue_id: Annotated[str, Form()],
     status: Annotated[str, Form()] = "confirmed",
     notes: Annotated[str, Form()] = "",
+    return_status: Annotated[str, Form()] = "",
     identity: Identity = Depends(require_role(*REVIEW_ROLES)),
 ) -> RedirectResponse:
     sqlite_store = get_sqlite_store()
@@ -1336,7 +1389,9 @@ async def api_submit_feedback(
         details={"queue_id": queue_id, "status": status, "notes": notes},
     )
     sqlite_store.close()
-    return RedirectResponse(url="/queue", status_code=303)
+    # Back to the filtered view the decision was made from.
+    back = _queue_status(return_status)
+    return RedirectResponse(url=f"/queue?status={back}" if back else "/queue", status_code=303)
 
 
 @app.get("/api/v1/audit/verify", dependencies=[Depends(require_role(*ANALYST_ROLES))])

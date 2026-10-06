@@ -17,7 +17,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=9.0.0">
+  <link rel="stylesheet" href="/static/style.css?v=9.1.1">
   <script src="/static/echarts.min.js"></script>
   <script src="/static/echarts-theme.js?v=9.0.0"></script>
 </head>
@@ -318,6 +318,53 @@
   {% endif %}
 
   <script>
+    /* Sideways scrollbar dock for every wide table (.hscroll-dock in style.css): a mouse
+       user can drag across without first scrolling to the table's last row. */
+    (function () {
+      function attach(wrap) {
+        if (wrap.satsaDock) return;
+        var dock = document.createElement('div');
+        var spacer = document.createElement('div');
+        dock.className = 'hscroll-dock';
+        dock.setAttribute('aria-hidden', 'true');
+        dock.hidden = true;
+        dock.appendChild(spacer);
+        wrap.after(dock);
+        wrap.satsaDock = dock;
+
+        function fit() {
+          var wide = wrap.scrollWidth > wrap.clientWidth + 1;
+          wrap.classList.toggle('has-hdock', wide);
+          dock.hidden = !wide;
+          if (!wide) return;
+          dock.style.width = wrap.getBoundingClientRect().width + 'px';
+          spacer.style.width = wrap.scrollWidth + 'px';
+          dock.scrollLeft = wrap.scrollLeft;
+        }
+        wrap.addEventListener('scroll', function () {
+          if (Math.abs(dock.scrollLeft - wrap.scrollLeft) > 1) dock.scrollLeft = wrap.scrollLeft;
+        });
+        dock.addEventListener('scroll', function () {
+          if (Math.abs(wrap.scrollLeft - dock.scrollLeft) > 1) wrap.scrollLeft = dock.scrollLeft;
+        });
+        if (window.ResizeObserver) {
+          var ro = new ResizeObserver(fit);
+          ro.observe(wrap);
+          if (wrap.firstElementChild) ro.observe(wrap.firstElementChild);
+        } else {
+          window.addEventListener('resize', fit);
+        }
+        fit();
+      }
+
+      window.satsaDockScrollbars = function (root) {
+        root.querySelectorAll('.table-responsive').forEach(attach);
+      };
+      window.satsaDockScrollbars(document);
+    })();
+  </script>
+
+  <script>
     /* In-place form actions. The routes answer every form with Post/Redirect/Get,
        which on its own reloads the whole page: a flash, a jump to the top, and no
        sign of progress during a long upload. Here a submit goes through fetch and
@@ -340,16 +387,27 @@
         });
       }
 
-      function swapMain(html) {
+      // keepInner: after an action on the same list, put boxes marked data-keep-scroll (a
+      // wide table scrolled sideways) back where they were; a new search starts at the left.
+      function swapMain(html, keepInner) {
         var doc = new DOMParser().parseFromString(html, 'text/html');
         var next = doc.querySelector('main');
         var main = document.querySelector('main');
         if (!next || !main) return false;
         var y = window.scrollY;
+        var inner = Array.prototype.map.call(main.querySelectorAll('[data-keep-scroll]'), function (el) {
+          return [el.scrollTop, el.scrollLeft];
+        });
         main.innerHTML = next.innerHTML;
         if (doc.title) document.title = doc.title;
         runScripts(main);
+        if (window.satsaDockScrollbars) window.satsaDockScrollbars(main);
         window.scrollTo(0, y);
+        if (keepInner) {
+          main.querySelectorAll('[data-keep-scroll]').forEach(function (el, i) {
+            if (inner[i]) { el.scrollTop = inner[i][0]; el.scrollLeft = inner[i][1]; }
+          });
+        }
         // The action's outcome is reported in a banner at the top of the page.
         var banner = main.querySelector('.notice-banner');
         if (banner && banner.getBoundingClientRect().top < 0) {
@@ -434,7 +492,7 @@
             }
             return res.text().then(function (body) {
               var isHtml = (res.headers.get('content-type') || '').indexOf('text/html') !== -1;
-              if (!isHtml || !swapMain(body)) {
+              if (!isHtml || !swapMain(body, method !== 'GET')) {
                 setBusy(form, submitter, false);
                 showError(errorText(res, body));
                 return;
