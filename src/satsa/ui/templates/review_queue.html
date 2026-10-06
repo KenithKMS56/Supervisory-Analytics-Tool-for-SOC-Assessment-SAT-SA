@@ -56,7 +56,20 @@
     <span>Examination Queue Records</span>
     <span style="font-size: 0.85rem; color: var(--text-secondary);">Review samples to confirm execution gaps or negative space</span>
   </div>
-  <div class="table-responsive">
+
+  {# One queue per disposition. A GET form, so the page updates in place (base.html). #}
+  <form method="get" action="/queue" class="queue-filter" role="group" aria-label="Filter the queue by examiner disposition">
+    <button type="submit" name="status" value="" class="queue-filter-btn{% if not status_filter %} active{% endif %}" aria-pressed="{{ 'true' if not status_filter else 'false' }}">
+      All <span class="queue-filter-count">{{ status_counts[""] }}</span>
+    </button>
+    {% for key, label in status_filters.items() %}
+    <button type="submit" name="status" value="{{ key }}" class="queue-filter-btn queue-filter-{{ key }}{% if status_filter == key %} active{% endif %}" aria-pressed="{{ 'true' if status_filter == key else 'false' }}">
+      {{ label }} <span class="queue-filter-count">{{ status_counts[key] }}</span>
+    </button>
+    {% endfor %}
+  </form>
+
+  <div class="table-responsive" data-keep-scroll>
     <table>
       <thead>
         <tr>
@@ -67,6 +80,7 @@
           <th>Severity</th>
           <th>Priority Score</th>
           <th>Selection Reason & Tracing</th>
+          <th>Evidence Card</th>
           <th>Examiner Disposition</th>
           <th style="min-width: 220px;">{% if can_decide %}Examiner Action{% else %}Action{% endif %}</th>
         </tr>
@@ -98,6 +112,15 @@
           <td><strong style="font-size: 1.05rem;">{{ item.score }}</strong></td>
           <td style="font-size: 0.82rem; color: var(--text-secondary); max-width: 320px; line-height: 1.4;">{{ item.selection_reason }}</td>
           <td>
+            <div class="evidence-card-links">
+              {% for ev in item.evidence_cards %}
+                <a href="/finding/{{ ev.finding_id }}" class="btn btn-secondary evidence-card-link" title="{{ ev.title }}">{{ ev.rule_id }} Evidence Card</a>
+              {% else %}
+                <span style="font-size: 0.78rem; color: var(--text-muted);">{% if item.is_random %}Random control: no finding cites it{% else %}No finding on record{% endif %}</span>
+              {% endfor %}
+            </div>
+          </td>
+          <td>
             {% if item.examiner_status == 'confirmed' %}
               <span class="badge badge-crit">Escalated to Statutory Notice</span>
             {% elif item.examiner_status == 'not_an_issue' %}
@@ -113,6 +136,7 @@
             {% if can_decide %}
             <form action="/api/v1/feedback" method="POST" style="display: flex; gap: 0.5rem; align-items: center; margin: 0;">
               <input type="hidden" name="queue_id" value="{{ item.queue_id }}">
+              <input type="hidden" name="return_status" value="{{ status_filter }}">
               <select name="status" class="form-control" style="padding: 0.35rem 0.5rem; font-size: 0.78rem; width: 215px; min-width: 215px; flex-shrink: 0;">
                 <option value="confirmed" {% if item.examiner_status == 'confirmed' %}selected{% endif %}>Escalate to Statutory Notice</option>
                 <option value="not_an_issue" {% if item.examiner_status == 'not_an_issue' %}selected{% endif %}>Mark as Justified</option>
@@ -127,7 +151,9 @@
         </tr>
         {% else %}
         <tr>
-          <td colspan="9" style="text-align: center; color: var(--text-muted); padding: 2rem;">No items currently in review queue. Run an assessment to generate queue records.</td>
+          <td colspan="10" style="text-align: center; color: var(--text-muted); padding: 2rem;">
+            {% if status_filter %}No records are {{ status_filters[status_filter] }}.{% else %}No items currently in review queue. Run an assessment to generate queue records.{% endif %}
+          </td>
         </tr>
         {% endfor %}
       </tbody>
