@@ -37,8 +37,6 @@ _REAL = {
     name: getattr(SQLiteStore, name)
     for name in ("seed_default_identities", "seed_default_admin", "flag_unrotated_default_accounts")
 }
-SHARED_DB = Path("data/satsa.db")
-
 REPO = Path(__file__).resolve().parent.parent
 _INPUT_DIRS = ("config", "demo_data", "docs", "scripts", "src")
 _STATE = {".satsa_salt"}  # application state at the top level, never copied
@@ -64,6 +62,10 @@ if os.environ.get("SATSA_TESTS_IN_PLACE") != "1":
         os.chdir(REPO)
         shutil.rmtree(_WORKDIR, ignore_errors=True)
         raise
+
+# Absolute: by pytest_sessionfinish the working directory is back at the repository, and a
+# relative path would then point at the developer's own database instead of this one.
+SHARED_DB = Path("data/satsa.db").resolve()
 
 
 def _lift(conn: sqlite3.Connection) -> None:
