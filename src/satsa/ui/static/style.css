@@ -1115,6 +1115,103 @@ a.stat-card:hover {
   position: relative;
 }
 
+/* A wide table's own scrollbar sits under its last row, out of reach for a mouse on a
+   long table (a trackpad's sideways swipe was the only way across). base.html gives it a
+   dock instead: the same scrollbar, pinned to the bottom of the window while the table
+   is on screen, and back under the last row once that is in view. */
+.table-responsive.has-hdock {
+  scrollbar-width: none;
+}
+
+.table-responsive.has-hdock::-webkit-scrollbar {
+  display: none;
+}
+
+.hscroll-dock {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--surface-card);
+  border-top: 1px solid var(--border-default);
+}
+
+.hscroll-dock[hidden] {
+  display: none;
+}
+
+.hscroll-dock > div {
+  height: 1px;
+}
+
+/* Review queue: one queue per examiner disposition. */
+.queue-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.queue-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.queue-filter-btn:hover {
+  background: var(--surface-hover);
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+}
+
+.queue-filter-btn.active {
+  background: var(--accent-primary);
+  border-color: var(--accent-primary);
+  color: #fff;
+}
+
+.queue-filter-confirmed.active { background: var(--risk-crit-bg); border-color: var(--risk-crit-border); color: var(--risk-crit); }
+.queue-filter-not_an_issue.active { background: var(--risk-low-bg); border-color: var(--risk-low-border); color: var(--risk-low); }
+.queue-filter-needs_more_data.active { background: var(--risk-mod-bg); border-color: var(--risk-mod-border); color: var(--risk-mod); }
+
+.queue-filter-count {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0 0.4rem;
+  border-radius: 999px;
+  background: var(--surface-sunken);
+  color: var(--text-secondary);
+}
+
+.queue-filter-btn.active .queue-filter-count {
+  background: rgba(255, 255, 255, 0.22);
+  color: inherit;
+}
+
+.evidence-card-links {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+
+.evidence-card-link {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
