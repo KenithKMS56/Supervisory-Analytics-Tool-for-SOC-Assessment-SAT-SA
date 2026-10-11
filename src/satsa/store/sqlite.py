@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from satsa.models.outputs import (
+    EXAMINER_DECISIONS,
     AuditLogEntry,
     DomainScore,
     DQIssue,
@@ -1132,8 +1133,26 @@ class SQLiteStore:
                 )
 
     def save_review_queue(self, queue_items: list[ReviewQueueItem]) -> None:
+        # A record a new run selects again keeps the examiner's latest decision on it, whichever
+        # run's copy it was made on: a fresh run does not reopen a decided record.
+        decided: dict[tuple[str, str, str], tuple[str, str | None]] = {}
+        for r in self.conn.execute(
+            f"""
+            SELECT q.entity_id, q.record_type, q.record_id, f.status, f.notes
+            FROM feedback f JOIN review_queue q ON q.queue_id = f.queue_id
+            WHERE f.status IN ({", ".join("?" for _ in EXAMINER_DECISIONS)})
+            ORDER BY f.created_at, f.rowid
+            """,
+            EXAMINER_DECISIONS,
+        ):
+            decided[(r["entity_id"], r["record_type"], r["record_id"])] = (r["status"], r["notes"])
         with self.conn:
             for item in queue_items:
+                status, note = item.examiner_status, item.examiner_note
+                if status == "pending":
+                    status, note = decided.get(
+                        (item.entity_id, item.record_type, item.record_id), (status, note)
+                    )
                 self.conn.execute(
                     """
                     INSERT OR REPLACE INTO review_queue (
@@ -1151,8 +1170,8 @@ class SQLiteStore:
                         item.score,
                         item.selection_reason,
                         1 if item.is_random else 0,
-                        item.examiner_status,
-                        item.examiner_note,
+                        status,
+                        note,
                     ),
                 )
 
