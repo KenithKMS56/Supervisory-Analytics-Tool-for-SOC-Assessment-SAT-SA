@@ -888,11 +888,15 @@ class ReportGenerator:
         return path
 
     def export_queue_csv(self, output_path: Path | str) -> Path:
-        """Export review queue items to CSV."""
+        """Export the latest run's review queue to CSV (earlier runs' copies are history)."""
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         cur = self.sqlite_store.conn.cursor()
-        cur.execute("SELECT * FROM review_queue ORDER BY score DESC")
+        cur.execute(
+            """SELECT * FROM review_queue
+               WHERE run_id = (SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1)
+               ORDER BY score DESC"""
+        )
         rows = cur.fetchall()
 
         with open(path, "w", newline="", encoding="utf-8") as f:

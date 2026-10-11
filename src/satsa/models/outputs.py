@@ -97,6 +97,10 @@ class ReviewQueueItem(BaseModel):
     examiner_note: str | None = None
 
 
+# The decisions an examiner can record on a queue record ("pending" is the absence of one).
+EXAMINER_DECISIONS = ("confirmed", "not_an_issue", "needs_more_data")
+
+
 class ExaminerFeedback(BaseModel):
     model_config = ConfigDict(extra="ignore")
 

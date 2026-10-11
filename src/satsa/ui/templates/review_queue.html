@@ -23,15 +23,15 @@
 </div>
 
 <!-- Queue Stats Strip -->
-{# Counted with filters: a {% set %} inside a {% for %} does not survive the loop in Jinja. #}
-{% set random_count = queue_items|selectattr('is_random')|list|length %}
-{% set top_risk_count = queue_items|length - random_count %}
-{% set confirmed_count = queue_items|selectattr('examiner_status', 'equalto', 'confirmed')|list|length %}
+{# The latest run's whole queue, counted by the database: the table below shows only the top rows. #}
+{% set total_count = status_counts[""] %}
+{% set top_risk_count = total_count - random_count %}
+{% set confirmed_count = status_counts["confirmed"] %}
 
 <div class="stats-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 2rem;">
   <div class="stat-card">
     <div class="stat-label">Total Queue Candidates</div>
-    <div class="stat-value" style="color: var(--accent-blue);">{{ queue_items|length }}</div>
+    <div class="stat-value" style="color: var(--accent-blue);">{{ total_count }}</div>
     <div class="stat-desc">Stratified supervisory inquest pool</div>
   </div>
   <div class="stat-card">
@@ -159,5 +159,11 @@
       </tbody>
     </table>
   </div>
+  {% if queue_items %}
+  <p class="queue-shown" style="margin: 0.75rem 0 0; font-size: 0.82rem; color: var(--text-muted);">
+    Showing {{ queue_items|length }} of {{ status_counts[status_filter] }} records{% if queue_items|length < status_counts[status_filter] %}, highest priority score first{% endif %},
+    from the latest assessment run <code>{{ run_id }}</code>. A record picked again by a new run keeps the examiner's decision.
+  </p>
+  {% endif %}
 </div>
 {% endblock %}
