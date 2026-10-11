@@ -40,7 +40,7 @@ from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
 from satsa.explain.finding_card import WHY_IT_MATTERS, FindingCard
 from satsa.ingest.pipeline import IngestionPipeline, default_entity_record, detect_source_mapping
 from satsa.models.canonical import Entity
-from satsa.models.outputs import ExaminerFeedback
+from satsa.models.outputs import EXAMINER_DECISIONS, ExaminerFeedback
 from satsa.netguard import install_egress_guard, uninstall_egress_guard
 from satsa.peers.anomaly_scan import format_value as format_metric_value
 from satsa.peers.grouping import PeerResolver
@@ -1037,6 +1037,8 @@ QUEUE_STATUS_FILTERS: dict[str, str] = {
     "not_an_issue": "Marked as Justified",
     "needs_more_data": "CSE Explanation Requested",
 }
+# The most queue rows one page shows, highest score first.
+QUEUE_PAGE_ROWS = 200
 
 
 def _queue_status(value: str | None) -> str:
@@ -1049,22 +1051,31 @@ async def view_review_queue(request: Request, status: str | None = None) -> Resp
     status_filter = _queue_status(status)
     sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
-    cur.execute("SELECT examiner_status, COUNT(*) AS n FROM review_queue GROUP BY examiner_status")
+    # Every run saves a full queue; the examiner works the latest one. Earlier runs' copies
+    # of the same records are history (a new run keeps their decisions: save_review_queue).
+    run_id = _latest_run_id(sqlite_store)
+    cur.execute(
+        "SELECT examiner_status, COUNT(*) AS n FROM review_queue WHERE run_id = ? GROUP BY examiner_status",
+        (run_id,),
+    )
     status_counts = {key: 0 for key in QUEUE_STATUS_FILTERS}
     for r in cur.fetchall():
         status_counts[r["examiner_status"]] = r["n"]
     status_counts[""] = sum(status_counts.values())
+    # The stat cards count the whole queue, like the filter, not just the rows the page shows.
+    cur.execute("SELECT COUNT(*) FROM review_queue WHERE run_id = ? AND is_random", (run_id,))
+    random_count = cur.fetchone()[0]
 
-    # The filter goes in the query, so the 200-row limit applies to the disposition asked for.
+    # The filter goes in the query, so the row limit applies to the disposition asked for.
     cur.execute(
         f"""
         SELECT queue_id, run_id, entity_id, record_type, record_id, severity, score, selection_reason, is_random, examiner_status
         FROM review_queue
-        {"WHERE examiner_status = ?" if status_filter else ""}
+        WHERE run_id = ? {"AND examiner_status = ?" if status_filter else ""}
         ORDER BY score DESC, queue_id ASC
-        LIMIT 200
+        LIMIT {QUEUE_PAGE_ROWS}
         """,
-        (status_filter,) if status_filter else (),
+        (run_id, status_filter) if status_filter else (run_id,),
     )
     queue_items = [dict(r, evidence_cards=[]) for r in cur.fetchall()]
 
@@ -1098,6 +1109,8 @@ async def view_review_queue(request: Request, status: str | None = None) -> Resp
             "status_filter": status_filter,
             "status_filters": QUEUE_STATUS_FILTERS,
             "status_counts": status_counts,
+            "random_count": random_count,
+            "run_id": run_id,
         },
     )
 
@@ -1351,15 +1364,18 @@ async def api_priorities(run_id: str | None = None) -> dict[str, Any]:
 
 
 @app.get("/api/v1/queue", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
-async def api_get_queue(entity_id: str | None = None) -> list[dict[str, Any]]:
+async def api_get_queue(entity_id: str | None = None, run_id: str | None = None) -> list[dict[str, Any]]:
+    """The queue of one run, the latest by default, like the queue page."""
     sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
+    rid = run_id or _latest_run_id(sqlite_store)
     if entity_id:
         cur.execute(
-            "SELECT * FROM review_queue WHERE entity_id = ? ORDER BY score DESC", (entity_id,)
+            "SELECT * FROM review_queue WHERE run_id = ? AND entity_id = ? ORDER BY score DESC",
+            (rid, entity_id),
         )
     else:
-        cur.execute("SELECT * FROM review_queue ORDER BY score DESC")
+        cur.execute("SELECT * FROM review_queue WHERE run_id = ? ORDER BY score DESC", (rid,))
     rows = [{**dict(r), "supervisory_notice": FINDING_NOTICE} for r in cur.fetchall()]
     sqlite_store.close()
     return rows
@@ -1368,20 +1384,32 @@ async def api_get_queue(entity_id: str | None = None) -> list[dict[str, Any]]:
 @app.post("/api/v1/feedback")
 async def api_submit_feedback(
     queue_id: Annotated[str, Form()],
-    status: Annotated[str, Form()] = "confirmed",
+    status: Annotated[str, Form()],  # no default: a missing decision must not escalate
     notes: Annotated[str, Form()] = "",
     return_status: Annotated[str, Form()] = "",
     identity: Identity = Depends(require_role(*REVIEW_ROLES)),
 ) -> RedirectResponse:
+    # Only a real decision on a record that is in the queue: anything else would be saved,
+    # audited and reported as done while changing nothing, or leave the record in no filter.
+    if status not in EXAMINER_DECISIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown decision {status!r}")
     sqlite_store = get_sqlite_store()
-    import hashlib
+    known = sqlite_store.conn.execute(
+        "SELECT 1 FROM review_queue WHERE queue_id = ?", (queue_id,)
+    ).fetchone()
+    if not known:
+        sqlite_store.close()
+        raise HTTPException(status_code=404, detail="No such queue record")
 
     examiner_id = identity.username
-    fb_id = hashlib.sha256(f"{queue_id}:{examiner_id}:{status}".encode()).hexdigest()[:16]
-
     feedback = ExaminerFeedback(
-        feedback_id=fb_id, queue_id=queue_id, examiner_id=examiner_id, status=status, notes=notes
+        feedback_id="", queue_id=queue_id, examiner_id=examiner_id, status=status, notes=notes
     )
+    # One feedback row per submission: a decision made again later is a new entry in the
+    # history, not an overwrite of the earlier one.
+    feedback.feedback_id = hashlib.sha256(
+        f"{queue_id}:{examiner_id}:{status}:{feedback.created_at.isoformat()}".encode()
+    ).hexdigest()[:16]
     sqlite_store.save_feedback(feedback)
     sqlite_store.append_audit(
         action="feedback",
@@ -1406,7 +1434,10 @@ async def api_verify_audit() -> dict[str, Any]:
 async def api_export_queue_csv() -> Response:
     sqlite_store = get_sqlite_store()
     cur = sqlite_store.conn.cursor()
-    cur.execute("SELECT * FROM review_queue ORDER BY score DESC")
+    cur.execute(
+        "SELECT * FROM review_queue WHERE run_id = ? ORDER BY score DESC",
+        (_latest_run_id(sqlite_store),),
+    )
     rows = cur.fetchall()
     sqlite_store.close()
 
