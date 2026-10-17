@@ -14,12 +14,14 @@ import inspect
 import re
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote_plus
 
 import pytest
 import yaml
 from fastapi.testclient import TestClient
 
 from satsa.api.routes import TUNABLE_PARAMS, app
+from satsa.jobs.worker import run_jobs
 from satsa.rules.registry import RuleRegistry
 from satsa.store.duckdb import DuckDBStore
 
@@ -266,16 +268,24 @@ def test_tuning_save_reruns_the_selected_period_not_a_hardcoded_one(analyst_clie
         store.close()
         return row["run_id"], row["period"]
 
+    def run_queued(resp) -> None:
+        """The re-assessment is a job: run it, as the worker would."""
+        job_id = re.search(r"job\+?\s?(JOB-[A-Za-z0-9_-]+)", unquote_plus(resp.headers["location"])).group(1)
+        (job,) = run_jobs(job_id)
+        assert job["state"] == "succeeded", job
+
     created: list[str] = []
     try:
         resp = analyst_client.post("/tuning/save", data={"period": "2026-H1"}, follow_redirects=False)
         assert resp.status_code == 303
+        run_queued(resp)
         run_id, period = latest()
         created.append(run_id)
         assert period == "2026-H1"
         # With no period given, the latest run's period is kept (it used to snap back to 2026-Q1).
         resp = analyst_client.post("/tuning/save", data={}, follow_redirects=False)
         assert resp.status_code == 303
+        run_queued(resp)
         run_id, period = latest()
         created.append(run_id)
         assert period == "2026-H1"

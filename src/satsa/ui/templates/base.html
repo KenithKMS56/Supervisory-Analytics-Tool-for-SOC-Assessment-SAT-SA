@@ -20,6 +20,7 @@
   <link rel="stylesheet" href="/static/style.css?v=9.1.1">
   <script src="/static/echarts.min.js"></script>
   <script src="/static/echarts-theme.js?v=9.0.0"></script>
+  {% block head %}{% endblock %}
 </head>
 <body>
   <main>
@@ -86,7 +87,7 @@
       <!-- 5. Configuration & Audit Popover Menu -->
       <div class="floating-nav-item-wrapper floating-nav-config" id="navConfig">
         <button type="button"
-                class="floating-nav-item floating-nav-btn {% if active_tab in ('blind_review', 'rules', 'dq', 'tuning', 'runs', 'audit', 'shadow_pilot') %}active{% endif %}"
+                class="floating-nav-item floating-nav-btn {% if active_tab in ('blind_review', 'rules', 'dq', 'tuning', 'runs', 'audit', 'shadow_pilot', 'jobs') %}active{% endif %}"
                 id="navConfigBtn"
                 aria-haspopup="true"
                 aria-expanded="false"
@@ -106,6 +107,10 @@
           <li role="none"><a role="menuitem" href="/blind-review" class="{% if active_tab == 'blind_review' %}active{% endif %}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
             Blind Review
+          </a></li>
+          <li role="none"><a role="menuitem" href="/jobs" class="{% if active_tab == 'jobs' %}active{% endif %}">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"></rect><line x1="7" y1="9" x2="17" y2="9"></line><line x1="7" y1="13" x2="17" y2="13"></line><line x1="7" y1="17" x2="13" y2="17"></line></svg>
+            Jobs
           </a></li>
           {% if nav_is_analyst %}
           <li role="none"><a role="menuitem" href="/rules" class="{% if active_tab == 'rules' %}active{% endif %}">

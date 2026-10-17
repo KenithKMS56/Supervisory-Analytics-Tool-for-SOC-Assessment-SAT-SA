@@ -44,7 +44,7 @@ from satsa.scoring.fingerprint import (
 from satsa.scoring.prioritiser import ReviewPrioritiser
 from satsa.scoring.scorer import ScoringEngine
 from satsa.scoring.selection import ALL_SUBMITTED, AssessmentWindow, apply_window, window_for_period
-from satsa.security import is_valid_entity_id
+from satsa.security import is_valid_entity_id, is_valid_run_id
 from satsa.store.catalog import DECLARED_EMPTY, REJECTED
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
@@ -345,8 +345,12 @@ class AssessmentRunner:
         reference_date: datetime | None = None,
         window: AssessmentWindow | None = None,
         max_pub_seq: int | None = None,
+        run_id: str | None = None,
     ) -> dict[str, Any]:
         """Run full evaluation pipeline.
+
+        `run_id` makes the run idempotent (satsa.jobs): if a run with that id was already
+        published, it is returned instead of being assessed again.
 
         What is assessed (satsa.scoring.selection): `window` if given, else the window the
         `period` label names (`2026`, `2026-Q1`, `2026-H1`, `2026-03`). A label that names no
@@ -371,6 +375,16 @@ class AssessmentRunner:
         partial run (and is recorded in the audit log as `run_failed`).
         """
         label = period or ALL_SUBMITTED_LABEL
+        if run_id is not None and not dry_run:
+            if not is_valid_run_id(run_id):
+                raise ValueError(f"invalid run id {run_id!r}")
+            done = self.sqlite_store.conn.execute(
+                "SELECT run_id, (SELECT count(*) FROM findings f WHERE f.run_id = r.run_id) AS n "
+                "FROM runs r WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if done is not None:
+                return {"status": "success", "run_id": done["run_id"], "findings_count": done["n"],
+                        "already_published": True}
         if window is None:
             window = window_for_period(period, max_pub_seq)
         selection_report: dict[str, Any] = {}
@@ -408,7 +422,7 @@ class AssessmentRunner:
         # the same wall-clock second, e.g. when seeding several historical
         # periods back-to-back (see satsa.scoring.history).
         uniq_suffix = hashlib.sha256(f"{cfg_hash}:{label}:{now.isoformat()}".encode()).hexdigest()[:8]
-        run_id = f"RUN-{now.strftime('%Y%m%d%H%M%S%f')}-{uniq_suffix}"
+        run_id = run_id or f"RUN-{now.strftime('%Y%m%d%H%M%S%f')}-{uniq_suffix}"
 
         all_findings: list[Finding] = []
         all_evidences: list[FindingEvidence] = []

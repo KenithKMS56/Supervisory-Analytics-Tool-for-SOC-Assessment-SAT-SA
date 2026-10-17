@@ -764,8 +764,12 @@ class IngestionPipeline:
         revision_of: str | None = None,
         reject_overlap: bool = False,
         declared_empty: Iterable[str] = (),
+        batch_id: str | None = None,
     ) -> dict[str, Any]:
         """Ingest all CSV, TSV, Excel and JSON tables from directory, validate DQ, and store as Parquet.
+
+        `batch_id` names the batch (a job derives it from its own id, so a retried attempt can
+        find what an earlier one published); it must not exist yet.
 
         Rows whose `entity_id` fails satsa.security.ENTITY_ID_RE are dropped
         (never written, never evaluated) and reported as an `invalid_entity_id`
@@ -1551,8 +1555,11 @@ class IngestionPipeline:
         batch, _manifest_dict = ManifestBuilder.build_manifest(
             entity_id=batch_owner, files=list(dict.fromkeys(processed_files)), row_counts=row_counts
         )
-        batch_id = batch.batch_id
-        if catalog.batch(batch_id) is not None:  # the same files submitted again: a new batch
+        requested_batch_id = batch_id
+        batch_id = requested_batch_id or batch.batch_id
+        if requested_batch_id is not None and catalog.batch(requested_batch_id) is not None:
+            raise PublicationError(f"batch {requested_batch_id} already exists")
+        if requested_batch_id is None and catalog.batch(batch_id) is not None:  # the same files again: a new batch
             batch_id = f"{batch_id}-{hashlib.sha256(f'{batch_id}:{content_hash}:{catalog.max_pub_seq()}'.encode()).hexdigest()[:6]}"
             n = 0
             while catalog.batch(batch_id if n == 0 else f"{batch_id}{n}") is not None:

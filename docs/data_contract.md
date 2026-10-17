@@ -131,3 +131,13 @@ submitted data and says so: "all submitted data (cumulative, no period filter)".
 | Compression ratio per member over 1 MiB | 200× | fixed |
 
 Member names are validated before anything is extracted.
+
+## API change log
+
+- **1.1 (Phase 2).**
+  - `POST /api/v1/submissions` with `run_assessment_now: true` now *queues* the assessment as a
+    job and returns `assessment_job_id`.
+  - `GET /api/v1/jobs/{assessment_job_id}` returns the job. Once it has succeeded,
+    `result.run_id` is the run.
+  - `assessment_run_id` is still present for compatibility and is always `null`.
+  - `/docs` and `/openapi.json` need a signed-in session.

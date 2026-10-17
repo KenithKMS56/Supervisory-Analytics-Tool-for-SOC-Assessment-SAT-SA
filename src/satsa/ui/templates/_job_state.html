@@ -1,0 +1,6 @@
+{# A job state as text plus a symbol, never colour alone. Expects `job`. #}
+{% if job.state == "succeeded" %}<span class="badge badge-low">&#10003; succeeded</span>
+{% elif job.state == "failed" %}<span class="badge badge-crit">&#10007; failed</span>
+{% elif job.state == "cancelled" %}<span class="badge">&#8856; cancelled</span>
+{% elif job.state == "running" %}<span class="badge badge-med">&#9654; running{% if job.cancel_requested %} (cancel requested){% endif %}</span>
+{% else %}<span class="badge">&#8987; queued</span>{% endif %}

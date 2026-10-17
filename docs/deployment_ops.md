@@ -139,6 +139,49 @@ satsa serve --port 8000
 - Navigate to `http://127.0.0.1:8000` in local browser (loopback is the default bind address; see Section 1.3).
 - Examiner views portfolio heatmap, inspects entity profiles, reviews finding cards, and marks feedback.
 
+### SOP-05: The job worker
+
+Uploads, re-assessments after rule tuning or an entity change, assessments requested through
+the API (`run_assessment_now`), and demo seeding run as **durable jobs** in a worker process,
+not inside the web request.
+
+```bash
+satsa worker                 # run jobs until stopped (Ctrl+C / SIGTERM)
+satsa worker --once          # run what is queued, then exit
+satsa jobs list              # recent jobs and live workers
+satsa jobs cancel JOB-...    # cancel a queued job; a running one stops at its next stage
+```
+
+- **Starting it.** `entrypoint.py` (the container) starts exactly one worker next to the two
+  portals. On a native install, start `satsa worker` in the deployment directory, the same
+  directory the portals run in.
+- **Single writer.** One worker is the deployment's single analytical writer. Two are safe,
+  because claims are atomic and publication takes the catalog's writer lock, but they gain
+  nothing.
+- **What users see.** An upload goes to its job page (`/jobs/<id>`). The page shows the state
+  (queued, running, succeeded, failed, cancelled), the current stage, attempts and heartbeat,
+  then the outcome. It refreshes itself while the job runs. There is no percentage, because
+  none would be measured. If no worker has reported for 60 seconds, the page says so.
+- **Restarts.**
+  - Jobs live in `data/satsa.db` (table `jobs`) and uploaded files in `data/jobs/<id>/input/`,
+    so restarting the portals or the worker loses nothing.
+  - A running job holds a lease that its worker renews every lease/4 seconds (lease 120 s by
+    default).
+  - If the worker dies, the next worker finds the expired lease and requeues the job (imports
+    and assessments, up to 3 attempts) or fails it with a `WorkerLost` error (demo seeding,
+    which is not retried automatically).
+- **No duplicates on retry.**
+  - An assessment job's run id is `RUN-<job id>`. A retry after the run was published returns
+    that run instead of publishing a second one.
+  - An import job's batch id is `BATCH-<job id>-a<attempt>`. A retry continues from a batch an
+    earlier attempt published or held instead of ingesting the files again.
+- **Disk preflight.** An import refuses to start (`InsufficientDisk`) unless the data volume
+  has three times the upload's size free, plus `SATSA_MIN_FREE_DISK_MB` (default 512).
+- **Still synchronous** (kept small by design):
+  - the JSON submission API's validation and publication (capped by the request size);
+  - held-batch publish and discard;
+  - the rule-tuning *preview*, which is a dry run and writes nothing.
+
 ---
 
 ## 3. Signed Rule-Pack Updates
