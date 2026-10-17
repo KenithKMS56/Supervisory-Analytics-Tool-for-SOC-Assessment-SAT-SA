@@ -1,4 +1,4 @@
-# Threat model (version 1, Phase 2)
+# Threat model (version 2, Phase 3)
 
 Scope: one SAT-SA deployment, made up of:
 - the Admin Portal (:8000);
@@ -53,6 +53,10 @@ release gate that is still **blocked** (docs/release_readiness.md).
 | T12 | Data exfiltration over the network | Loopback bind by default; egress guard (defence in depth); no external assets | `tests/test_netguard.py`, `tests/test_offline_hardening.py`, `tests/browser/test_offline_browser.py` |
 | T13 | Resource exhaustion by long requests | Imports and assessments run in the worker (one writer), not in requests; disk preflight | `tests/test_jobs.py`. **Gap:** no memory preflight. |
 | T14 | Secrets in logs or exports | Admin audit strips password fields; tokens are never logged; `keys status` and `service-credential list` show no secrets | `tests/test_access_controls.py` (no secret stored or audited). **Gap:** there is no structured-log redaction test yet (Phase 5). |
+| T15 | Tampered, forged or replayed entity response package; malicious attachment | HMAC-SHA256 token per request under a key in `data/secrets/`; must answer the case's current request; same package is idempotent, a different one to an answered request is refused; zip member, count, size and ratio limits; attachments stored by hash, served only as `nosniff` downloads, hash re-checked on download | `tests/test_case_packages.py`, `tests/test_case_http.py` |
+| T16 | Rewriting a supervisory decision or its history; lost update by a concurrent edit | Append-only `case_events` (triggers refuse UPDATE/DELETE); superseding decisions instead of edits; every action in the audit chain; `expected_version` check inside one IMMEDIATE transaction | `tests/test_cases.py::test_history_is_immutable_and_corrections_supersede`, `::test_conflicting_concurrent_edits_are_detected` |
+| T17 | Self-approval of a decision | Owner-only actions; closure and verification need an examiner other than the owner and the decision maker; adjudication by a third examiner | `tests/test_cases.py::test_unauthorised_transitions_fail`, `::test_a_disagreement_must_be_adjudicated_by_a_third_examiner` |
+| T18 | Supervisor-only evidence leaking to an entity, or scores leaking into a blind task | Request packages carry no score, peer, severity, evidence record or other entity; blind-task pages are built without any scored field until the reveal | `tests/test_case_packages.py::test_the_request_package_carries_only_what_the_entity_needs`, `tests/test_blind_tasks.py::test_a_task_serves_nothing_scored_until_its_examiner_reveals_it` |
 
 ## Residual risks (accepted or open)
 

@@ -269,6 +269,184 @@ def _m6_admin_mfa(conn: sqlite3.Connection) -> None:
     _add_column(conn, "admin_sessions", "mfa_verified_at", "TEXT")
 
 
+CASE_STATES = (
+    "new", "assigned", "explanation_requested", "response_received", "confirmed", "dismissed",
+    "inconclusive", "corrective_action", "verification", "closed", "reopened",
+)
+
+
+def _immutable(conn: sqlite3.Connection, table: str) -> None:
+    """Refuse UPDATE and DELETE on an append-only table, whoever the writer is."""
+    for op in ("UPDATE", "DELETE"):
+        conn.execute(
+            f"CREATE TRIGGER IF NOT EXISTS {table}_no_{op.lower()} BEFORE {op} ON {table} "
+            f"BEGIN SELECT RAISE(ABORT, '{table} rows are immutable'); END"
+        )
+
+
+def _m7_examiner_workflow(conn: sqlite3.Connection) -> None:
+    """Supervisory cases (satsa.cases.workflow), offline response packages (satsa.cases.packages)
+    and assigned blind-review tasks (satsa.cases.blind).
+
+    - `cases`: the current state of one supervisory concern (entity x rule lineage), a projection
+      of its events. At most one case per entity and rule is open; `version` detects concurrent
+      edits.
+    - `case_events`: the immutable history: every transition, decision, superseding decision,
+      review, adjudication and note. Triggers refuse UPDATE and DELETE.
+    - `case_attachments`: evidence files (content-addressed under data/case_files/), immutable.
+    - `corrective_actions`: what the entity must do and how completion is verified.
+    - `case_packages`: explanation requests exported for the entity and the responses imported.
+    - `blind_samples`, `blind_tasks`: blind-review samples (flagged, random and control entities,
+      with their seed and provenance) assigned to an examiner; the system's band is recorded at
+      submission and shown only after the examiner reveals it.
+
+    Existing review-queue dispositions (`feedback`) and blind reviews (`blind_reviews`) are kept
+    as they are: they are record-level triage and earlier reviews, not cases.
+    """
+    states = ", ".join(f"'{s}'" for s in CASE_STATES)
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS cases (
+            case_id TEXT PRIMARY KEY,
+            entity_id TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            rule_version TEXT NOT NULL,
+            finding_id TEXT NOT NULL REFERENCES findings (finding_id),
+            run_id TEXT NOT NULL REFERENCES runs (run_id),
+            title TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ({states})),
+            outcome TEXT CHECK (outcome IS NULL OR outcome IN ('confirmed', 'dismissed', 'inconclusive')),
+            decided_by TEXT,
+            owner TEXT,
+            due_date TEXT,
+            previous_case_id TEXT REFERENCES cases (case_id),
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            closed_at TEXT,
+            version INTEGER NOT NULL DEFAULT 1
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_cases_one_open_per_lineage ON cases (entity_id, rule_id) "
+        "WHERE state != 'closed'"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cases_state ON cases (state, updated_at)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS case_events (
+            event_id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL REFERENCES cases (case_id),
+            seq INTEGER NOT NULL,
+            action TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            actor_role TEXT NOT NULL,
+            from_state TEXT,
+            to_state TEXT,
+            rationale TEXT,
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            supersedes_event_id TEXT REFERENCES case_events (event_id),
+            created_at TEXT NOT NULL,
+            UNIQUE (case_id, seq)
+        )
+        """
+    )
+    _immutable(conn, "case_events")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS case_attachments (
+            attachment_id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL REFERENCES cases (case_id),
+            event_id TEXT NOT NULL REFERENCES case_events (event_id),
+            filename TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            bytes INTEGER NOT NULL,
+            source TEXT NOT NULL CHECK (source IN ('examiner_upload', 'response_package')),
+            added_by TEXT NOT NULL,
+            added_at TEXT NOT NULL
+        )
+        """
+    )
+    _immutable(conn, "case_attachments")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS corrective_actions (
+            action_id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL REFERENCES cases (case_id),
+            description TEXT NOT NULL,
+            owner TEXT NOT NULL,
+            due_date TEXT NOT NULL,
+            verification_criteria TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('open', 'submitted', 'verified', 'failed')),
+            created_event_id TEXT NOT NULL REFERENCES case_events (event_id),
+            created_at TEXT NOT NULL,
+            resolved_event_id TEXT REFERENCES case_events (event_id),
+            resolved_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS case_packages (
+            package_id TEXT PRIMARY KEY,
+            case_id TEXT NOT NULL REFERENCES cases (case_id),
+            request_event_id TEXT NOT NULL REFERENCES case_events (event_id),
+            exported_by TEXT NOT NULL,
+            exported_at TEXT NOT NULL,
+            response_sha256 TEXT,
+            response_event_id TEXT REFERENCES case_events (event_id),
+            imported_by TEXT,
+            imported_at TEXT,
+            UNIQUE (request_event_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS blind_samples (
+            sample_id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL REFERENCES runs (run_id),
+            seed INTEGER NOT NULL,
+            flagged_n INTEGER NOT NULL,
+            random_n INTEGER NOT NULL,
+            control_n INTEGER NOT NULL,
+            method_json TEXT NOT NULL,
+            assigned_to TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS blind_tasks (
+            task_id TEXT PRIMARY KEY,
+            sample_id TEXT NOT NULL REFERENCES blind_samples (sample_id),
+            position INTEGER NOT NULL,
+            entity_id TEXT NOT NULL,
+            run_id TEXT NOT NULL REFERENCES runs (run_id),
+            sample_kind TEXT NOT NULL CHECK (sample_kind IN ('flagged', 'random', 'control')),
+            provenance_json TEXT NOT NULL,
+            assigned_to TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            examiner_concern TEXT,
+            examiner_priority TEXT,
+            examiner_recommendation TEXT,
+            examiner_notes TEXT,
+            submitted_at TEXT,
+            system_risk_index REAL,
+            system_risk_band TEXT,
+            system_classification TEXT,
+            concordance_score REAL,
+            revealed_at TEXT,
+            UNIQUE (sample_id, position)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_blind_tasks_assignee ON blind_tasks (assigned_to, submitted_at)")
+
+
 OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(1, "evidence coverage and rule results", _m1_evidence_coverage),
     Migration(2, "run snapshots and analytical fingerprint", _m2_run_snapshots),
@@ -276,4 +454,5 @@ OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(4, "deployment settings and mode", _m4_deployment_settings),
     Migration(5, "service credentials, session idle timeout, entity retirement", _m5_access_controls),
     Migration(6, "administrator MFA", _m6_admin_mfa),
+    Migration(7, "supervisory cases, case events, response packages, blind tasks", _m7_examiner_workflow),
 ]

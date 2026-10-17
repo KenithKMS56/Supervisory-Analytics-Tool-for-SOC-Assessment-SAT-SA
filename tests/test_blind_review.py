@@ -23,37 +23,53 @@ def examiner():
     return c
 
 
+def _latest_run(store: SQLiteStore) -> str:
+    return store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()[0]
+
+
 def _entity_in_band(prefix: str) -> str:
     store = SQLiteStore("data/satsa.db")
-    run_id = store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()[0]
     row = store.conn.execute(
         "SELECT entity_id FROM entity_scores WHERE run_id = ? AND risk_band LIKE ? ORDER BY entity_id LIMIT 1",
-        (run_id, f"{prefix}%"),
+        (_latest_run(store), f"{prefix}%"),
     ).fetchone()
     store.close()
     assert row, f"bootstrapped data has no entity in the {prefix} band"
     return row["entity_id"]
 
 
+def _task_for(entity_id: str) -> str:
+    """A fresh blind task on `entity_id` for the examiner: a sample of every classified entity,
+    drawn by the analyst (a blind judgement is made once per task)."""
+    from satsa.cases.blind import create_sample
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        sample = create_sample(store, _latest_run(store), "analyst", "analyst", "examiner", 50, 0, 0, seed=11)
+        row = store.conn.execute(
+            "SELECT task_id FROM blind_tasks WHERE sample_id = ? AND entity_id = ?", (sample["sample_id"], entity_id)
+        ).fetchone()
+    finally:
+        store.close()
+    assert row, f"{entity_id} is not among the run's classified entities"
+    return row["task_id"]
+
+
 def _submit(client: TestClient, entity_id: str, concern: str) -> float:
+    task_id = _task_for(entity_id)
     resp = client.post(
-        "/blind-review/submit",
+        f"/blind-review/tasks/{task_id}/submit",
         data={
-            "entity_id": entity_id,
             "examiner_concern": concern,
-            "examiner_priority": "High",
-            "examiner_recommendation": "On-site review",
+            "examiner_priority": "P2",
+            "examiner_recommendation": "Formal Audit",
             "examiner_notes": f"concordance test ({concern})",
         },
         follow_redirects=False,
     )
     assert resp.status_code == 303
     store = SQLiteStore("data/satsa.db")
-    row = store.conn.execute(
-        "SELECT concordance_score FROM blind_reviews WHERE entity_id = ? AND examiner_concern = ? "
-        "ORDER BY created_at DESC LIMIT 1",
-        (entity_id, concern),
-    ).fetchone()
+    row = store.conn.execute("SELECT concordance_score FROM blind_tasks WHERE task_id = ?", (task_id,)).fetchone()
     store.close()
     return float(row["concordance_score"])
 

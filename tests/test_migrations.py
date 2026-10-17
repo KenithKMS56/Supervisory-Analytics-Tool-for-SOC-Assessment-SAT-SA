@@ -64,14 +64,14 @@ def test_a_version0_database_is_backed_up_migrated_and_keeps_every_row(tmp_path)
     recorded = store.conn.execute("SELECT version, backup_path FROM schema_migrations ORDER BY version").fetchall()
     store.close()
 
-    assert applied == [1, 2, 3, 4, 5, 6]  # every operational migration (docs/migrations.md)
+    assert applied == [1, 2, 3, 4, 5, 6, 7]  # every operational migration (docs/migrations.md)
     assert runs == [{"run_id": "RUN-OLD", "config_hash": "abc", "fingerprint": None}]
     # Legacy values unchanged; what legacy runs never recorded is NULL, never a made-up value.
     assert (scores["risk_index"], scores["risk_band"]) == (42.5, "High Supervisory Concern")
     assert scores["classification_status"] is None and scores["coverage"] is None
     assert domains == {"Escalation": 61.0, "Investigation": 0.0}
     backup = Path(recorded[0]["backup_path"])
-    assert [r["version"] for r in recorded] == [1, 2, 3, 4, 5, 6] and backup.exists()
+    assert [r["version"] for r in recorded] == [1, 2, 3, 4, 5, 6, 7] and backup.exists()
     with sqlite3.connect(backup) as old:  # the backup is the database exactly as it was
         assert old.execute("SELECT count(*) FROM domain_scores").fetchone()[0] == 2
         assert "rule_results" not in {r[0] for r in old.execute("SELECT name FROM sqlite_master")}

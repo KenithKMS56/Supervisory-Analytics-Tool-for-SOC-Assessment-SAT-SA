@@ -13,7 +13,7 @@ resource.
 | Analyst | SAT-SA (:8001) | **Portfolio-wide by design**: ingests for, assesses and tunes every entity | implemented |
 | Examiner | SAT-SA (:8001) | **Portfolio-wide by design**: reviews findings of every entity; records decisions | implemented |
 | Service account (service credential) | `POST /api/v1/submissions` only | Explicit list of entities, `submit` scope, expiry | implemented (Phase 2) |
-| Reviewer / approver | (none) | (none) | **not implemented**. Approval workflows such as rule-pack approval and case sign-off come in Phase 3. The role will be added only with a complete workflow. |
+| Reviewer / approver | (none) | (none) | **not implemented as a role**. Case sign-off (closing, verifying) and adjudication need a *different examiner account* from the owner and the decision maker, enforced on the server (docs/examiner_workflow.md). Rule-pack approval is still to come. |
 | Read-only auditor | (none) | (none) | **not implemented** |
 | CSE-scoped roles (`CSE Administrator`, `SOC Manager`, `SOC Analyst`, `CSE Viewer`) | can be created in the Admin Portal | one CSE | **refused by SAT-SA**. No CSE-facing workflow exists yet; a session holding such a role gets 403 on every gated path. |
 
@@ -27,7 +27,11 @@ Phase 3 case workflow.
 | Resource | Anonymous | Examiner | Analyst | Admin | Service credential |
 |---|---|---|---|---|---|
 | Portfolio, entity, finding pages, review queue, blind review | login redirect | read | read | 403 | 401 |
-| Review decisions (`/api/v1/feedback`, blind-review submit) | 401 | **write** | 403 | 403 | 401 |
+| Review decisions (`/api/v1/feedback`) | 401 | **write** | 403 | 403 | 401 |
+| Supervisory cases: list, page, `/api/v1/cases` reads, evidence downloads | login redirect / 401 | read | read | 403 | 401 |
+| Supervisory cases: open, transitions, request/response packages | 401 | **write** (owner-only and second-examiner rules apply) | 403 | 403 | 401 |
+| Blind review: draw a sample | 401 | 403 | **write** | 403 | 401 |
+| Blind review: task page, submit, reveal | login redirect / 401 | **own tasks only** | 403 | 403 | 401 |
 | Upload, held-batch publish/discard, register or retire entity | 401 | 403 | **write** | 403 | 401 |
 | JSON batch submission `/api/v1/submissions` | 401 | 403 | write | 403 | **write, own entities only** |
 | Jobs: list, page, `/api/v1/jobs/{id}` | 401 | read | read | 403 | 401 |

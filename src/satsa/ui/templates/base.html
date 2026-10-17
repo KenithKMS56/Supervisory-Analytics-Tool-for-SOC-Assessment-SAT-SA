@@ -78,6 +78,14 @@
         <span class="nav-text">Review Queue</span>
       </a>
 
+      <!-- Supervisory cases (examiner workflow) -->
+      <a href="/cases" class="floating-nav-item {% if active_tab == 'cases' %}active{% endif %}" title="Supervisory Cases">
+        <svg class="nav-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+        </svg>
+        <span class="nav-text">Cases</span>
+      </a>
+
       {% if nav_is_analyst %}
       <!-- 4. Upload & Ingest -->
       <a href="/upload" class="floating-nav-item {% if active_tab == 'upload' %}active{% endif %}" title="Upload & Ingest">
@@ -474,16 +482,20 @@
         var form = evt.target;
         // An inline onsubmit="return confirm(...)" that was declined has already cancelled it.
         if (evt.defaultPrevented || !(form instanceof HTMLFormElement)) return;
-        if (form.hasAttribute('data-full-reload') || (form.target && form.target !== '_self')) return;
+        // Attributes, not form.action / form.method / form.target: a field named "action" (the
+        // case forms have one) would shadow those properties.
+        var target = form.getAttribute('target');
+        if (form.hasAttribute('data-full-reload') || (target && target !== '_self')) return;
 
         var submitter = evt.submitter || null;
-        var action = new URL((submitter && submitter.getAttribute('formaction')) || form.action, location.href);
+        var action = new URL((submitter && submitter.getAttribute('formaction')) || form.getAttribute('action') || location.href,
+                             location.href);
         if (action.origin !== location.origin || FULL_RELOAD_PATHS.indexOf(action.pathname) !== -1) return;
 
         evt.preventDefault();
         if (form.dataset.satsaBusy) return; // no double submit while one is in flight
 
-        var method = ((submitter && submitter.getAttribute('formmethod')) || form.method || 'get').toUpperCase();
+        var method = ((submitter && submitter.getAttribute('formmethod')) || form.getAttribute('method') || 'get').toUpperCase();
         var data;
         try { data = new FormData(form, submitter); } catch (e) { data = new FormData(form); }
         var opts = { method: method, credentials: 'same-origin', headers: { 'X-Requested-With': 'fetch' } };
