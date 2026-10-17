@@ -229,12 +229,12 @@ def _seed_large_portfolio(s: SQLiteStore, n_entities: int = 60) -> str:
             eid = f"ENT-{i:03d}"
             risk = (i * 37) % 100
             s.conn.execute(
-                "INSERT INTO entity_scores VALUES (?, ?, ?, ?, ?, NULL)",
+                "INSERT INTO entity_scores (run_id, entity_id, risk_index, risk_band, distinct_rules_triggered, domain_scores_json) VALUES (?, ?, ?, ?, ?, NULL)",
                 (run_id, eid, float(risk), "band", 3),
             )
             for j, dom in enumerate(domains):
                 s.conn.execute(
-                    "INSERT INTO domain_scores VALUES (?, ?, ?, ?)",
+                    "INSERT INTO domain_scores (run_id, entity_id, domain, score) VALUES (?, ?, ?, ?)",
                     (run_id, eid, dom, float((risk + j * 20) % 100)),
                 )
             for k, sev in enumerate(("critical", "high", "medium")[: 1 + i % 3]):

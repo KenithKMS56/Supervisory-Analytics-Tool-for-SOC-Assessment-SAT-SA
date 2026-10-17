@@ -79,21 +79,22 @@ def test_stray_unpartitioned_file_does_not_empty_table(tmp_path):
     store.close()
 
 
-def test_rewritten_parquet_reloads_from_disk_not_a_file_cache(tmp_path):
-    """A re-ingest rewrites data.parquet at the same path and reloads it on the same
-    connection. DuckDB's external file cache could serve the old file's bytes (on Linux CI
-    the golden test's double ingest failed with "ZSTD Decompression failure" and loaded an
-    empty table), so the store turns it off; the reload must see exactly the new rows."""
+def test_new_versions_reload_from_disk_not_a_file_cache(tmp_path):
+    """Each re-submission of the same records publishes a new batch file and the store reloads
+    on the same connection. DuckDB's external file cache could serve stale bytes (on Linux CI a
+    double ingest once failed with "ZSTD Decompression failure" and loaded an empty table), so
+    the store turns it off; the reload must see exactly the newest version of every record,
+    once, and never a superseded one."""
     store = DuckDBStore(tmp_path)
     assert store.conn.execute("SELECT current_setting('enable_external_file_cache')").fetchone()[0] is False
+    ids = [f"A-{i}" for i in range(50)]
     for version in range(1, 6):
-        frame = pl.DataFrame({"entity_id": ["CSE-01"] * 50, "alert_id": [f"A{version}-{i}" for i in range(50)]})
-        file_path = tmp_path / "parquet" / "alert" / "entity_id=CSE-01" / "data.parquet"
-        if file_path.exists():
-            file_path.unlink()  # a rewrite at the same path, as re-ingest does
+        frame = pl.DataFrame({"entity_id": ["CSE-01"] * 50, "alert_id": ids, "category": [f"v{version}"] * 50})
         store.write_partitioned_parquet("alert", frame)
-        ids = store.query("SELECT alert_id FROM alert ORDER BY alert_id")["alert_id"].to_list()
-        assert ids == sorted(frame["alert_id"].to_list())
+        rows = store.query("SELECT alert_id, category FROM alert ORDER BY alert_id").rows()
+        assert rows == sorted((i, f"v{version}") for i in ids)
+    files = list((tmp_path / "parquet" / "alert" / "entity_id=CSE-01").glob("*.parquet"))
+    assert len(files) == 5  # every version is kept on disk; none was rewritten
     store.close()
 
 

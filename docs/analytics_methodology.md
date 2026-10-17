@@ -256,11 +256,51 @@ $$S_d = 100 \times \left(1 - \prod_{i=1}^m \left(1 - \frac{s_i}{100}\right)\righ
 
 ### 4.3 Composite Entity Risk Index
 $$\text{RiskIndex} = (1 - w_{\text{breadth}}) \left(\sum_{d=1}^8 w_d S_d\right) + w_{\text{breadth}} \times \min(100.0, \; 10 \times N_{\text{distinct\_rules}})$$
+- The sum runs over the domains with a known score (Section 4.6), and the weights of those domains are renormalised to sum to 1. A domain no rule could assess is left out instead of counting as 0. When every domain is known, this is the plain weighted sum shown above.
 - Standard domain weights $w_d$ sum to 1.0 (configured in `config/scoring.yaml`).
 - Default breadth weight $w_{\text{breadth}} = 0.10$.
 - **Risk bands by index** (`risk_bands` in `config/scoring.yaml`): 0–25 Low, 25–50 Moderate, 50–75 High, 75–100 Critical Supervisory Concern.
 - **Band floor** (`band_floors`): the index is a weighted average over 8 domains, so a single maximum-score finding in one domain cannot lift it above about 14. To stop an entity with, say, an unreported critical incident being labelled "Low Supervisory Concern", an entity with a **critical**-severity finding (confidence ≥ 0.5) is classified at least **High**, and one with a **high**-severity finding at least **Moderate**. The floor changes the band only: the index and the entity ranking are unchanged, and the entity profile states when the band was raised.
 - The dashboard, HTML reports and PDFs all take an entity's classification, colour and "requires action" status (any band above Low) from this stored band.
+
+### 4.6 Evidence coverage
+
+Every run stores one result state for every entity and every rule (`rule_results`):
+
+| State | When |
+|---|---|
+| `finding` | The rule fired. |
+| `assessed_clear` | The rule ran on enough data and did not fire. |
+| `degraded` | The rule ran, but an alert column it needs holds no usable value, so it could not fire. No finding is not evidence that the control works. |
+| `insufficient_evidence` | A table the rule needs was not submitted or was rejected. In a period assessment, the table has no records for the period and was not submitted for it. Or the rule did not fire on fewer records than its `min_sample`. |
+| `not_applicable` | An audited applicability decision says the rule does not apply to the entity. The decision records a reason, author, rule version and optional expiry. It is never a shortcut for missing data. |
+
+The population counted against `min_sample` is the rule's base table for the entity in the selected window. That is alerts for most rules, and cases, escalations or assets for the others (`satsa.rules.contracts`). It can be broader than the sub-population a rule finally examines. So `assessed_clear` makes the weaker claim "enough data was present", not "every sub-population was large enough".
+
+**Coverage** = assessed / applicable. Assessed counts `finding` and `assessed_clear`. Applicable excludes `not_applicable`. Degraded and insufficient rules never count as assessed.
+
+**Domain score**: a domain with no assessed rule and no finding is *unknown* (`score` NULL), never 0. A finding always counts, so missing data elsewhere never hides a supported critical concern.
+
+**Classification** uses the `evidence_coverage` thresholds in `config/scoring.yaml`. They are proposed defaults, not validated.
+- `assessable`: coverage ≥ 0.9.
+- `partially_assessable`: coverage between the two thresholds. The band comes from the index over the known domains (4.3) and must be read with the coverage beside it.
+- `insufficient_evidence`: coverage < 0.25, or no applicable rule. The entity gets no band from its index, because a handful of assessed rules must not read as assurance. Its band is "Insufficient Evidence" unless a finding sets a band floor (4.3), which still applies.
+
+**Data-request priority** ranks the missing inputs by how many rules each would let the next assessment evaluate (`entity_scores.data_request_priority`). It is kept separate from the risk ranking.
+
+### 4.7 What an assessment reads
+
+`satsa.scoring.selection` is the only code that decides which records an assessment reads. A period such as `2026-Q1` is the half-open window [2026-01-01, 2026-04-01) in UTC. Within it:
+- Alerts are selected by creation time.
+- Cases open in the window are carried in (the backlog).
+- Events belong to the window, or to a selected record.
+- KPIs are kept when their own period overlaps the window.
+
+Anything that happened at or after the end of the window is masked, so the assessment sees the state as it stood at the end of the period. This covers closures, acknowledgements, first touches, escalation acknowledgements, remediation closures and detection-rule firings.
+
+The data read is the latest published version of every record as of the run's source snapshot, which is the catalog's publication sequence. A correction that arrives later therefore never changes an earlier run; `satsa replay` shows this. Historical trend points (`satsa seed-history`) use the same service in cumulative mode.
+
+An assessment with no period, or with a label that names none, reads every submitted record and records that it did so.
 
 ### 4.4 Review Queue
 Per entity, up to `queue_size_per_entity` (30) items (`review_queue` in `config/scoring.yaml`):

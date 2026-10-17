@@ -244,9 +244,17 @@
           <td>{{ e.name }}</td>
           <td><span class="badge" style="background-color: var(--bg-hover);">{{ e.sector }}</span></td>
           <td>{{ e.size_band }}</td>
-          <td><strong style="font-size: 1.05rem; color: {% if e.risk_index >= 50 %}var(--risk-crit){% elif e.risk_index >= 25 %}var(--risk-mod){% else %}var(--risk-low){% endif %}; font-family: var(--font-mono);">{{ e.risk_index }}</strong></td>
           <td>
-            {% if band_tier(e.risk_band) == 'critical' %}
+            {% if band_tier(e.risk_band) == 'insufficient' %}
+              <strong style="font-size: 1.05rem; color: var(--text-muted); font-family: var(--font-mono);" title="Too few rules could be assessed to compute a meaningful index">n/a</strong>
+            {% else %}
+              <strong style="font-size: 1.05rem; color: {% if e.risk_index >= 50 %}var(--risk-crit){% elif e.risk_index >= 25 %}var(--risk-mod){% else %}var(--risk-low){% endif %}; font-family: var(--font-mono);">{{ e.risk_index }}</strong>
+            {% endif %}
+          </td>
+          <td>
+            {% if band_tier(e.risk_band) == 'insufficient' %}
+              <span class="badge badge-mod" title="Not classified: the submission supports too few rules. Request the missing tables.">&#9888; {{ e.risk_band }}</span>
+            {% elif band_tier(e.risk_band) == 'critical' %}
               <span class="badge badge-crit">{{ e.risk_band }}</span>
             {% elif band_tier(e.risk_band) == 'moderate' %}
               <span class="badge badge-mod">{{ e.risk_band }}</span>

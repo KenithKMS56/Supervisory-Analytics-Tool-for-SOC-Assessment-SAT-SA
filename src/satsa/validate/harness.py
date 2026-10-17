@@ -750,7 +750,7 @@ class ValidationHarness:
                 "SELECT domain, score FROM domain_scores WHERE entity_id = ? AND run_id = ?",
                 (ent, run_id),
             )
-            doms = {r["domain"]: float(r["score"]) for r in cur.fetchall()}
+            doms = {r["domain"]: float(r["score"]) for r in cur.fetchall() if r["score"] is not None}
 
             cur.execute(
                 "SELECT distinct_rules_triggered FROM entity_scores WHERE entity_id = ? AND run_id = ?",

@@ -166,7 +166,13 @@
             <option value="{{ ent.entity_id }}">{{ ent.entity_id }} — {{ ent.name }} ({{ ent.sector }})</option>
           {% endfor %}
         </select>
-        <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; display: block;">If your CSV doesn't have an <code>entity_id</code> column, select an entity above to auto-assign it.</span>
+        <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; display: block;">If your CSV doesn't have an <code>entity_id</code> column, select an entity above to auto-assign it. With a target entity, rows naming another entity are rejected.</span>
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <label for="upload-period" style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Review period covered (optional):</label>
+        <input id="upload-period" name="period" class="form-control" placeholder="e.g. 2026-Q1, 2026-H1 or 2026-03" pattern="\d{4}-(Q[1-4]|H[12]|0[1-9]|1[0-2])">
+        <span style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; display: block;">Recorded with the submission. An empty table of a dated submission counts as "nothing happened" only for assessments of that period.</span>
       </div>
 
       <div class="upload-dropzone" onclick="document.getElementById('file-input').click();">
@@ -229,6 +235,66 @@
     </a>
   </div>
 </div>
+
+{% if held_batches %}
+<div class="card" id="held-submissions">
+  <div class="card-title">
+    <span>Held submissions awaiting a decision</span>
+    <span style="font-size: 0.85rem; color: var(--text-secondary);">Not published: nothing of these is visible to any assessment</span>
+  </div>
+  <div class="table-responsive">
+  <table>
+    <thead><tr><th>Batch</th><th>Entity</th><th>Period</th><th>Received</th><th>Why held</th><th>Decision</th></tr></thead>
+    <tbody>
+      {% for b in held_batches %}
+      <tr>
+        <td><code>{{ b.batch_id }}</code></td>
+        <td>{{ b.entity_id or "several" }}</td>
+        <td>{{ b.period_label or "not stated" }}</td>
+        <td style="font-size: 0.82rem;">{{ b.received_at }}</td>
+        <td style="font-size: 0.82rem;">{{ b.note }}</td>
+        <td style="white-space: nowrap;">
+          <form method="post" action="/batches/{{ b.batch_id }}/publish" style="display: inline;" onsubmit="return confirm('Publish {{ b.batch_id }} as it is? Its rejected rows stay out.');">
+            <button type="submit" class="btn" style="font-size: 0.8rem;">Publish as is</button>
+          </form>
+          <form method="post" action="/batches/{{ b.batch_id }}/discard" style="display: inline;" onsubmit="return confirm('Discard {{ b.batch_id }}?');">
+            <button type="submit" class="btn btn-secondary" style="font-size: 0.8rem;">Discard</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
+
+{% if submissions %}
+<div class="card">
+  <div class="card-title">
+    <span>Recent submissions</span>
+    <span style="font-size: 0.85rem; color: var(--text-secondary);">Every batch is immutable; a correction is a new batch that replaces records by key</span>
+  </div>
+  <div class="table-responsive">
+  <table>
+    <thead><tr><th>Batch</th><th>State</th><th>Entity</th><th>Period</th><th>Transport</th><th>Submitted by</th><th>Received</th></tr></thead>
+    <tbody>
+      {% for b in submissions %}
+      <tr>
+        <td><code>{{ b.batch_id }}</code>{% if b.parent_batch_id %}<br><span style="font-size: 0.75rem; color: var(--text-muted);">revises {{ b.parent_batch_id }}</span>{% endif %}</td>
+        <td><span class="badge {% if b.state == 'published' %}badge-low{% elif b.state == 'held' %}badge-mod{% else %}badge-crit{% endif %}">{{ b.state }}</span></td>
+        <td>{{ b.entity_id or "several" }}</td>
+        <td>{{ b.period_label or "not stated" }}</td>
+        <td>{{ b.transport }}</td>
+        <td>{{ b.submitted_by or ("unknown (legacy)" if b.provenance == "legacy-unknown" else "-") }}</td>
+        <td style="font-size: 0.82rem;">{{ b.received_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endif %}
 
 <!-- Bottom Section: Registered Entities League & Batch Audit History -->
 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">

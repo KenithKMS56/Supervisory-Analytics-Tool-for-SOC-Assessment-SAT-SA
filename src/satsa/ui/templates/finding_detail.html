@@ -134,6 +134,8 @@
       <p id="config-status" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.5rem;">
         {% if config.unchanged %}
         These are the values this run used: the rule configuration is unchanged since the run (configuration {{ config.run_hash }}).
+        {% elif config.recorded %}
+        These are the values this run used, from the configuration recorded with the run (configuration {{ config.run_hash }}). The configuration has changed since this run (now: {{ config.current_hash or "missing" }}).
         {% else %}
         The rule configuration has changed since this run (run: {{ config.run_hash or "not recorded" }}, now: {{ config.current_hash or "missing" }}). These are the current values, not necessarily the ones the run applied.
         {% endif %}
