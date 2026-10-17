@@ -1,0 +1,2 @@
+# Vendored upstream files: keep them byte-identical to the release their VERSION file checksums.
+src/satsa/ui/static/vendor/** -text
