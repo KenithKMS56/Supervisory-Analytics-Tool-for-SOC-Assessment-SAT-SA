@@ -125,7 +125,8 @@ def test_first_run_setup_creates_the_administrator_with_the_token_once(productio
 
         r = client.post("/login", data={"username": "ops-admin", "password": SETUP_FORM["password"]},
                         follow_redirects=False)
-        assert r.status_code == 303 and r.headers["location"] == "/"
+        # Production requires a second factor for administrators: enrolment comes first.
+        assert r.status_code == 303 and r.headers["location"] == "/mfa/setup"
         values = deployment.settings(store)
         assert values["deployment_name"] == "Test deployment" and values["timezone"] == "Asia/Kolkata"
         assert values["retention_job_inputs_days"] == "30" and "setup_token_sha256" not in values

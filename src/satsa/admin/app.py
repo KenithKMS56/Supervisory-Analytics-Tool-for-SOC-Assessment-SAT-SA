@@ -15,7 +15,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from satsa.admin.routes import AdminAuthRequired, AdminPasswordChangeRequired
+from satsa.admin.routes import (
+    AdminAuthRequired,
+    AdminMfaEnrolmentRequired,
+    AdminMfaRequired,
+    AdminPasswordChangeRequired,
+)
 from satsa.admin.routes import router as admin_router
 from satsa.netguard import install_egress_guard, uninstall_egress_guard
 from satsa.store.sqlite import SQLiteStore
@@ -90,6 +95,22 @@ async def admin_password_change_required_handler(
         {"detail": "A new passphrase must be set at /change-password before this account can be used."},
         status_code=403,
     )
+
+
+@app.exception_handler(AdminMfaRequired)
+async def admin_mfa_required_handler(request: Request, exc: AdminMfaRequired) -> Response:
+    """The second factor of this session has not been proved yet."""
+    if request.method == "GET" and not request.url.path.startswith("/api/"):
+        return RedirectResponse(url="/login/mfa", status_code=303)
+    return JSONResponse({"detail": "Enter your second-factor code at /login/mfa first."}, status_code=403)
+
+
+@app.exception_handler(AdminMfaEnrolmentRequired)
+async def admin_mfa_enrolment_handler(request: Request, exc: AdminMfaEnrolmentRequired) -> Response:
+    """Administrators must enrol a second factor before using the portal."""
+    if request.method == "GET" and not request.url.path.startswith("/api/"):
+        return RedirectResponse(url="/mfa/setup", status_code=303)
+    return JSONResponse({"detail": "Enrol a second factor at /mfa/setup first."}, status_code=403)
 
 
 @app.exception_handler(404)

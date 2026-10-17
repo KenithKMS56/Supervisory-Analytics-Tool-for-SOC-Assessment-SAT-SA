@@ -110,6 +110,12 @@ ADMIN_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("POST", "/change-password"): (ADMIN_ONLY, False),
     ("GET", "/splash"): (PUBLIC, True),
     ("GET", "/healthz"): (PUBLIC, False),
+    # Second step of signing in: needs the session the passphrase step created (else -> /login).
+    ("GET", "/login/mfa"): (PUBLIC, True),
+    ("POST", "/login/mfa"): (PUBLIC, False),
+    ("GET", "/mfa/setup"): (ADMIN_ONLY, True),
+    ("POST", "/mfa/setup"): (ADMIN_ONLY, False),
+    ("POST", "/users/{username}/mfa-reset"): (ADMIN_ONLY, False),
     # First-run setup: open only while a production deployment has no administrator (then 404).
     ("GET", "/setup"): (PUBLIC, True),
     ("POST", "/setup"): (PUBLIC, False),

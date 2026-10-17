@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Second factor | NCIIPC Administration Portal</title>
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+  {% include "_demo_banner.html" %}
+  <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1.5rem;">
+    <main style="width: 100%; max-width: 420px; border: 1px solid var(--admin-border); border-radius: 16px; padding: 2rem;">
+      <h1 style="font-size: 1.3rem; margin-bottom: 0.5rem;">Second factor</h1>
+      <p style="color: var(--admin-text-secondary); margin-bottom: 1.25rem;">
+        Enter the 6-digit code from your authenticator app, or one of your recovery codes.
+      </p>
+      {% if error %}<div class="admin-alert admin-alert-error" role="alert"><div>{{ error }}</div></div>{% endif %}
+      <form method="post" action="/login/mfa" autocomplete="off">
+        <div class="form-group" style="margin-bottom: 1.25rem;">
+          <label for="code" class="form-label">Code</label>
+          <input id="code" name="code" class="form-input" inputmode="numeric" autocomplete="one-time-code" required autofocus>
+        </div>
+        <button type="submit" class="btn-admin btn-admin-primary">Verify</button>
+      </form>
+    </main>
+  </div>
+</body>
+</html>
