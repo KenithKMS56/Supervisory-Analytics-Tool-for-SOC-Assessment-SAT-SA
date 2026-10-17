@@ -200,7 +200,9 @@ def test_every_get_route_is_offline_and_healthy(socket_guard, monkeypatch):
 # ---------------------------------------------------------------- static scan
 
 ASSET_ROOTS = [Path("src/satsa/ui"), Path("src/satsa/admin")]
-VENDORED = {"echarts.min.js"}
+# Upstream minified libraries, kept byte-identical to their published release (checksums in
+# their VERSION file). /docs disables the only network call Swagger UI makes (the validator).
+VENDORED = {"echarts.min.js", "swagger-ui-bundle.js", "swagger-ui.css"}
 URL_PATTERNS = [
     re.compile(r"""(?:src|href|action)\s*=\s*["']\s*(https?://[^"'\s>]+)""", re.IGNORECASE),
     re.compile(r"""url\(\s*["']?\s*(https?://[^)"'\s]+)""", re.IGNORECASE),

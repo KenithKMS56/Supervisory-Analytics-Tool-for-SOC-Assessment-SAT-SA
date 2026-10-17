@@ -20,6 +20,7 @@ from typing import Annotated, Any
 import polars as pl
 import yaml
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -106,7 +107,9 @@ app = FastAPI(
     title="SAT-SA Supervisory API",
     description="Supervisory Analytics Tool for SOC Assessment (NCIIPC)",
     version="0.1.0",
-    docs_url="/docs",
+    # /docs is served below from local Swagger UI assets (B07): FastAPI's default page loads them
+    # from a CDN, which leaves it blank on an air-gapped network.
+    docs_url=None,
     redoc_url=None,
     lifespan=_lifespan,
 )
@@ -132,14 +135,14 @@ templates.env.globals["is_examiner"] = is_examiner
 # Paths anyone may reach without a session. Everything else requires one; the
 # route's own dependency then enforces the specific role (see the RBAC table
 # in tests/test_rbac_matrix.py, which must list every route).
-PUBLIC_PATHS = {"/", "/login", "/logout", "/splash", "/api/session/status", "/openapi.json"}
+PUBLIC_PATHS = {"/", "/login", "/logout", "/splash", "/api/session/status"}
 # The only gated paths open to a session that still owes a passphrase change.
 PASSWORD_CHANGE_PATH = "/change-password"
 PASSWORD_CHANGE_REQUIRED = "A new passphrase must be set at /change-password before this account can be used."
-PUBLIC_PREFIXES = ("/static/", "/docs")
+PUBLIC_PREFIXES = ("/static/",)
 # Non-page GET endpoints (JSON APIs and file downloads): an anonymous request
 # gets 401 rather than a login redirect.
-NON_PAGE_PREFIXES = ("/api/", "/reports/", "/templates/", "/tuning/export-pack")
+NON_PAGE_PREFIXES = ("/api/", "/reports/", "/templates/", "/tuning/export-pack", "/openapi.json")
 NOT_SATSA_OPERATOR = (
     "This account is not a SAT-SA operator account (analyst or examiner). "
     "NCIIPC administrators use the Admin Portal at :8000."
@@ -185,6 +188,25 @@ async def enforce_auth_middleware(request: Request, call_next):
         return JSONResponse({"detail": PASSWORD_CHANGE_REQUIRED}, status_code=403)
 
     return await call_next(request)
+
+
+SWAGGER_ASSETS = "/static/vendor/swagger-ui"
+
+
+@app.get("/docs", include_in_schema=False)
+def api_docs(identity: Identity = Depends(require_authenticated)) -> HTMLResponse:
+    """Interactive API reference, rendered from vendored Swagger UI assets (see their VERSION file).
+
+    The validator badge is switched off: Swagger UI would otherwise send the schema to
+    validator.swagger.io from the browser."""
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url or "/openapi.json",
+        title=f"{app.title} - API reference",
+        swagger_js_url=f"{SWAGGER_ASSETS}/swagger-ui-bundle.js",
+        swagger_css_url=f"{SWAGGER_ASSETS}/swagger-ui.css",
+        swagger_favicon_url="/static/0xzenith-logo.png",
+        swagger_ui_parameters={"validatorUrl": None},
+    )
 
 
 def require_valid_entity_id(entity_id: str) -> str:
