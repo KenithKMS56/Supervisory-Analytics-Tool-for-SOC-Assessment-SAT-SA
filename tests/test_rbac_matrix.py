@@ -86,7 +86,24 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("GET", "/reports/export/findings-csv"): (ANALYST, False),
     ("GET", "/reports/export/queue-csv"): (ANALYST, False),
     ("POST", "/api/v1/feedback"): (REVIEW, False),
-    ("POST", "/blind-review/submit"): (REVIEW, False),
+    # Blind review: analysts draw samples, the assigned examiner works each task.
+    ("POST", "/blind-review/samples"): (ANALYST, False),
+    ("GET", "/blind-review/tasks/{task_id}"): (REVIEW, True),
+    ("POST", "/blind-review/tasks/{task_id}/submit"): (REVIEW, False),
+    ("POST", "/blind-review/tasks/{task_id}/reveal"): (REVIEW, False),
+    # Supervisory cases: examiners act, analysts read.
+    ("GET", "/cases"): (SUP_READ, True),
+    ("POST", "/cases"): (REVIEW, False),
+    ("GET", "/cases/{case_id}"): (SUP_READ, True),
+    ("POST", "/cases/{case_id}/actions"): (REVIEW, False),
+    ("POST", "/cases/{case_id}/request-package"): (REVIEW, False),
+    ("POST", "/cases/{case_id}/response-package"): (REVIEW, False),
+    # A download linked from the case page: an anonymous browser is sent to /login like a page.
+    ("GET", "/cases/{case_id}/attachments/{attachment_id}"): (SUP_READ, True),
+    ("GET", "/api/v1/cases"): (SUP_READ, False),
+    ("POST", "/api/v1/cases"): (REVIEW, False),
+    ("GET", "/api/v1/cases/{case_id}"): (SUP_READ, False),
+    ("POST", "/api/v1/cases/{case_id}/transitions"): (REVIEW, False),
     ("POST", "/upload"): (INGEST, False),
     ("POST", "/upload/add-entity"): (INGEST, False),
     ("POST", "/upload/delete-entity/{entity_id}"): (INGEST, False),
@@ -211,6 +228,9 @@ def _satsa_url(path: str, finding_id: str) -> str:
         .replace("{finding_id}", finding_id)
         .replace("{template_name}", "alerts.csv")
         .replace("{job_id}", "JOB-RBAC-NO-SUCH-JOB")
+        .replace("{case_id}", "CASE-000000000000")  # well-formed, no such case
+        .replace("{attachment_id}", "ATT-000000000000")
+        .replace("{task_id}", "BLT-000000000000")
     )
 
 

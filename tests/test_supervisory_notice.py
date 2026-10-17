@@ -47,9 +47,16 @@ def ids():
     row = store.conn.execute(
         "SELECT finding_id, entity_id, run_id FROM findings ORDER BY rowid DESC LIMIT 1"
     ).fetchone()
-    store.close()
     assert row, "bootstrapped data required (satsa generate-data / ingest / run)"
-    return {**dict(row), "job_id": _sweep_job_id()}
+    # A real case and a real blind-review task for the {case_id} and {task_id} pages.
+    from satsa.cases import blind, workflow
+
+    case, _ = workflow.open_case(store, row["finding_id"], "examiner", "examiner", "page sweep")
+    sample = blind.create_sample(store, row["run_id"], "analyst", "analyst", "examiner", 1, 0, 0, seed=7)
+    task_id = store.conn.execute("SELECT task_id FROM blind_tasks WHERE sample_id = ?",
+                                 (sample["sample_id"],)).fetchone()[0]
+    store.close()
+    return {**dict(row), "job_id": _sweep_job_id(), "case_id": case["case_id"], "task_id": task_id}
 
 
 def _sweep_job_id() -> str:
@@ -83,6 +90,8 @@ def _html_pages() -> list[str]:
             continue
         if path in ("/healthz", "/readyz"):
             continue  # JSON probes for the container runtime, not pages
+        if path.endswith("/attachments/{attachment_id}"):
+            continue  # a file download, not a page
         pages.append(path)
     return sorted(set(pages))
 
@@ -90,12 +99,14 @@ def _html_pages() -> list[str]:
 def test_every_page_of_the_web_app_carries_the_notice(clients, ids):
     pages = _html_pages()
     # The pages that list or describe findings are all in the sweep.
-    assert {"/portfolio", "/entity/{entity_id}", "/finding/{finding_id}", "/queue", "/blind-review"} <= set(pages)
+    assert {"/portfolio", "/entity/{entity_id}", "/finding/{finding_id}", "/queue", "/blind-review",
+            "/cases", "/cases/{case_id}", "/blind-review/tasks/{task_id}"} <= set(pages)
     checked = 0
     for role, client in clients.items():
         for page in pages:
             url = (page.replace("{entity_id}", ids["entity_id"]).replace("{finding_id}", ids["finding_id"])
-                   .replace("{job_id}", ids["job_id"]))
+                   .replace("{job_id}", ids["job_id"]).replace("{case_id}", ids["case_id"])
+                   .replace("{task_id}", ids["task_id"]))
             response = client.get(url)
             if response.status_code == 403:
                 continue  # not this role's page
@@ -174,7 +185,8 @@ def test_no_page_claims_a_legal_basis_the_project_cannot_cite(clients, ids):
     for role, client in clients.items():
         for page in _html_pages():
             url = (page.replace("{entity_id}", ids["entity_id"]).replace("{finding_id}", ids["finding_id"])
-                   .replace("{job_id}", ids["job_id"]))
+                   .replace("{job_id}", ids["job_id"]).replace("{case_id}", ids["case_id"])
+                   .replace("{task_id}", ids["task_id"]))
             response = client.get(url)
             if response.status_code != 200:
                 continue

@@ -115,7 +115,27 @@ def _real_ids() -> dict[str, str]:
         "template_name": "alerts.csv",
         "username": "examiner",
         "job_id": _sweep_job_id(),
+        **_sweep_case_ids(finding["finding_id"], finding["run_id"]),
     }
+
+
+def _sweep_case_ids(finding_id: str, run_id: str) -> dict[str, str]:
+    """A real case with an evidence file, and a real blind-review task, for the {case_id},
+    {attachment_id} and {task_id} routes."""
+    from satsa.cases import blind, workflow
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        case, _ = workflow.open_case(store, finding_id, "examiner", "examiner", "offline sweep")
+        workflow.apply(store, case["case_id"], "add_note", "examiner", "examiner", case["version"],
+                       "sweep evidence", files=[workflow.Attachment("sweep.txt", b"offline sweep")])
+        attachment = workflow.attachments(store, case["case_id"])[-1]["attachment_id"]
+        sample = blind.create_sample(store, run_id, "analyst", "analyst", "examiner", 1, 0, 0, seed=11)
+        task = store.conn.execute("SELECT task_id FROM blind_tasks WHERE sample_id = ?",
+                                  (sample["sample_id"],)).fetchone()[0]
+    finally:
+        store.close()
+    return {"case_id": case["case_id"], "attachment_id": attachment, "task_id": task}
 
 
 def _sweep_job_id() -> str:
@@ -169,10 +189,16 @@ def test_every_get_route_is_offline_and_healthy(socket_guard, monkeypatch):
     r = satsa.post("/login", data={"username": "analyst", "password": "ChangeMe-Analyst#2026"},
                    follow_redirects=False)
     assert r.status_code == 303
+    # A blind-review task page is served only to the examiner it is assigned to.
+    examiner = TestClient(satsa_app)
+    r = examiner.post("/login", data={"username": "examiner", "password": "ChangeMe-Examiner#2026"},
+                      follow_redirects=False)
+    assert r.status_code == 303
     satsa_paths = _get_paths(satsa_app)
     for path in satsa_paths:
         url = _fill(path, ids)
-        results[f"satsa GET {url}"] = satsa.get(url, follow_redirects=False).status_code
+        client = examiner if path.startswith("/blind-review/tasks/") else satsa
+        results[f"satsa GET {url}"] = client.get(url, follow_redirects=False).status_code
 
     with TestClient(admin_app) as admin:  # lifespan opens data/satsa.db
         store: SQLiteStore = admin_app.state.store

@@ -133,26 +133,36 @@ def test_ui_upload_view():
 
 
 def test_ui_blind_review():
-    resp = client.get("/blind-review?entity_id=CSE-03")
+    """The analyst draws a sample for the examiner, who judges, submits and then reveals
+    (the full blinding checks are in tests/test_blind_tasks.py)."""
+    resp = client.get("/blind-review")
     assert resp.status_code == 200
-    assert "Blinded Supervisory Review Studio" in resp.text
-    assert "Cognitive bias mitigation" in resp.text
+    assert "Draw a blind sample" in resp.text
 
-    # Submit a blind review
+    run_id = re.search(r'<option value="(RUN-[^"]+)"', resp.text).group(1)
+    made = client.post("/blind-review/samples", data={"run_id": run_id, "assignee": "examiner",
+                                                       "flagged": 1, "random_n": 0, "control": 0},
+                       follow_redirects=False)
+    assert made.status_code == 303
+    tasks = examiner_client.get("/blind-review").text
+    task_url = re.search(r'href="(/blind-review/tasks/BLT-[0-9A-F]{12})"', tasks).group(1)
+    assert "Your independent judgement" in examiner_client.get(task_url).text
+
     sub_resp = examiner_client.post(
-        "/blind-review/submit",
+        f"{task_url}/submit",
         data={
-            "entity_id": "CSE-03",
             "examiner_concern": "Elevated",
-            "examiner_priority": "High Priority",
-            "examiner_recommendation": "On-Site Review",
+            "examiner_priority": "P2",
+            "examiner_recommendation": "Formal Audit",
             "examiner_notes": "Evidence shows systematic escalation bottleneck on high severity alerts.",
         },
         follow_redirects=True,
     )
     assert sub_resp.status_code == 200
-    assert "Inter-Rater Concordance" in sub_resp.text
     assert "Evidence shows systematic escalation bottleneck" in sub_resp.text
+    assert "Agreement" not in sub_resp.text  # hidden until revealed
+    revealed = examiner_client.post(f"{task_url}/reveal", follow_redirects=True)
+    assert "Agreement" in revealed.text and "System assessment" in revealed.text
 
 
 def test_ui_tuning_view_and_save():

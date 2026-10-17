@@ -7,8 +7,9 @@ A backup holds everything a restored instance needs to reproduce its assessments
   is consistent under WAL; the files are never copied raw;
 - every **published** Parquet file and the staged files of **held** batches;
 - the inputs of jobs still queued or running;
-- `secrets/` (pseudonymisation keys: without them, new data would not link to old) but not the
-  one-time setup token;
+- `secrets/` (pseudonymisation keys: without them, new data would not link to old; the key
+  that authenticates case response packages) but not the one-time setup token;
+- `case_files/`: the evidence files attached to supervisory cases (content-addressed);
 - `config/` (rules, scoring, peers ...);
 - `manifest.json`: the SHA-256 and size of every file, schema versions, counts and the
   publication sequence.
@@ -104,7 +105,8 @@ def _snapshot(data_dir: Path, config_dir: Path, out: Path) -> dict[str, Any]:
                 backup_database(store.conn, out / "data" / "satsa.db")
                 schema = [r[0] for r in store.conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
                 counts = {t: store.conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
-                          for t in ("runs", "findings", "entity_scores", "audit_log", "identities", "jobs")}
+                          for t in ("runs", "findings", "entity_scores", "audit_log", "identities", "jobs",
+                                    "cases", "case_events", "case_attachments")}
                 active_jobs = [r[0] for r in store.conn.execute("SELECT job_id FROM jobs WHERE state IN ('queued', 'running')")]
             finally:
                 store.close()
@@ -114,6 +116,11 @@ def _snapshot(data_dir: Path, config_dir: Path, out: Path) -> dict[str, Any]:
         src = data_dir / "jobs" / job_id
         if src.is_dir():
             shutil.copytree(src, out / "data" / "jobs" / job_id)
+    # Case evidence files are written once and never changed, so a copy after the database is
+    # consistent with it: a file attached later is simply not referenced by the copied database.
+    case_files = data_dir / "case_files"
+    if case_files.is_dir():
+        shutil.copytree(case_files, out / "data" / "case_files", ignore=shutil.ignore_patterns(".*.tmp"))
     secrets_src = data_dir / SECRETS_DIR
     if secrets_src.is_dir():
         for f in secrets_src.iterdir():
@@ -325,8 +332,13 @@ def restore_backup(source: Path | str, target: Path | str, *, passphrase: str | 
     try:
         report["counts"] = {t: store.conn.execute(f"SELECT count(*) FROM {t}").fetchone()[0]
                             for t in manifest["counts"]}
+        missing = [r[0] for r in store.conn.execute("SELECT DISTINCT sha256 FROM case_attachments")
+                   if not (dest / "data" / "case_files" / r[0][:2] / r[0]).is_file()
+                   or _sha256(dest / "data" / "case_files" / r[0][:2] / r[0]) != r[0]]
     finally:
         store.close()
+    if missing:
+        raise BackupError(f"Case evidence files are missing or altered: {missing[:10]}")
     if report["counts"] != manifest["counts"]:
         raise BackupError(f"Row counts differ from the manifest: {report['counts']} vs {manifest['counts']}")
     return report

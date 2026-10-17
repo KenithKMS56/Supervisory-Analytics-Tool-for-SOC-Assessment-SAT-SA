@@ -178,13 +178,28 @@ def test_alerts_filters_are_parameterized(admin_client):
     assert admin_client.get("/alerts", params={"entity": "CSE-01"}).status_code == 200
 
 
+@pytest.fixture(scope="module")
+def examiner_client():
+    c = TestClient(app)
+    _login(c, "examiner", "ChangeMe-Examiner#2026")
+    return c
+
+
 @pytest.mark.parametrize("payload", MALICIOUS_IDS)
-def test_blind_review_rejects_malicious(admin_client, payload):
-    assert admin_client.get("/blind-review", params={"entity_id": payload}).status_code == 400
+def test_case_and_blind_task_ids_reject_malicious(admin_client, examiner_client, payload):
+    # Blind review takes no entity from the request any more: its tasks and cases are named
+    # by ids the server issued, and anything else is refused before a query runs.
+    assert admin_client.get(f"/cases/{payload}", follow_redirects=False).status_code in (400, 404)
+    assert examiner_client.get(f"/blind-review/tasks/{payload}", follow_redirects=False).status_code in (400, 404)
+    assert examiner_client.post(f"/cases/{payload}/actions", data={"action": "add_note", "expected_version": 1},
+                                follow_redirects=False).status_code in (400, 404)
+    # A filter value is bound as a parameter: it matches nothing instead of widening the query.
+    assert admin_client.get("/api/v1/cases", params={"entity_id": payload}).json() == []
 
 
 def test_blind_review_legit(admin_client):
-    assert admin_client.get("/blind-review", params={"entity_id": "CSE-02"}).status_code == 200
+    assert admin_client.get("/blind-review").status_code == 200
+    assert admin_client.get("/cases/CASE-000000000000").status_code == 404
 
 
 @pytest.mark.parametrize("payload", ["' OR '1'='1", "*", "..\\..\\x"])

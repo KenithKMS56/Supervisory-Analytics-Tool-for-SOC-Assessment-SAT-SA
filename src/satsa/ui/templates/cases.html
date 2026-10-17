@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}Supervisory Cases{% endblock %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>Supervisory cases</h1>
+    <p>One case per concern (an entity and a rule), from the finding to an evidence-based closure. Examiners open cases from a finding's evidence card and work them here; analysts can read them.</p>
+  </div>
+</div>
+
+<div class="card">
+  <form method="get" action="/cases" style="display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 1rem;">
+    <label>State
+      <select name="state" class="form-control">
+        <option value="open" {% if state_filter == 'open' %}selected{% endif %}>All open cases</option>
+        <option value="all" {% if state_filter == 'all' %}selected{% endif %}>All cases</option>
+        {% for key, label in state_labels.items() %}
+        <option value="{{ key }}" {% if state_filter == key %}selected{% endif %}>{{ label }} ({{ counts.get(key, 0) }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Entity
+      <input type="text" name="entity_id" value="{{ entity_filter }}" class="form-control" maxlength="64" placeholder="any">
+    </label>
+    <button type="submit" class="btn btn-secondary">Filter</button>
+  </form>
+
+  {% if not cases %}
+    <p style="color: var(--text-secondary);">No cases match. Open one from a finding's evidence card (Portfolio &rarr; entity &rarr; finding).</p>
+  {% else %}
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr><th>Case</th><th>Entity</th><th>Rule</th><th>Concern</th><th>State</th><th>Owner</th><th>Due</th><th>Updated (UTC)</th></tr>
+      </thead>
+      <tbody>
+        {% for c in cases %}
+        <tr>
+          <td><a href="/cases/{{ c.case_id }}"><code>{{ c.case_id }}</code></a></td>
+          <td><a href="/entity/{{ c.entity_id }}">{{ c.entity_id }}</a></td>
+          <td>{{ c.rule_id }}</td>
+          <td style="max-width: 360px;">{{ c.title }}</td>
+          <td><span class="badge {% if c.state == 'closed' %}badge-low{% elif c.state in ('confirmed', 'corrective_action') %}badge-crit{% else %}badge-mod{% endif %}">{{ state_labels[c.state] }}</span></td>
+          <td>{{ c.owner or "unassigned" }}</td>
+          <td>{{ c.due_date or "" }}</td>
+          <td>{{ c.updated_at[:19] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

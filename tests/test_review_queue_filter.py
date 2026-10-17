@@ -161,7 +161,7 @@ def test_stat_cards_count_the_whole_queue_not_the_rows_shown():
     assert stats["Total Queue Candidates"] == total
     assert stats["Random Controls"] == random
     assert stats["Cited by Findings"] == total - random
-    assert stats["Escalated to Statutory Notice"] == confirmed
+    assert stats["Confirmed concern"] == confirmed
     shown, of = map(int, SHOWN.search(html).groups())
     assert of == total
     assert shown == min(total, 200) == len(_rows(html))
@@ -179,7 +179,7 @@ def test_a_disposition_moves_a_record_between_counts_and_keeps_the_total():
     after = _stats(examiner.get("/queue").text)
     # A decision is recorded against the record; the record stays in the queue.
     assert after["Total Queue Candidates"] == before["Total Queue Candidates"]
-    assert after["Escalated to Statutory Notice"] == before["Escalated to Statutory Notice"] + 1
+    assert after["Confirmed concern"] == before["Confirmed concern"] + 1
     pending_after = int(SHOWN.search(examiner.get("/queue?status=pending").text).group(2))
     assert pending_after == pending_before - 1
 

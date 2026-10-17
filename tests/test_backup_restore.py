@@ -237,3 +237,43 @@ def test_the_diagnostics_package_holds_no_data_secrets_or_usernames(deployment, 
     for secret_like in ("analyst", "examiner", "nciipc_admin", "pass_hash", "setup_token", "ChangeMe"):
         assert secret_like not in text, secret_like
     assert "actor-" in text  # actors are present only as package-local hashes
+
+
+def test_case_evidence_files_are_backed_up_and_checked_on_restore(deployment, tmp_path):
+    """Supervisory cases, their immutable history and their evidence files survive a restore;
+    a missing or altered evidence file stops the restore."""
+    from satsa.cases import workflow
+    from satsa.cases.workflow import Attachment
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        finding = store.conn.execute("SELECT finding_id FROM findings ORDER BY rowid DESC LIMIT 1").fetchone()[0]
+        case, _ = workflow.open_case(store, finding, "examiner", "examiner")
+        workflow.apply(store, case["case_id"], "add_note", "examiner", "examiner", case["version"], "rota attached",
+                       files=[Attachment("rota.pdf", b"%PDF backup check")])
+        [att] = workflow.attachments(store, case["case_id"])
+    finally:
+        store.close()
+    backup = create_backup("data", tmp_path / "b")
+    stored = backup / "data" / "case_files" / att["sha256"][:2] / att["sha256"]
+    assert stored.read_bytes() == b"%PDF backup check"
+
+    report = restore_backup(backup, tmp_path / "ok")
+    assert report["counts"]["cases"] >= 1 and report["counts"]["case_events"] >= 2
+    restored = SQLiteStore(tmp_path / "ok" / "data" / "satsa.db")
+    try:
+        assert [e["action"] for e in workflow.events(restored, case["case_id"])] == ["open", "add_note"]
+    finally:
+        restored.close()
+
+    stored.write_bytes(b"%PDF altered")
+    # The manifest catches the altered file first; drop it from the manifest to reach the DB check.
+    import json
+
+    manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
+    rel = stored.relative_to(backup).as_posix()
+    manifest["files"].pop(rel)
+    stored.unlink()
+    (backup / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(BackupError, match="Case evidence files are missing"):
+        restore_backup(backup, tmp_path / "bad")

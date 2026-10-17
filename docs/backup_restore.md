@@ -11,7 +11,8 @@
 | Every published Parquet file | file copy, listed in the catalog |
 | Staged files of held batches | file copy, so they can still be published or discarded after a restore |
 | Inputs of queued or running jobs | file copy |
-| `data/secrets/`: pseudonymisation keys | file copy. The one-time setup token is excluded. |
+| `data/secrets/`: pseudonymisation keys, the case-package key | file copy. The one-time setup token is excluded. |
+| `data/case_files/`: evidence attached to supervisory cases | file copy. Files are written once by hash; restore checks every file the database references. |
 | `config/` | file copy |
 | `manifest.json` | SHA-256 and size of every file; schema versions; row counts; publication sequence; code revision |
 

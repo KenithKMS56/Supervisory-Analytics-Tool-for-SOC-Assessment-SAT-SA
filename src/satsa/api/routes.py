@@ -14,6 +14,7 @@ import tempfile
 import zipfile
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
+from itertools import pairwise
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -56,7 +57,7 @@ from satsa.rules.negative_space import REVIEW_PERIOD_MONTHS_RANGE
 from satsa.rules.registry import RuleRegistry
 from satsa.scoring.control_priorities import rank_controls, rank_processes
 from satsa.scoring.runner import AssessmentRunner
-from satsa.scoring.scorer import ScoringEngine, band_tier, blind_review_concordance
+from satsa.scoring.scorer import ScoringEngine, band_tier
 from satsa.scoring.selection import period_bounds
 from satsa.security import (
     is_valid_entity_id,
@@ -508,6 +509,62 @@ def _build_real_trend_series(
     return trend_periods, trend_series, any_real_data
 
 
+def _trend_comparability_warnings(cur: Any, entity_ids: list[str], max_periods: int = 6) -> list[str]:
+    """Why points of the trend chart may not be comparable (docs/examiner_workflow.md, "Trends").
+
+    Between consecutive runs of the chart: a change of rule parameters, of a rule's version or of
+    the peer-group definition; and, per entity, a fall in risk index that comes with a fall in
+    evidence coverage, which is missing data rather than improvement.
+    """
+    runs = cur.execute(
+        "SELECT run_id, period FROM runs ORDER BY created_at DESC LIMIT ?", (max_periods,)
+    ).fetchall()[::-1]
+    warnings: list[str] = []
+    shas: dict[str, dict[str, str]] = {}
+    versions: dict[str, dict[str, str]] = {}
+    for r in runs:
+        shas[r["run_id"]] = {k: v for k, v in cur.execute(
+            "SELECT key, sha256 FROM run_config_snapshots WHERE run_id = ?", (r["run_id"],))}
+        versions[r["run_id"]] = {k: v for k, v in cur.execute(
+            "SELECT DISTINCT rule_id, rule_version FROM rule_results WHERE run_id = ?", (r["run_id"],))}
+    for a, b in pairwise(runs):
+        between = f"between {a['period']} and {b['period']}"
+        sa, sb = shas[a["run_id"]], shas[b["run_id"]]
+        if not sa or not sb:
+            warnings.append(f"A run {between} predates configuration snapshots: comparability cannot be checked.")
+            continue
+        if sa.get("rules") != sb.get("rules"):
+            warnings.append(f"Rule parameters changed {between}: scores on either side are not directly comparable.")
+        if sa.get("peers") != sb.get("peers"):
+            warnings.append(f"The peer-group definition changed {between}: peer-based scores may shift.")
+        for rule_id, version in sorted(versions[b["run_id"]].items()):
+            before = versions[a["run_id"]].get(rule_id)
+            if before and before != version:
+                warnings.append(f"Rule {rule_id} changed version ({before} to {version}) {between}.")
+    if entity_ids and len(runs) > 1:
+        rows = cur.execute(
+            f"SELECT run_id, entity_id, risk_index, coverage, classification_status FROM entity_scores "
+            f"WHERE run_id IN ({','.join('?' for _ in runs)}) AND entity_id IN ({','.join('?' for _ in entity_ids)})",
+            (*[r["run_id"] for r in runs], *entity_ids),
+        ).fetchall()
+        by = {(r["run_id"], r["entity_id"]): r for r in rows}
+        for eid in entity_ids:
+            for a, b in pairwise(runs):
+                ra, rb = by.get((a["run_id"], eid)), by.get((b["run_id"], eid))
+                if ra is None or rb is None or rb["risk_index"] >= ra["risk_index"]:
+                    continue
+                ca, cb = ra["coverage"], rb["coverage"]
+                lower_coverage = ca is not None and cb is not None and cb < ca
+                unclassified = (rb["classification_status"] or "assessable") != "assessable"
+                if lower_coverage or unclassified:
+                    cov = f" (coverage {ca:.0%} to {cb:.0%})" if lower_coverage else ""
+                    warnings.append(
+                        f"{eid}: the risk index fell {a['period']} to {b['period']} while less evidence could be "
+                        f"assessed{cov}. A lower score from missing data is not improvement."
+                    )
+    return list(dict.fromkeys(warnings))
+
+
 # --- Local Auth: Login / Logout ---
 
 
@@ -917,6 +974,7 @@ async def view_portfolio(request: Request) -> Response:
     trend_periods, trend_series, trend_has_data = _build_real_trend_series(
         cur, [e["entity_id"] for e in ranked_entities[:5]], ranked_entities[:5]
     )
+    trend_warnings = _trend_comparability_warnings(cur, [e["entity_id"] for e in ranked_entities[:5]])
 
     # Counts
     cur.execute("SELECT count(*) FROM findings WHERE run_id = ?", (run_id,))
@@ -960,6 +1018,7 @@ async def view_portfolio(request: Request) -> Response:
             "trend_periods": trend_periods,
             "trend_series": trend_series,
             "trend_has_data": trend_has_data,
+            "trend_warnings": trend_warnings,
             "queue_count": queue_count,
             "heatmap_entities": heatmap_entities,
             "heatmap_domains": domains,
@@ -1263,21 +1322,26 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
             entity_id=card.entity_id,
             details={"finding_id": finding_id, "rule_id": card.rule_id, "title": card.title},
         )
+    # The supervisory case of this concern (entity and rule), open or most recently closed.
+    from satsa.cases.workflow import STATE_LABELS, case_for_lineage
+
+    case = case_for_lineage(sqlite_store, card.entity_id, card.rule_id)
     sqlite_store.close()
 
     return templates.TemplateResponse(
         request=request,
         name="finding_detail.html",
-        context={"active_tab": "portfolio", "card": card, "config": config_status},
+        context={"active_tab": "portfolio", "card": card, "config": config_status, "case": case,
+                 "case_state_labels": STATE_LABELS},
     )
 
 
 # Examiner dispositions the review queue can be filtered by, in the order the filter shows them.
 QUEUE_STATUS_FILTERS: dict[str, str] = {
     "pending": "Pending Review",
-    "confirmed": "Escalated to Statutory Notice",
+    "confirmed": "Confirmed concern",
     "not_an_issue": "Marked as Justified",
-    "needs_more_data": "CSE Explanation Requested",
+    "needs_more_data": "More data needed",
 }
 # The most queue rows one page shows, highest score first.
 QUEUE_PAGE_ROWS = 200
@@ -2204,165 +2268,6 @@ def handle_trigger_demo(
     return RedirectResponse(url=f"/jobs/{job['job_id']}", status_code=303)
 
 
-@app.get("/blind-review", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
-async def view_blind_review(request: Request, entity_id: str = "CSE-02") -> Response:
-    require_valid_entity_id(entity_id)
-    duckdb_store, sqlite_store = get_stores()
-
-    df_ents = duckdb_store.query("SELECT entity_id FROM entity ORDER BY entity_id")
-    all_entities = [r["entity_id"] for r in df_ents.iter_rows(named=True)]
-    if entity_id not in all_entities and all_entities:
-        entity_id = all_entities[0]
-
-    # Compute raw objective signals without revealing risk scores
-    m_df = duckdb_store.query("""
-        SELECT
-            count(*) as total_alerts,
-            ROUND(quantile_cont(epoch(acknowledged_at - created_at) / 60.0, 0.5), 1) as median_mtta_min,
-            ROUND(quantile_cont(epoch(closed_at - created_at) / 60.0, 0.5), 1) as median_mttr_min,
-            count(CASE WHEN closed_by_type = 'soar' THEN 1 END) * 100.0 / greatest(count(*), 1) as soar_share,
-            count(CASE WHEN disposition = 'false_positive' THEN 1 END) * 100.0 / greatest(count(*), 1) as fp_rate
-        FROM alert
-        WHERE entity_id = ?
-    """, [entity_id]).to_dicts()[0]
-
-    # Declared MTTR
-    kpi_df = duckdb_store.query(
-        "SELECT value FROM declared_kpi WHERE entity_id = ? AND upper(metric) = 'MTTR' ORDER BY period DESC LIMIT 1",
-        [entity_id],
-    )
-    declared_mttr = kpi_df.to_dicts()[0]["value"] if not kpi_df.is_empty() else "N/A"
-
-    # Escalations
-    esc_df = duckdb_store.query(
-        "SELECT count(*) as c FROM alert WHERE entity_id = ? AND severity_final IN ('high', 'critical')",
-        [entity_id],
-    )
-    tot_high = esc_df.to_dicts()[0]["c"] if not esc_df.is_empty() else 1
-    esc_c_df = duckdb_store.query(
-        "SELECT count(*) as c FROM escalation WHERE entity_id = ?", [entity_id]
-    )
-    tot_esc = esc_c_df.to_dicts()[0]["c"] if not esc_c_df.is_empty() else 0
-    esc_rate = round((tot_esc / max(tot_high, 1)) * 100.0, 1)
-
-    # Silent assets
-    silent_df = duckdb_store.query("""
-        SELECT count(*) as c FROM asset
-        WHERE entity_id = ? AND criticality >= 3 AND asset_id NOT IN (
-            SELECT DISTINCT asset_id FROM log_source_daily WHERE entity_id = ?
-        )
-    """, [entity_id, entity_id])
-    silent_assets = silent_df.to_dicts()[0]["c"] if not silent_df.is_empty() else 0
-
-    # Sample anonymized comments
-    c_df = duckdb_store.query(
-        "SELECT comment_norm_hash FROM closure WHERE entity_id = ? LIMIT 5", [entity_id]
-    )
-    sample_comments = [
-        f"Normalised closure text hash: {r['comment_norm_hash']}" for r in c_df.to_dicts()
-    ]
-
-    metrics = {
-        "total_alerts": m_df.get("total_alerts", 0),
-        "median_mtta_min": m_df.get("median_mtta_min", 0.0),
-        "median_mttr_min": m_df.get("median_mttr_min", 0.0),
-        "declared_mttr": declared_mttr,
-        "soar_share": round(m_df.get("soar_share", 0.0), 1),
-        "fp_rate": round(m_df.get("fp_rate", 0.0), 1),
-        "esc_rate": esc_rate,
-        "silent_assets": silent_assets,
-        "sample_comments": sample_comments,
-    }
-
-    # Fetch latest blind review for this entity if present
-    cur = sqlite_store.conn.cursor()
-    cur.execute(
-        "SELECT * FROM blind_reviews WHERE entity_id = ? ORDER BY created_at DESC LIMIT 1",
-        (entity_id,),
-    )
-    latest_row = cur.fetchone()
-    latest_review = dict(latest_row) if latest_row else None
-
-    # Fetch system findings for the reveal
-    cur.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1")
-    run_row = cur.fetchone()
-    run_id = run_row["run_id"] if run_row else ""
-
-    cur.execute(
-        "SELECT rule_id, title, score FROM findings WHERE entity_id = ? AND run_id = ?",
-        (entity_id, run_id),
-    )
-    system_findings = [dict(r) for r in cur.fetchall()]
-
-    historical_reviews = sqlite_store.get_blind_reviews(entity_id)
-
-    duckdb_store.close()
-    sqlite_store.close()
-
-    return templates.TemplateResponse(
-        request=request,
-        name="blind_review.html",
-        context={
-            "active_tab": "blind_review",
-            "all_entities": all_entities,
-            "selected_entity": entity_id,
-            "metrics": metrics,
-            "latest_review": latest_review,
-            "system_findings": system_findings,
-            "historical_reviews": historical_reviews,
-        },
-    )
-
-
-@app.post("/blind-review/submit")
-async def handle_blind_review_submit(
-    entity_id: Annotated[str, Form()],
-    examiner_concern: Annotated[str, Form()],
-    examiner_priority: Annotated[str, Form()],
-    examiner_recommendation: Annotated[str, Form()],
-    examiner_notes: Annotated[str, Form()],
-    identity: Identity = Depends(require_role(*REVIEW_ROLES)),
-) -> Response:
-    require_valid_entity_id(entity_id)
-    sqlite_store = get_sqlite_store()
-    cur = sqlite_store.conn.cursor()
-    cur.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1")
-    run_row = cur.fetchone()
-    run_id = run_row["run_id"] if run_row else ""
-
-    cur.execute(
-        "SELECT risk_index, risk_band FROM entity_scores WHERE entity_id = ? AND run_id = ?",
-        (entity_id, run_id),
-    )
-    score_row = cur.fetchone()
-    sys_index = score_row["risk_index"] if score_row else 0.0
-    sys_band = score_row["risk_band"] if score_row else "Low Supervisory Concern"
-
-    try:
-        concordance = blind_review_concordance(examiner_concern, sys_band)
-    except ValueError as exc:
-        sqlite_store.close()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    rev_id = f"BLIND-{hashlib.sha256(f'{entity_id}:{run_id}:{examiner_concern}'.encode()).hexdigest()[:12]}"
-    sqlite_store.save_blind_review(
-        review_id=rev_id,
-        entity_id=entity_id,
-        run_id=run_id,
-        examiner_id=identity.username,
-        examiner_concern=examiner_concern,
-        examiner_priority=examiner_priority,
-        examiner_recommendation=examiner_recommendation,
-        examiner_notes=examiner_notes,
-        system_risk_index=sys_index,
-        system_risk_band=sys_band,
-        concordance_score=concordance,
-    )
-    sqlite_store.close()
-
-    return RedirectResponse(url=f"/blind-review?entity_id={entity_id}", status_code=303)
-
-
 @app.get("/rules", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_rules_catalog(
     request: Request, category: str = "", domain: str = "", q: str = ""
@@ -3234,3 +3139,9 @@ async def api_batch_submission(
             else f"Stored periodic batch of {sum(ingested_counts.values())} records for {clean_id} / {payload.period}"
         ),
     }
+
+
+# Examiner workflow (cases, response packages, blind-review tasks): satsa.api.case_routes.
+from satsa.api.case_routes import router as _case_router
+
+app.include_router(_case_router)

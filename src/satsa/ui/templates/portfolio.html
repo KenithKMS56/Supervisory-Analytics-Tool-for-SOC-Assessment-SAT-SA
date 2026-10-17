@@ -190,6 +190,11 @@
   {% else %}
   <div id="trajectoryChart" style="width: 100%; height: 300px;"></div>
   {% endif %}
+  {% if trend_warnings %}
+  <ul class="trend-warnings" style="margin: 0.75rem 0 0; padding-left: 1.25rem; font-size: 0.82rem; color: var(--text-secondary);">
+    {% for w in trend_warnings %}<li><strong>Comparability:</strong> {{ w }}</li>{% endfor %}
+  </ul>
+  {% endif %}
 </div>
 
 <!-- 8-Domain Heatmap -->

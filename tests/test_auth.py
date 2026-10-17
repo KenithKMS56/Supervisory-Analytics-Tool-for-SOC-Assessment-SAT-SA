@@ -198,7 +198,10 @@ def test_examiner_is_walled_off_from_the_engine_room():
     for href in ('href="/upload"', 'href="/tuning"', 'href="/alerts"', 'href="/reports/export/findings-csv"'):
         assert href not in html, href
     assert "Download Executive Regulatory Dossier (PDF)" in html
-    assert "Escalate to Statutory Notice" in exam_client.get("/queue").text
+    queue_html = exam_client.get("/queue").text
+    assert "Confirm concern" in queue_html
+    # A record-level disposition is not a notice (docs/product_brief.md section 8).
+    assert "Statutory Notice" not in queue_html
 
 
 def test_analyst_cannot_make_review_decisions():

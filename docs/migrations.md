@@ -123,6 +123,31 @@ recorded". They are never reclassified after the fact.
 - To undo: the previous release ignores the tables. Or set `SATSA_ADMIN_MFA=optional` to stop
   enforcing MFA without removing the factors.
 
+### v7: examiner workflow (Phase 3)
+
+- New tables (docs/examiner_workflow.md):
+  - `cases`: one row per supervisory concern (entity x rule), with state, owner, outcome and
+    `version` for concurrent edits. A partial unique index allows one open case per entity
+    and rule.
+  - `case_events`: the immutable history. Triggers refuse `UPDATE` and `DELETE`.
+  - `case_attachments`: evidence files, content-addressed under `data/case_files/`. Immutable,
+    by trigger.
+  - `corrective_actions`: what the entity must do, by when, and how it will be verified.
+  - `case_packages`: explanation requests exported and responses imported.
+  - `blind_samples`, `blind_tasks`: assigned blind-review samples with seed and provenance.
+- Existing rows are untouched. Review-queue dispositions (`feedback`) are record-level triage and
+  are not turned into cases: no case is invented from a past click. Blind reviews made before
+  this version (`blind_reviews`) are kept and listed for analysts as not blinded to the
+  selection.
+- Behaviour changes:
+  - The review-queue labels "Escalated to Statutory Notice" and "CSE Explanation Requested"
+    are now "Confirmed concern" and "More data needed". The stored values `confirmed` and
+    `needs_more_data` are unchanged.
+  - `POST /blind-review/submit` and `/blind-review?entity_id=` are gone. Blind review works
+    through assigned tasks.
+- To undo: the previous release ignores the new tables. Cases and blind tasks recorded since
+  then are not visible to it, but they remain in the database and in backups.
+
 ## Publication catalog (`catalog.db`)
 
 ### v1: publication catalog

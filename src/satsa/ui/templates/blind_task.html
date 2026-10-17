@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block title %}Blind Review Task{% endblock %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>Blind review: {{ task.entity_id }}</h1>
+    <p>Task <code>{{ task.task_id }}</code>, number {{ task.position }} of sample <code>{{ task.sample_id }}</code>. Judge the entity from these signals alone.</p>
+  </div>
+  <a href="/blind-review" class="btn btn-secondary">&larr; Your tasks</a>
+</div>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem;">
+  <section class="card">
+    <div class="card-title"><span>Operational signals</span></div>
+    <p style="color: var(--text-secondary); font-size: 0.85rem;">Computed from all records the entity has submitted. No score, band, rule or finding is shown here.</p>
+    {% if signals.unavailable %}
+      <p>{{ signals.unavailable }}</p>
+    {% else %}
+    <div class="table-responsive"><table><tbody>
+      <tr><td>Alerts recorded</td><td><code>{{ signals.total_alerts }}</code></td></tr>
+      <tr><td>Median time to acknowledge</td><td><code>{{ signals.median_mtta_min }} min</code></td></tr>
+      <tr><td>Median time to resolve</td><td><code>{{ signals.median_mttr_min }} min</code></td></tr>
+      <tr><td>Declared MTTR (attestation)</td><td><code>{{ signals.declared_mttr }}</code></td></tr>
+      <tr><td>Escalations per high/critical alert</td><td><code>{{ signals.esc_rate }}%</code></td></tr>
+      <tr><td>Closed by SOAR</td><td><code>{{ signals.soar_share }}%</code></td></tr>
+      <tr><td>Closed as false positive</td><td><code>{{ signals.fp_rate }}%</code></td></tr>
+      <tr><td>Critical assets with no log-source records</td><td><code>{{ signals.silent_assets }}</code></td></tr>
+    </tbody></table></div>
+    <h3 style="margin-top: 1rem;">Sample closure notes (normalised hashes)</h3>
+    <ul style="font-family: monospace; font-size: 0.8rem;">{% for s in signals.sample_comments %}<li>{{ s }}</li>{% endfor %}</ul>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    {% if not task.submitted_at %}
+    <div class="card-title"><span>Your independent judgement</span></div>
+    <form method="post" action="/blind-review/tasks/{{ task.task_id }}/submit">
+      <label style="display: block; margin-bottom: 0.75rem;">Supervisory concern
+        <select name="examiner_concern" class="form-control" required>
+          <option value="Low">Low: operations look sound</option>
+          <option value="Moderate">Moderate: minor inconsistencies</option>
+          <option value="Elevated">Elevated: significant execution gaps</option>
+          <option value="Critical">Critical: severe blind spots or metric gaming</option>
+        </select>
+      </label>
+      <label style="display: block; margin-bottom: 0.75rem;">Priority
+        <select name="examiner_priority" class="form-control" required>
+          <option value="Routine">Routine annual cycle</option>
+          <option value="P3">P3: targeted review within 60 days</option>
+          <option value="P2">P2: priority evidence review within 30 days</option>
+          <option value="P1">P1: immediate on-site examination</option>
+        </select>
+      </label>
+      <label style="display: block; margin-bottom: 0.75rem;">Recommendation (recorded only; SAT-SA issues nothing)
+        <select name="examiner_recommendation" class="form-control" required>
+          <option value="Satisfactory">No action</option>
+          <option value="Advisory">Recommend a supervisory advisory</option>
+          <option value="Formal Audit">Recommend a formal audit</option>
+          <option value="Formal Inquiry">Recommend a formal regulatory inquiry</option>
+        </select>
+      </label>
+      <label style="display: block; margin-bottom: 1rem;">Reasons and workpaper notes
+        <textarea name="examiner_notes" class="form-control" rows="4" maxlength="5000" required></textarea>
+      </label>
+      <button type="submit" class="btn btn-primary">Submit judgement</button>
+    </form>
+    {% else %}
+    <div class="card-title"><span>Your judgement ({{ task.submitted_at[:19] }} UTC)</span></div>
+    <p>Concern <strong>{{ task.examiner_concern }}</strong>, priority {{ task.examiner_priority }}, recommendation {{ task.examiner_recommendation }}.</p>
+    <p style="white-space: pre-wrap;">{{ task.examiner_notes }}</p>
+      {% if not task.revealed_at %}
+      <form method="post" action="/blind-review/tasks/{{ task.task_id }}/reveal">
+        <button type="submit" class="btn btn-secondary">Reveal the system's assessment</button>
+      </form>
+      {% else %}
+      <hr>
+      <div class="card-title"><span>System assessment (revealed {{ task.revealed_at[:19] }} UTC)</span></div>
+      <p>Run <code>{{ task.run_id }}</code>: band <strong>{{ task.system_risk_band or "not scored" }}</strong>{% if task.system_risk_index is not none %}, index {{ task.system_risk_index }}{% endif %}{% if task.system_classification %} ({{ task.system_classification|replace("_", " ") }}){% endif %}.</p>
+      <p>Agreement: {% if task.concordance_score is not none %}<strong>{{ task.concordance_score }}%</strong>{% else %}not comparable (the system did not classify the entity){% endif %}.</p>
+      <p>Why this entity was in the sample: <strong>{{ task.sample_kind }}</strong> &mdash; {{ task.provenance.method }}{% if task.provenance.rank %} (rank {{ task.provenance.rank }} of {{ task.provenance.pool_size }}){% else %} (pool of {{ task.provenance.pool_size }}){% endif %}, seed {{ task.provenance.seed }}.</p>
+      <ul>{% for f in findings %}<li><a href="/finding/{{ f.finding_id }}">{{ f.rule_id }}</a>: {{ f.title }} (score {{ f.score }})</li>{% else %}<li>No findings for this entity in the run.</li>{% endfor %}</ul>
+      {% endif %}
+    {% endif %}
+  </section>
+</div>
+{% endblock %}
