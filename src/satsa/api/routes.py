@@ -38,7 +38,7 @@ from satsa.auth.session import (
 )
 from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
 from satsa.explain.finding_card import WHY_IT_MATTERS, FindingCard
-from satsa.ingest.pipeline import IngestionPipeline, default_entity_record, detect_source_mapping
+from satsa.ingest.pipeline import IngestionPipeline, detect_source_mapping
 from satsa.models.canonical import Entity
 from satsa.models.outputs import EXAMINER_DECISIONS, ExaminerFeedback
 from satsa.netguard import install_egress_guard, uninstall_egress_guard
@@ -52,6 +52,7 @@ from satsa.scoring.control_priorities import rank_controls, rank_processes
 from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
 from satsa.scoring.scorer import ScoringEngine, band_tier, blind_review_concordance
+from satsa.scoring.selection import period_bounds
 from satsa.security import (
     is_valid_entity_id,
     is_valid_finding_id,
@@ -59,6 +60,7 @@ from satsa.security import (
     safe_archive_member,
     safe_join,
 )
+from satsa.store.catalog import PublicationError
 from satsa.store.duckdb import DuckDBStore, analytics_cache
 from satsa.store.sqlite import SQLiteStore
 from satsa.synth.generator import SyntheticDataGenerator
@@ -627,7 +629,8 @@ async def view_portfolio(request: Request) -> Response:
     ]
     heatmap_data = []
     for r in domain_rows:
-        if r["entity_id"] in heatmap_entities and r["domain"] in domains:
+        # A domain no rule could assess for the entity has no score (not 0): its cell stays blank.
+        if r["entity_id"] in heatmap_entities and r["domain"] in domains and r["score"] is not None:
             y_idx = heatmap_entities.index(r["entity_id"])
             x_idx = domains.index(r["domain"])
             heatmap_data.append([x_idx, y_idx, round(r["score"], 1)])
@@ -817,7 +820,10 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
         "Operational Discipline",
         "Cyber Resilience",
     ]
-    radar_entity_vals = [dom_scores.get(d, 0.0) for d in radar_domains]
+    # "-" is ECharts' missing value: a domain that could not be assessed is not drawn as 0.
+    radar_entity_vals = [
+        "-" if d in dom_scores and dom_scores[d] is None else dom_scores.get(d, 0.0) for d in radar_domains
+    ]
     radar_peer_vals, peer_label = _peer_median_domain_scores(
         duckdb_store, cur, entity_id, run_id, radar_domains
     )
@@ -873,7 +879,7 @@ MIN_PEERS_FOR_MEDIAN = 3
 
 def _peer_median_domain_scores(
     duckdb_store: DuckDBStore, cur: Any, entity_id: str, run_id: str, domains: list[str]
-) -> tuple[list[float] | None, str]:
+) -> tuple[list[float | str] | None, str]:
     """Median domain score of the entity's peer cohort in this run (same resolver as scoring).
 
     Returns (None, reason) when the cohort is too small for a median that does not
@@ -891,11 +897,15 @@ def _peer_median_domain_scores(
         f"SELECT entity_id, domain, score FROM domain_scores WHERE run_id = ? AND entity_id IN ({placeholders})",
         (run_id, *peers),
     )
-    by_domain: dict[str, dict[str, float]] = {}
+    by_domain: dict[str, dict[str, float | None]] = {}
     for r in cur.fetchall():
-        by_domain.setdefault(r["domain"], {})[r["entity_id"]] = float(r["score"])
-    # A peer with no finding in a domain has no domain_scores row: that is a score of 0.
-    medians = [float(statistics.median(by_domain.get(d, {}).get(p, 0.0) for p in peers)) for d in domains]
+        by_domain.setdefault(r["domain"], {})[r["entity_id"]] = None if r["score"] is None else float(r["score"])
+    # A peer with no finding in a domain has no domain_scores row: that is a score of 0. A peer
+    # whose domain could not be assessed (score None) is left out of that domain's median.
+    medians: list[float | str] = []
+    for d in domains:
+        known = [v for p in peers if (v := by_domain.get(d, {}).get(p, 0.0)) is not None]
+        medians.append(float(statistics.median(known)) if known else "-")
     return medians, f"{cohort_label} ({len(peers)} peers)"
 
 
@@ -904,10 +914,10 @@ def _kpi_reconciliation(duckdb_store: DuckDBStore, entity_id: str) -> list[dict[
     df = duckdb_store.query(
         """
         WITH declared AS (
-            SELECT severity, avg(value) AS declared
+            SELECT lower(severity) AS severity, avg(value) AS declared
             FROM declared_kpi
-            WHERE entity_id = ? AND metric = 'MTTR' AND severity IN ('high', 'critical')
-            GROUP BY severity
+            WHERE entity_id = ? AND upper(metric) = 'MTTR' AND lower(severity) IN ('high', 'critical')
+            GROUP BY lower(severity)
         ),
         empirical AS (
             SELECT severity_final AS severity, avg(epoch(closed_at) - epoch(created_at)) / 60.0 AS empirical
@@ -933,26 +943,45 @@ def _kpi_reconciliation(duckdb_store: DuckDBStore, entity_id: str) -> list[dict[
     ]
 
 
-def _rule_parameters(rule_id: str) -> dict[str, Any]:
-    """The rule's parameters as the current configuration sets them (defaults included)."""
-    rule = RuleRegistry(RULES_CONFIG_PATH).get_rule(rule_id) if RULES_CONFIG_PATH.exists() else None
+def _rule_parameters(rule_id: str, rules_snapshot: str | None = None) -> dict[str, Any]:
+    """The rule's parameters (defaults included): as the run's recorded configuration set them
+    when it has a snapshot, else as the current configuration sets them."""
+    if rules_snapshot is not None:
+        rule = RuleRegistry.from_yaml_text(rules_snapshot).get_rule(rule_id)
+    else:
+        rule = RuleRegistry(RULES_CONFIG_PATH).get_rule(rule_id) if RULES_CONFIG_PATH.exists() else None
     return dict(rule.params) if rule is not None else {}
 
 
-def _config_status(run_config_hash: str | None) -> dict[str, Any]:
-    """Whether the rule configuration is the one the run used.
+def _current_config_hashes() -> list[str]:
+    """Hashes the current configuration has under each scheme a run may have recorded: the
+    result-affecting configuration (scoring.fingerprint.config_hash) first, then
+    config/rules.yaml alone (runs recorded before configuration snapshots existed)."""
+    from satsa.scoring.fingerprint import config_hash, config_snapshot
 
-    A run records only a hash of config/rules.yaml (as AssessmentRunner computes it), not the
-    parameter values, so the finding page shows the current values and says whether they are
-    the ones the run applied.
+    if not RULES_CONFIG_PATH.exists():
+        return []
+    folder = RULES_CONFIG_PATH.parent
+    paths = {"rules": RULES_CONFIG_PATH, **{k: folder / f"{k}.yaml" for k in ("scoring", "peers", "systemic", "anomaly")}}
+    return [
+        config_hash(config_snapshot(paths)),
+        hashlib.sha256(RULES_CONFIG_PATH.read_bytes()).hexdigest()[:16],
+    ]
+
+
+def _config_status(run_config_hash: str | None, recorded: bool = False) -> dict[str, Any]:
+    """Whether the configuration now is the one the run used, and where the shown values come from.
+
+    `recorded`: the run stored a full snapshot of its configuration, so the page shows the
+    values the run applied whatever has changed since. Runs recorded before snapshots existed
+    kept only a hash; for them the current values are shown, with a warning when they differ.
     """
-    current = (
-        hashlib.sha256(RULES_CONFIG_PATH.read_bytes()).hexdigest()[:16] if RULES_CONFIG_PATH.exists() else None
-    )
+    current = _current_config_hashes()
     return {
         "run_hash": run_config_hash,
-        "current_hash": current,
-        "unchanged": run_config_hash is not None and run_config_hash == current,
+        "current_hash": current[0] if current else None,
+        "unchanged": run_config_hash is not None and run_config_hash in current,
+        "recorded": recorded,
     }
 
 
@@ -986,6 +1015,8 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
         }
         for r in ev_rows
     ]
+    # The configuration the run recorded (runs before snapshots existed have none).
+    rules_snapshot = sqlite_store.get_config_snapshot(f_row["run_id"]).get("rules", {}).get("content")
 
     card = FindingCard(
         finding_id=f_row["finding_id"],
@@ -1002,7 +1033,7 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
         rationale=f_row["rationale"],
         why_it_matters=WHY_IT_MATTERS.get(f_row["rule_id"], ""),
         peer_comparison=json.loads(f_row["peer_comparison_json"] or "{}"),
-        parameters_used=_rule_parameters(f_row["rule_id"]),
+        parameters_used=_rule_parameters(f_row["rule_id"], rules_snapshot),
         limitations=f_row["limitations"]
         or "Evaluated on ingested metadata; raw payload inspection not performed.",
         benign_explanations=json.loads(f_row["benign_explanations_json"] or "[]"),
@@ -1011,7 +1042,7 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
     )
     cur.execute("SELECT config_hash FROM runs WHERE run_id = ?", (card.run_id,))
     run_row = cur.fetchone()
-    config_status = _config_status(run_row["config_hash"] if run_row else None)
+    config_status = _config_status(run_row["config_hash"] if run_row else None, recorded=rules_snapshot is not None)
     identity = get_current_identity(request)
     if identity:
         sqlite_store.record_live_event(
@@ -1579,6 +1610,15 @@ async def view_upload(request: Request, message: str = "") -> Response:
     duckdb_store.close()
     sqlite_store.close()
 
+    from satsa.store.catalog import Catalog
+
+    catalog = Catalog("data")
+    try:
+        submissions = catalog.batches(limit=15)
+        held_batches = [b for b in catalog.batches(limit=500) if b["state"] == "held"]
+    finally:
+        catalog.close()
+
     return templates.TemplateResponse(
         request=request,
         name="upload.html",
@@ -1587,8 +1627,54 @@ async def view_upload(request: Request, message: str = "") -> Response:
             "message": message,
             "recent_batches": recent_batches,
             "all_entities": all_entities,
+            "submissions": submissions,
+            "held_batches": held_batches,
         },
     )
+
+
+BATCH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def _held_batch_decision(batch_id: str, actor: str, publish: bool) -> str:
+    if not BATCH_ID_RE.match(batch_id):
+        return "Error: invalid batch id"
+    duckdb_store = DuckDBStore("data")
+    sqlite_store = SQLiteStore("data/satsa.db")
+    try:
+        if publish:
+            pub_seq = duckdb_store.catalog.publish_held(batch_id, actor=actor)
+        else:
+            duckdb_store.catalog.discard_held(batch_id, actor=actor)
+        sqlite_store.append_audit(
+            action="batch_published_after_review" if publish else "batch_discarded_after_review",
+            actor=actor,
+            details={"batch_id": batch_id, **({"pub_seq": pub_seq} if publish else {})},
+        )
+    except PublicationError as exc:
+        return f"Error: {exc}"
+    finally:
+        duckdb_store.close()
+        sqlite_store.close()
+    return (
+        f"Batch {batch_id} published. Run an assessment to include it."
+        if publish
+        else f"Batch {batch_id} discarded; nothing of it was stored."
+    )
+
+
+@app.post("/batches/{batch_id}/publish")
+def publish_held_batch(batch_id: str, identity: Identity = Depends(require_role(*INGEST_RUN_ROLES))) -> Response:
+    """Publish a submission that was held for review, as it is (its rejected rows stay out)."""
+    msg = _held_batch_decision(batch_id, identity.username, publish=True)
+    return RedirectResponse(url=f"/upload?message={msg}", status_code=303)
+
+
+@app.post("/batches/{batch_id}/discard")
+def discard_held_batch(batch_id: str, identity: Identity = Depends(require_role(*INGEST_RUN_ROLES))) -> Response:
+    """Discard a submission that was held for review: nothing of it is ever published."""
+    msg = _held_batch_decision(batch_id, identity.username, publish=False)
+    return RedirectResponse(url=f"/upload?message={msg}", status_code=303)
 
 
 @app.post("/upload/add-entity")
@@ -1654,14 +1740,14 @@ def handle_add_entity(
         {
             "entity_id": clean_id,
             "period": "2026-Q1",
-            "metric": "mtta",
+            "metric": "MTTA",
             "severity": "all",
             "value": float(declared_mtta),
         },
         {
             "entity_id": clean_id,
             "period": "2026-Q1",
-            "metric": "mttr",
+            "metric": "MTTR",
             "severity": "all",
             "value": float(declared_mttr),
         },
@@ -1824,16 +1910,65 @@ TEMPLATE_CSV_CONTENT: dict[str, str] = {
 }
 
 
+# Upload limits (docs/data_contract.md, "Limits"). Configurable for large deployments.
+MAX_UPLOAD_BYTES = int(os.environ.get("SATSA_MAX_UPLOAD_MB", "1024")) * 1024 * 1024
+MAX_ZIP_ENTRIES = int(os.environ.get("SATSA_MAX_ZIP_ENTRIES", "2000"))
+MAX_ZIP_UNCOMPRESSED_BYTES = int(os.environ.get("SATSA_MAX_ZIP_UNCOMPRESSED_MB", "4096")) * 1024 * 1024
+MAX_ZIP_RATIO = 200  # a member compressed more than this is treated as a decompression bomb
+
+
+def check_zip_limits(z: zipfile.ZipFile) -> None:
+    """Refuse an archive that is too large, has too many members or a suspicious compression ratio
+    before anything is extracted (ValueError explains which limit)."""
+    infos = z.infolist()
+    if len(infos) > MAX_ZIP_ENTRIES:
+        raise ValueError(f"the archive has {len(infos)} members; the limit is {MAX_ZIP_ENTRIES}")
+    total = 0
+    for info in infos:
+        safe_archive_member(info.filename)
+        total += info.file_size
+        if info.compress_size and info.file_size / info.compress_size > MAX_ZIP_RATIO and info.file_size > 1024 * 1024:
+            raise ValueError(f"archive member {info.filename!r} expands more than {MAX_ZIP_RATIO}x; refused")
+    if total > MAX_ZIP_UNCOMPRESSED_BYTES:
+        raise ValueError(
+            f"the archive expands to {total // (1024 * 1024)} MiB; the limit is "
+            f"{MAX_ZIP_UNCOMPRESSED_BYTES // (1024 * 1024)} MiB"
+        )
+
+
+def _copy_limited(source: Any, dest: Path, budget: int) -> int:
+    """Copy an upload to disk, refusing it once the request's byte budget is spent."""
+    written = 0
+    with open(dest, "wb") as out:
+        while chunk := source.read(1024 * 1024):
+            written += len(chunk)
+            if written > budget:
+                raise ValueError(f"the upload is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MiB")
+            out.write(chunk)
+    return written
+
+
 @app.post("/upload")
 def handle_upload(
     files: list[UploadFile] = File(...),
     target_entity: Annotated[str, Form()] = "",
+    period: Annotated[str, Form()] = "",
     identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
 ) -> Response:
+    """Ingest a file submission through the ingestion service.
+
+    A target entity binds the submission: rows naming another entity are rejected. A clean
+    submission is published and assessed; one with rejected rows, unreadable files or values is
+    held unpublished until an analyst publishes or discards it (below)."""
     target_clean = target_entity.strip() or None
     if target_clean is not None and not is_valid_entity_id(target_clean):
         return RedirectResponse(
             url="/upload?message=Error:+invalid+target+entity+ID", status_code=303
+        )
+    period_clean = period.strip() or None
+    if period_clean is not None and (not re.match(PERIOD_RE, period_clean) or period_bounds(period_clean) is None):
+        return RedirectResponse(
+            url="/upload?message=Error:+period+must+look+like+2026-Q1,+2026-H2+or+2026-03", status_code=303
         )
     duckdb_store, sqlite_store = get_write_stores()
     pipeline = IngestionPipeline(duckdb_store, sqlite_store)
@@ -1848,18 +1983,17 @@ def handle_upload(
         )
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
+            budget = MAX_UPLOAD_BYTES
             for uf in files:
                 # Only the base name of the client-supplied filename is used, so a
                 # name like "../../x.csv" cannot write outside the temp directory.
                 safe_name = Path((uf.filename or "").replace("\\", "/")).name or "upload.csv"
                 dest = tmp_path / safe_name
-                with open(dest, "wb") as f:
-                    shutil.copyfileobj(uf.file, f)
-                # If ZIP, validate every member path before unpacking anything.
+                budget -= _copy_limited(uf.file, dest, budget)
+                # If ZIP, validate every member path and the archive's limits before unpacking anything.
                 if dest.suffix.lower() == ".zip":
                     with zipfile.ZipFile(dest, "r") as z:
-                        for member in z.namelist():
-                            safe_archive_member(member)
+                        check_zip_limits(z)
                         z.extractall(tmp_path)
 
             # A product export (e.g. a Cortex XSIAM case list) is recognised by its own columns
@@ -1875,13 +2009,33 @@ def handle_upload(
                 }
             else:
                 res = pipeline.ingest_directory(
-                    tmp_path, default_entity_id=target_clean, mapping=mapping
+                    tmp_path,
+                    default_entity_id=target_clean,
+                    mapping=mapping,
+                    bound_entity=target_clean,
+                    period=period_clean,
+                    transport="upload",
+                    submitted_by=identity.username,
+                    policy="if_clean",
                 )
                 if mapping is not None:
                     res["detected_source"] = mapping.source
 
             if res.get("status") == "empty":
                 msg = "Warning: No supported CSV, TSV, Excel (.xlsx) or JSON files could be parsed from upload."
+            elif res.get("status") == "held":
+                held_why = "; ".join(
+                    f["summary"] for f in res.get("file_coverage") or [] if f["status"] not in ("ingested", "empty")
+                )
+                bad_ts = ", ".join(f"{k}: {n}" for k, n in (res.get("invalid_timestamps") or {}).items())
+                msg = (
+                    f"Held for review: batch {res.get('batch_id')} was NOT published because part of it could not be "
+                    "accepted"
+                    + (f" ({held_why[:500]})" if held_why else "")
+                    + (f" (unreadable timestamps: {bad_ts})" if bad_ts else "")
+                    + ". See Data Quality, then publish it as it is or discard it and upload a corrected file "
+                    "(Held submissions, below). No assessment was run."
+                )
             elif res.get("status") == "error":
                 reason = str(res.get("message", "Failed to ingest batch"))
                 msg = f"Error: {reason[:800]}{'...' if len(reason) > 800 else ''}"
@@ -1893,8 +2047,8 @@ def handle_upload(
                     "fix the files and upload again."
                 )
             else:
-                # Trigger assessment run, for the period the dashboard is currently on
-                upload_period = _latest_period(sqlite_store)
+                # Trigger assessment run: for the submission's period, else the one the dashboard is on
+                upload_period = period_clean or _latest_period(sqlite_store)
                 sqlite_store.record_live_event(
                     "ASSESSMENT_STARTED",
                     actor=identity.username,
@@ -2016,7 +2170,7 @@ async def view_blind_review(request: Request, entity_id: str = "CSE-02") -> Resp
 
     # Declared MTTR
     kpi_df = duckdb_store.query(
-        "SELECT value FROM declared_kpi WHERE entity_id = ? AND metric = 'mttr' LIMIT 1",
+        "SELECT value FROM declared_kpi WHERE entity_id = ? AND upper(metric) = 'MTTR' ORDER BY period DESC LIMIT 1",
         [entity_id],
     )
     declared_mttr = kpi_df.to_dicts()[0]["value"] if not kpi_df.is_empty() else "N/A"
@@ -2811,21 +2965,55 @@ async def download_queue_csv() -> FileResponse:
 PERIOD_RE = r"^\d{4}-(Q[1-4]|H[12]|0[1-9]|1[0-2])$"
 
 
+# Payload section -> canonical table. Every table a rule reads can be submitted.
+SUBMISSION_SECTIONS: dict[str, str] = {
+    "alerts": "alert",
+    "cases": "case",
+    "assets": "asset",
+    "closures": "closure",
+    "escalations": "escalation",
+    "workflow_events": "workflow_event",
+    "case_alert_links": "case_alert_link",
+    "remediations": "remediation",
+    "external_reports": "external_report",
+    "log_source_daily": "log_source_daily",
+    "detection_rules": "detection_rule",
+    "declared_kpis": "declared_kpi",
+    "sla_policies": "sla_policy",
+}
+
+
 class BatchSubmissionPayload(BaseModel):
     entity_id: str = Field(..., description="Unique code for the CSE, e.g. CSE-11")
     period: str = Field(
         default="2026-Q1", pattern=PERIOD_RE, description="Supervisory review period (e.g. 2026-Q1)"
     )
-    alerts: list[dict[str, Any]] = Field(
-        default=[], description="List of alert metadata dictionaries"
+    alerts: list[dict[str, Any]] = Field(default=[], description="Alert records")
+    cases: list[dict[str, Any]] = Field(default=[], description="Case management records")
+    assets: list[dict[str, Any]] = Field(default=[], description="Asset inventory records")
+    closures: list[dict[str, Any]] = Field(default=[], description="Closure records")
+    escalations: list[dict[str, Any]] = Field(default=[], description="Escalation records")
+    workflow_events: list[dict[str, Any]] = Field(default=[], description="Workflow events")
+    case_alert_links: list[dict[str, Any]] = Field(default=[], description="Case-to-alert links")
+    remediations: list[dict[str, Any]] = Field(default=[], description="Remediation tickets")
+    external_reports: list[dict[str, Any]] = Field(default=[], description="Reports to external bodies")
+    log_source_daily: list[dict[str, Any]] = Field(default=[], description="Daily log-source volumes")
+    detection_rules: list[dict[str, Any]] = Field(default=[], description="Detection rule inventory")
+    declared_kpis: list[dict[str, Any]] = Field(default=[], description="KPIs the CSE declares")
+    sla_policies: list[dict[str, Any]] = Field(default=[], description="SLA policy per severity")
+    declared_empty: list[str] = Field(
+        default=[],
+        description="Sections (e.g. 'escalations') the CSE declares complete with no records for the "
+        "period. A section that is neither submitted nor declared is treated as not submitted.",
     )
-    cases: list[dict[str, Any]] = Field(
-        default=[], description="List of case management record dictionaries"
+    revision_of: str | None = Field(
+        default=None, description="Batch id this submission corrects (required for an overlapping period)"
     )
-    assets: list[dict[str, Any]] = Field(
-        default=[], description="List of asset inventory dictionaries"
+    idempotency_key: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Client key for safe retries; default: derived from entity and period",
     )
-    closures: list[dict[str, Any]] = Field(default=[], description="List of closure dictionaries")
     run_assessment_now: bool = Field(
         default=True, description="Whether to run the periodic assessment after the batch is stored"
     )
@@ -2837,15 +3025,22 @@ async def api_batch_submission(
     identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
 ) -> dict[str, Any]:
     """
-    Submit ONE periodic batch (a CSE's alert/case/asset/closure records for a
-    supervisory review period) as JSON -- the programmatic equivalent of the
-    /upload file submission, used after the fact at each assessment cycle.
+    Submit ONE periodic batch (a CSE's records for a supervisory review period) as JSON -- the
+    programmatic equivalent of the /upload file submission, used after the fact at each
+    assessment cycle.
 
-    This is not a streaming or event-driven feed: each (entity_id, period) may be
-    submitted exactly once. A repeat submission for the same entity and period is
-    rejected with HTTP 409, so the endpoint cannot be used as a continuous
-    collection channel. Corrections to an already-submitted period go through a
-    supervised re-ingest (/upload) by an analyst.
+    This is not a streaming or event-driven feed: each entity and review period is submitted
+    once. The batch goes through the same ingestion service as a file upload (validation,
+    pseudonymisation, redaction, canonical columns only) and is published whole or not at all.
+
+    - Every row must belong to `entity_id` (rows without one get it); a row naming another
+      entity rejects the batch (422), as does any unreadable timestamp; the response lists
+      each error with its table, field and row.
+    - Exactly the same submission again (same idempotency key and content) is an idempotent
+      retry: 200 with `idempotent_replay`, nothing stored twice.
+    - Different content for the same entity and period, or a period that overlaps an earlier
+      submission (`2026-02` inside `2026-Q1`), is rejected with HTTP 409. A correction names
+      the batch it corrects in `revision_of`; it then replaces the earlier records by key.
 
     Requires an authenticated analyst session (POST /login first and
     retain the session cookie).
@@ -2854,89 +3049,106 @@ async def api_batch_submission(
     if not clean_id:
         raise HTTPException(status_code=400, detail="entity_id is required")
     require_valid_entity_id(clean_id)
-    for rows in (payload.alerts, payload.cases, payload.assets, payload.closures):
+    sections = {name: getattr(payload, name) for name in SUBMISSION_SECTIONS}
+    for rows in sections.values():
         for row in rows:
             row_eid = row.get("entity_id")
             if row_eid and not is_valid_entity_id(str(row_eid)):
                 raise HTTPException(status_code=400, detail="Invalid entity_id in submitted rows.")
+    unknown = sorted(set(payload.declared_empty) - set(SUBMISSION_SECTIONS))
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"declared_empty names unknown sections: {', '.join(unknown)}")
+    both = sorted(name for name in payload.declared_empty if sections[name])
+    if both:
+        raise HTTPException(status_code=422, detail=f"sections both submitted and declared empty: {', '.join(both)}")
+    bounds = period_bounds(payload.period)
+    assert bounds is not None  # PERIOD_RE guarantees it
+    idempotency_key = payload.idempotency_key or hashlib.sha256(
+        f"{clean_id}|{bounds[0].isoformat()}|{bounds[1].isoformat()}|{payload.revision_of or ''}".encode()
+    ).hexdigest()
 
     duckdb_store, sqlite_store = get_write_stores()
     try:
-        # Claim the (entity, period) slot first: it is unique, so a concurrent or
-        # repeated submission fails here before any data is written.
-        if not sqlite_store.claim_batch_submission(clean_id, payload.period, identity.username):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            for name, rows in sections.items():
+                if rows:
+                    (tmp_path / f"{SUBMISSION_SECTIONS[name]}.json").write_text(json.dumps(rows), encoding="utf-8")
+            res = IngestionPipeline(duckdb_store, sqlite_store).ingest_directory(
+                tmp_path,
+                bound_entity=clean_id,
+                period=payload.period,
+                transport="api",
+                submitted_by=identity.username,
+                policy="strict",
+                idempotency_key=idempotency_key,
+                revision_of=payload.revision_of,
+                reject_overlap=True,
+                declared_empty=[SUBMISSION_SECTIONS[n] for n in payload.declared_empty],
+            )
+        status = res.get("status")
+        if status == "rejected":
+            sqlite_store.append_audit(
+                action="api_batch_rejected",
+                actor=identity.username,
+                details={"entity_id": clean_id, "period": payload.period, "error_count": res.get("error_count", 0)},
+            )
+            raise HTTPException(
+                status_code=422,
+                detail={"message": res.get("message"), "errors": res.get("errors", []),
+                        "error_count": res.get("error_count", 0)},
+            )
+        if status == "conflict":
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"A batch for {clean_id} / {payload.period} has already been submitted. "
-                    "Each entity and period may be submitted once; use a supervised re-ingest "
-                    "via /upload for corrections."
+                    f"A batch for {clean_id} / {payload.period} has already been submitted, or overlaps one "
+                    f"that has: {res.get('message')}"
                 ),
             )
-        ingested_counts: dict[str, int] = {}
-        submitted_eids: set[str] = set()
-        new_entities: list[dict[str, Any]] = []
-        stored_tables: list[str] = []
-        try:
-            # canonical DuckDB table for each payload section
-            for section, table, rows in (
-                ("alerts", "alert", payload.alerts),
-                ("cases", "case", payload.cases),
-                ("assets", "asset", payload.assets),
-                ("closures", "closure", payload.closures),
-            ):
-                if not rows:
-                    continue
-                for r in rows:
-                    if not r.get("entity_id"):
-                        r["entity_id"] = clean_id
-                    submitted_eids.add(str(r["entity_id"]))
-                duckdb_store.write_partitioned_parquet(table, pl.DataFrame(rows))
-                ingested_counts[section] = len(rows)
-                stored_tables.append(table)
+        if status == "empty" and not payload.declared_empty:
+            raise HTTPException(status_code=422, detail="The batch holds no records and declares no empty section.")
+        if status not in ("success", "empty"):
+            raise HTTPException(status_code=422, detail=str(res.get("message") or "The batch could not be stored."))
 
-            # The assessment (and so every UI view) only covers registered
-            # entities, so a CSE first seen in this batch is registered here,
-            # exactly as the /upload pipeline auto-registers one.
-            registered = set(duckdb_store.query("SELECT entity_id FROM entity")["entity_id"].to_list())
-            new_entities = [default_entity_record(e) for e in sorted(submitted_eids - registered)]
-            if new_entities:
-                duckdb_store.write_partitioned_parquet("entity", pl.DataFrame(new_entities))
-        except Exception:
-            # Nothing usable was stored: free the slot so the batch can be resubmitted.
-            sqlite_store.release_batch_submission(clean_id, payload.period)
-            raise
-
-        # Submission manifest: this endpoint carries only these sections, so rules that need
-        # other tables (escalations, workflow events, ...) are reported as not assessed
-        # rather than read as SOC defects.
-        sqlite_store.record_submitted_tables(submitted_eids | {clean_id}, stored_tables)
-
-        sqlite_store.append_audit(
-            action="api_batch_submission",
-            actor=identity.username,
-            details={
-                "entity_id": clean_id,
-                "period": payload.period,
-                "ingested_counts": ingested_counts,
-                "entities_registered": [e["entity_id"] for e in new_entities],
-            },
-        )
-
+        counts = res.get("row_counts", {})
+        ingested_counts = {
+            name: counts.get(table, 0) for name, table in SUBMISSION_SECTIONS.items() if sections[name]
+        }
         run_id = None
-        if payload.run_assessment_now and any(ingested_counts.values()):
-            runner = AssessmentRunner(duckdb_store, sqlite_store)
-            res = runner.run_assessment(period=payload.period, actor=identity.username)
-            run_id = res.get("run_id")
+        replay = bool(res.get("idempotent_replay"))
+        if not replay:
+            sqlite_store.append_audit(
+                action="api_batch_submission",
+                actor=identity.username,
+                details={
+                    "entity_id": clean_id,
+                    "period": payload.period,
+                    "batch_id": res.get("batch_id"),
+                    "revision_of": payload.revision_of,
+                    "ingested_counts": ingested_counts,
+                    "declared_empty": payload.declared_empty,
+                },
+            )
+            if payload.run_assessment_now and any(ingested_counts.values()):
+                runner = AssessmentRunner(duckdb_store, sqlite_store)
+                run_id = runner.run_assessment(period=payload.period, actor=identity.username).get("run_id")
     finally:
         duckdb_store.close()
         sqlite_store.close()
 
     return {
         "status": "success",
+        "idempotent_replay": replay,
         "entity_id": clean_id,
         "period": payload.period,
+        "batch_id": res.get("batch_id"),
         "ingested_counts": ingested_counts,
+        "declared_empty": payload.declared_empty,
         "assessment_run_id": run_id,
-        "message": f"Stored periodic batch of {sum(ingested_counts.values())} records for {clean_id} / {payload.period}",
+        "message": (
+            "This batch was already received; nothing new was stored."
+            if replay
+            else f"Stored periodic batch of {sum(ingested_counts.values())} records for {clean_id} / {payload.period}"
+        ),
     }

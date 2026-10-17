@@ -23,6 +23,8 @@ from satsa.models.outputs import (
     ReviewQueueItem,
     Run,
 )
+from satsa.store.migrations import apply_migrations
+from satsa.store.sqlite_migrations import OPERATIONAL_MIGRATIONS
 
 
 def utc_now_iso() -> str:
@@ -83,14 +85,16 @@ def compute_chain_hash(alg: str, payload: str) -> str:
 # database file serializes threads (including threads sharing one connection);
 # BEGIN IMMEDIATE takes SQLite's write lock before the previous hash is read,
 # serializing writers in other processes too.
-_CHAIN_LOCKS: dict[str, threading.Lock] = {}
+# Re-entrant, so a run publication can hold it around its whole transaction and still append
+# its audit entry (see SQLiteStore.audited_transaction).
+_CHAIN_LOCKS: dict[str, threading.RLock] = {}
 _CHAIN_LOCKS_GUARD = threading.Lock()
 
 
-def _chain_lock_for(db_path: Path) -> threading.Lock:
+def _chain_lock_for(db_path: Path) -> threading.RLock:
     key = str(db_path.resolve())
     with _CHAIN_LOCKS_GUARD:
-        return _CHAIN_LOCKS.setdefault(key, threading.Lock())
+        return _CHAIN_LOCKS.setdefault(key, threading.RLock())
 
 
 @dataclass(frozen=True)
@@ -124,6 +128,8 @@ class SQLiteStore:
             isolation_level=None,
         )
         self.conn.row_factory = sqlite3.Row
+        self._tx_lock = threading.RLock()
+        self._tx_depth = 0
         # Best effort: e.g. WAL is unavailable on some network filesystems.
         with suppress(sqlite3.Error):
             self.conn.execute("PRAGMA journal_mode=WAL;")
@@ -144,19 +150,52 @@ class SQLiteStore:
             self._init_tables()
             self.seed_default_identities()
         self._ensure_migrations()
+        # Numbered migrations on top of the version-0 layout above (docs/migrations.md). A database
+        # that already existed is backed up first; one created just now has nothing to protect.
+        self.schema_versions_applied = apply_migrations(
+            self.conn, OPERATIONAL_MIGRATIONS, self.db_path, backup=not needs_init
+        )
+
+    @contextmanager
+    def transaction(self) -> Iterator[sqlite3.Cursor]:
+        """One IMMEDIATE transaction; nested use joins the outer one (all or nothing).
+
+        The connection runs in autocommit mode, so without this every statement of a multi-row
+        save committed on its own and a failure part-way left a partial result.
+        """
+        with self._tx_lock:
+            cur = self.conn.cursor()
+            if self._tx_depth:
+                self._tx_depth += 1
+                try:
+                    yield cur
+                finally:
+                    self._tx_depth -= 1
+                return
+            cur.execute("BEGIN IMMEDIATE")
+            self._tx_depth = 1
+            try:
+                yield cur
+            except BaseException:
+                self._tx_depth = 0
+                if self.conn.in_transaction:
+                    cur.execute("ROLLBACK")
+                raise
+            self._tx_depth = 0
+            cur.execute("COMMIT")
+
+    @contextmanager
+    def audited_transaction(self) -> Iterator[sqlite3.Cursor]:
+        """A transaction that may append to the audit chain: the chain lock is taken first,
+        always in that order, so it cannot deadlock against a concurrent append_audit."""
+        with _chain_lock_for(self.db_path), self.transaction() as cur:
+            yield cur
 
     @contextmanager
     def _serialized_chain_write(self) -> Iterator[sqlite3.Cursor]:
         """Hold the chain lock and an IMMEDIATE transaction around read-prev + insert."""
-        with _chain_lock_for(self.db_path):
-            cur = self.conn.cursor()
-            cur.execute("BEGIN IMMEDIATE")
-            try:
-                yield cur
-            except BaseException:
-                cur.execute("ROLLBACK")
-                raise
-            cur.execute("COMMIT")
+        with self.audited_transaction() as cur:
+            yield cur
 
     def _ensure_migrations(self) -> None:
         """Idempotent schema upgrades applied on every open (cheap: IF NOT EXISTS / column checks)."""
@@ -686,7 +725,7 @@ class SQLiteStore:
     def save_shadow_result(
         self, run_id: str, actor: str, source_name: str, result: dict[str, Any]
     ) -> int:
-        with self.conn:
+        with self.transaction():
             cur = self.conn.execute(
                 "INSERT INTO shadow_pilot_results (run_id, created_at, actor, source_name, result_json) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -718,7 +757,7 @@ class SQLiteStore:
         """Record that each entity's submission included each table (cumulative across batches)."""
         now = utc_now_iso()
         rows = [(e, t, batch_id, now) for e in sorted(set(entity_ids)) for t in sorted(set(tables))]
-        with self.conn:
+        with self.transaction():
             self.conn.executemany(
                 "INSERT INTO submitted_tables (entity_id, table_name, batch_id, recorded_at) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT (entity_id, table_name) DO UPDATE SET batch_id = excluded.batch_id, "
@@ -736,10 +775,17 @@ class SQLiteStore:
 
     # --- Periodic batch submissions (one per entity and period) ---
 
+    def get_submitted_table_batches(self) -> dict[str, dict[str, str | None]]:
+        """entity_id -> table -> the batch that last declared it (legacy manifest; see the catalog)."""
+        out: dict[str, dict[str, str | None]] = {}
+        for r in self.conn.execute("SELECT entity_id, table_name, batch_id FROM submitted_tables"):
+            out.setdefault(r["entity_id"], {})[r["table_name"]] = r["batch_id"]
+        return out
+
     def claim_batch_submission(self, entity_id: str, period: str, actor: str) -> bool:
         """Atomically reserve the (entity_id, period) slot; False if already submitted."""
         try:
-            with self.conn:
+            with self.transaction():
                 self.conn.execute(
                     "INSERT INTO batch_submissions (entity_id, period, submitted_at, actor) "
                     "VALUES (?, ?, ?, ?)",
@@ -750,7 +796,7 @@ class SQLiteStore:
         return True
 
     def release_batch_submission(self, entity_id: str, period: str) -> None:
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 "DELETE FROM batch_submissions WHERE entity_id = ? AND period = ?",
                 (entity_id, period),
@@ -810,7 +856,7 @@ class SQLiteStore:
         if cur.fetchone()[0] > 0:
             return False
 
-        with self.conn:
+        with self.transaction():
             for username, role, passphrase in DEFAULT_IDENTITIES:
                 salt = generate_salt()
                 pass_hash = hash_passphrase(passphrase, salt)
@@ -841,7 +887,7 @@ class SQLiteStore:
             if verify_passphrase(passphrase, row["pass_salt"], row["pass_hash"]):
                 flagged.append(username)
         if flagged:
-            with self.conn:
+            with self.transaction():
                 self.conn.executemany(
                     "UPDATE identities SET force_password_change = 1 WHERE username = ?",
                     [(u,) for u in flagged],
@@ -861,7 +907,7 @@ class SQLiteStore:
         salt = generate_salt()
         pass_hash = hash_passphrase(new_passphrase, salt)
         keep_hash = hashlib.sha256(keep_token.encode()).hexdigest() if keep_token else ""
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 "UPDATE identities SET pass_hash = ?, pass_salt = ?, force_password_change = 0 "
                 "WHERE username = ?",
@@ -879,7 +925,7 @@ class SQLiteStore:
 
         salt = generate_salt()
         pass_hash = hash_passphrase(passphrase, salt)
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 "INSERT OR REPLACE INTO identities (username, role, pass_hash, pass_salt) VALUES (?, ?, ?, ?)",
                 (username, role, pass_hash, salt.hex()),
@@ -898,7 +944,7 @@ class SQLiteStore:
 
     def set_blocked(self, username: str, blocked: bool = True) -> None:
         """Mark an identity as blocked (1) or unblocked (0)."""
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 "UPDATE identities SET is_blocked = ? WHERE username = ?",
                 (1 if blocked else 0, username),
@@ -913,7 +959,7 @@ class SQLiteStore:
         session_hash = hashlib.sha256(raw_token.encode()).hexdigest()
         now = datetime.datetime.now(datetime.UTC)
         expires_at = now + datetime.timedelta(hours=ttl_hours)
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
                 INSERT INTO sessions (session_hash, username, role, created_at, expires_at)
@@ -960,13 +1006,13 @@ class SQLiteStore:
 
     def delete_session(self, raw_token: str) -> None:
         session_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-        with self.conn:
+        with self.transaction():
             self.conn.execute("DELETE FROM sessions WHERE session_hash = ?", (session_hash,))
 
     # --- Systemic (cross-entity) findings ---
 
     def save_systemic_findings(self, findings: list[dict[str, Any]]) -> None:
-        with self.conn:
+        with self.transaction():
             for f in findings:
                 self.conn.execute(
                     """
@@ -1004,7 +1050,7 @@ class SQLiteStore:
     # --- Exploratory anomaly signals and the metric values behind them ---
 
     def save_anomaly_signals(self, signals: list[dict[str, Any]]) -> None:
-        with self.conn:
+        with self.transaction():
             self.conn.executemany(
                 """
                 INSERT OR REPLACE INTO anomaly_signals (
@@ -1035,7 +1081,7 @@ class SQLiteStore:
         return rows
 
     def save_metric_values(self, run_id: str, rows: list[dict[str, Any]]) -> None:
-        with self.conn:
+        with self.transaction():
             self.conn.executemany(
                 "INSERT OR REPLACE INTO metric_values (run_id, entity_id, period, metric, value, n) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
@@ -1045,11 +1091,14 @@ class SQLiteStore:
     # --- Persistence Helpers ---
 
     def save_run(self, run: Run) -> None:
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
-                INSERT OR REPLACE INTO runs (run_id, period, created_at, config_hash, code_version, status, manifest_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO runs (
+                    run_id, period, created_at, config_hash, code_version, status, manifest_json,
+                    fingerprint, selection_json, source_snapshot, data_fingerprint_json, environment_json,
+                    published_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.run_id,
@@ -1059,11 +1108,17 @@ class SQLiteStore:
                     run.code_version,
                     run.status,
                     run.manifest_json,
+                    run.fingerprint,
+                    run.selection_json,
+                    run.source_snapshot,
+                    run.data_fingerprint_json,
+                    run.environment_json,
+                    utc_now_iso(),
                 ),
             )
 
     def save_findings(self, findings: list[Finding], evidences: list[FindingEvidence]) -> None:
-        with self.conn:
+        with self.transaction():
             for f in findings:
                 self.conn.execute(
                     """
@@ -1106,21 +1161,28 @@ class SQLiteStore:
     def save_scores(
         self, domain_scores: list[DomainScore], entity_scores: list[EntityScore]
     ) -> None:
-        with self.conn:
+        with self.transaction():
             for ds in domain_scores:
                 self.conn.execute(
                     """
-                    INSERT OR REPLACE INTO domain_scores (run_id, entity_id, domain, score)
-                    VALUES (?, ?, ?, ?)
+                    INSERT OR REPLACE INTO domain_scores (
+                        run_id, entity_id, domain, score, rules_applicable, rules_assessed, coverage_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (ds.run_id, ds.entity_id, ds.domain, ds.score),
+                    (
+                        ds.run_id, ds.entity_id, ds.domain, ds.score,
+                        ds.rules_applicable, ds.rules_assessed, ds.coverage_status,
+                    ),
                 )
             for es in entity_scores:
                 self.conn.execute(
                     """
                     INSERT OR REPLACE INTO entity_scores (
-                        run_id, entity_id, risk_index, risk_band, distinct_rules_triggered, domain_scores_json
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        run_id, entity_id, risk_index, risk_band, distinct_rules_triggered, domain_scores_json,
+                        classification_status, rules_applicable, rules_assessed, rules_degraded,
+                        rules_insufficient, rules_not_applicable, coverage, data_request_priority,
+                        missing_inputs_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         es.run_id,
@@ -1129,8 +1191,120 @@ class SQLiteStore:
                         es.risk_band,
                         es.distinct_rules_triggered,
                         json.dumps(es.domain_scores),
+                        es.classification_status,
+                        es.rules_applicable,
+                        es.rules_assessed,
+                        es.rules_degraded,
+                        es.rules_insufficient,
+                        es.rules_not_applicable,
+                        es.coverage,
+                        json.dumps(es.data_request_priority),
+                        json.dumps(es.missing_inputs),
                     ),
                 )
+
+    def save_rule_results(self, rows: list[dict[str, Any]]) -> None:
+        """One row per run x entity x rule: the rule's result state and why (rules.contracts)."""
+        with self.transaction():
+            self.conn.executemany(
+                """
+                INSERT OR REPLACE INTO rule_results (
+                    run_id, entity_id, rule_id, rule_version, domain, state, reason,
+                    missing_inputs_json, population, min_sample, findings_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        r["run_id"], r["entity_id"], r["rule_id"], r["rule_version"], r["domain"], r["state"],
+                        r["reason"], json.dumps(r.get("missing_inputs", [])), r.get("population"),
+                        r.get("min_sample"), r.get("findings_count", 0),
+                    )
+                    for r in rows
+                ],
+            )
+
+    def get_rule_results(self, run_id: str, entity_id: str | None = None) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM rule_results WHERE run_id = ? AND (? IS NULL OR entity_id = ?) ORDER BY entity_id, rule_id",
+            (run_id, entity_id, entity_id),
+        ).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["missing_inputs"] = json.loads(d.pop("missing_inputs_json") or "[]")
+            out.append(d)
+        return out
+
+    def save_config_snapshot(self, run_id: str, snapshot: list[dict[str, Any]]) -> None:
+        """The full text of every configuration file a run read (scoring.fingerprint)."""
+        with self.transaction():
+            self.conn.executemany(
+                "INSERT OR REPLACE INTO run_config_snapshots (run_id, key, path, sha256, content) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [(run_id, e["key"], e["path"], e["sha256"], e["content"]) for e in snapshot],
+            )
+
+    def get_config_snapshot(self, run_id: str) -> dict[str, dict[str, Any]]:
+        """key -> {path, sha256, content} as recorded with the run ({} for runs before snapshots)."""
+        return {
+            r["key"]: {"path": r["path"], "sha256": r["sha256"], "content": r["content"]}
+            for r in self.conn.execute(
+                "SELECT key, path, sha256, content FROM run_config_snapshots WHERE run_id = ?", (run_id,)
+            )
+        }
+
+    # --- applicability decisions (audited; the only way a rule becomes not_applicable) ---
+
+    def add_applicability_decision(
+        self,
+        entity_id: str,
+        rule_id: str,
+        reason: str,
+        decided_by: str,
+        rule_version: str,
+        expires_at: str | None = None,
+    ) -> str:
+        if not reason.strip():
+            raise ValueError("an applicability decision needs a reason")
+        decision_id = "APD-" + hashlib.sha256(f"{entity_id}:{rule_id}:{utc_now_iso()}".encode()).hexdigest()[:12]
+        with self.audited_transaction():
+            self.conn.execute(
+                "INSERT INTO applicability_decisions (decision_id, entity_id, rule_id, reason, decided_by, "
+                "decided_at, rule_version, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (decision_id, entity_id, rule_id, reason.strip(), decided_by, utc_now_iso(), rule_version, expires_at),
+            )
+            self.append_audit(
+                "applicability_decision",
+                decided_by,
+                {"decision_id": decision_id, "entity_id": entity_id, "rule_id": rule_id, "reason": reason.strip(),
+                 "rule_version": rule_version, "expires_at": expires_at},
+            )
+        return decision_id
+
+    def revoke_applicability_decision(self, decision_id: str, actor: str, reason: str) -> bool:
+        with self.audited_transaction():
+            changed = self.conn.execute(
+                "UPDATE applicability_decisions SET revoked_at = ?, revoked_by = ?, revoke_reason = ? "
+                "WHERE decision_id = ? AND revoked_at IS NULL",
+                (utc_now_iso(), actor, reason, decision_id),
+            ).rowcount
+            if changed:
+                self.append_audit(
+                    "applicability_revoked", actor, {"decision_id": decision_id, "reason": reason}
+                )
+        return bool(changed)
+
+    def active_applicability_decisions(self, at: str | None = None) -> dict[tuple[str, str], dict[str, Any]]:
+        """(entity_id, rule_id) -> decision, for decisions neither revoked nor expired at `at`."""
+        when = at or utc_now_iso()
+        return {
+            (r["entity_id"], r["rule_id"]): dict(r)
+            for r in self.conn.execute(
+                "SELECT * FROM applicability_decisions WHERE revoked_at IS NULL "
+                "AND (expires_at IS NULL OR expires_at > ?) ORDER BY decided_at",
+                (when,),
+            )
+        }
 
     def save_review_queue(self, queue_items: list[ReviewQueueItem]) -> None:
         # A record a new run selects again keeps the examiner's latest decision on it, whichever
@@ -1146,7 +1320,7 @@ class SQLiteStore:
             EXAMINER_DECISIONS,
         ):
             decided[(r["entity_id"], r["record_type"], r["record_id"])] = (r["status"], r["notes"])
-        with self.conn:
+        with self.transaction():
             for item in queue_items:
                 status, note = item.examiner_status, item.examiner_note
                 if status == "pending":
@@ -1176,7 +1350,7 @@ class SQLiteStore:
                 )
 
     def save_dq_issue(self, issue: DQIssue) -> None:
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
                 INSERT OR REPLACE INTO dq_issues (
@@ -1196,7 +1370,7 @@ class SQLiteStore:
             )
 
     def save_feedback(self, fb: ExaminerFeedback) -> None:
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
                 INSERT OR REPLACE INTO feedback (feedback_id, queue_id, finding_id, examiner_id, status, notes, created_at)
@@ -1235,7 +1409,7 @@ class SQLiteStore:
         """Save a blinded examiner assessment record and log to audit trail."""
 
         now = utc_now_iso()
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
                 INSERT OR REPLACE INTO blind_reviews (
@@ -1299,7 +1473,7 @@ class SQLiteStore:
                 ("ORG-ENERGY", "Hydrocarbon & Petroleum Pipelines Board", "oil_and_gas", "ACTIVE"),
                 ("ORG-TRANSPORT", "Strategic Rail & Freight Transit Authority", "transport", "ACTIVE"),
             ]
-            with self.conn:
+            with self.transaction():
                 self.conn.executemany(
                     "INSERT OR IGNORE INTO organisations (org_id, name, sector, status) VALUES (?, ?, ?, ?)",
                     orgs,
@@ -1319,7 +1493,7 @@ class SQLiteStore:
                 ("CSE-09", "ORG-ENERGY", "Coastal Hydrocarbon Offshore", "oil_and_gas", "ACTIVE"),
                 ("CSE-10", "ORG-TRANSPORT", "Metro Transit Automated Rail", "transport", "ACTIVE"),
             ]
-            with self.conn:
+            with self.transaction():
                 self.conn.executemany(
                     "INSERT OR IGNORE INTO cses (cse_id, org_id, name, sector, status) VALUES (?, ?, ?, ?, ?)",
                     cses,
@@ -1335,7 +1509,7 @@ class SQLiteStore:
         if not cur.fetchone():
             salt = generate_salt()
             pass_hash = hash_passphrase(passphrase, salt)
-            with self.conn:
+            with self.transaction():
                 # force_password_change = 1: the bootstrap passphrase is published.
                 self.conn.execute(
                     """
@@ -1350,7 +1524,7 @@ class SQLiteStore:
         # Ensure demo 'admin' has admin portal access and active status
         cur.execute("SELECT username FROM identities WHERE username = 'admin'")
         if cur.fetchone():
-            with self.conn:
+            with self.transaction():
                 self.conn.execute(
                     """
                     UPDATE identities SET
@@ -1385,14 +1559,14 @@ class SQLiteStore:
         return dict(row) if row else None
 
     def create_organisation(self, org_id: str, name: str, sector: str, status: str = "ACTIVE") -> None:
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 "INSERT INTO organisations (org_id, name, sector, status) VALUES (?, ?, ?, ?)",
                 (org_id.strip().upper(), name.strip(), sector.strip(), status),
             )
 
     def update_organisation(self, org_id: str, name: str, sector: str, status: str) -> None:
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 "UPDATE organisations SET name = ?, sector = ?, status = ? WHERE org_id = ?",
                 (name.strip(), sector.strip(), status, org_id),
@@ -1449,14 +1623,14 @@ class SQLiteStore:
     ) -> None:
         cse_clean = cse_id.strip().upper()
         cse_name = (name or cse_clean).strip()
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 "INSERT INTO cses (cse_id, org_id, name, sector, status) VALUES (?, ?, ?, ?, ?)",
                 (cse_clean, org_id, cse_name, sector.strip(), status),
             )
 
     def update_cse(self, cse_id: str, org_id: str, name: str, sector: str, status: str) -> None:
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 "UPDATE cses SET org_id = ?, name = ?, sector = ?, status = ? WHERE cse_id = ?",
                 (org_id, name.strip(), sector.strip(), status, cse_id),
@@ -1478,7 +1652,7 @@ class SQLiteStore:
         salt = generate_salt()
         pass_hash = hash_passphrase(passphrase, salt)
         is_blocked = 1 if status == "BLOCKED" else 0
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
                 INSERT INTO identities (
@@ -1524,7 +1698,7 @@ class SQLiteStore:
         new_admin = is_admin_user if is_admin_user is not None else (row["is_admin_user"] or 0)
         is_blocked = 1 if new_status == "BLOCKED" else 0
 
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
                 UPDATE identities
@@ -1545,7 +1719,7 @@ class SQLiteStore:
 
         salt = generate_salt()
         pass_hash = hash_passphrase(new_passphrase, salt)
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
                 UPDATE identities
@@ -1560,7 +1734,7 @@ class SQLiteStore:
 
     def set_user_status(self, username: str, status: str = "ACTIVE") -> None:
         is_blocked = 1 if status == "BLOCKED" else 0
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 "UPDATE identities SET status = ?, is_blocked = ? WHERE username = ?",
                 (status, is_blocked, username),
@@ -1616,7 +1790,7 @@ class SQLiteStore:
     def update_user_last_login(self, username: str) -> None:
 
         now_iso = utc_now_iso()
-        with self.conn:
+        with self.transaction():
             self.conn.execute("UPDATE identities SET last_login = ? WHERE username = ?", (now_iso, username))
 
     def create_admin_session(self, username: str, role: str, ttl_hours: int = 8) -> str:
@@ -1627,7 +1801,7 @@ class SQLiteStore:
         session_hash = hashlib.sha256(raw_token.encode()).hexdigest()
         now = datetime.datetime.now(datetime.UTC)
         expires_at = now + datetime.timedelta(hours=ttl_hours)
-        with self.conn:
+        with self.transaction():
             self.conn.execute(
                 """
                 INSERT INTO admin_sessions (session_hash, username, role, created_at, expires_at)
@@ -1667,7 +1841,7 @@ class SQLiteStore:
 
     def delete_admin_session(self, raw_token: str) -> None:
         session_hash = hashlib.sha256(raw_token.encode()).hexdigest()
-        with self.conn:
+        with self.transaction():
             self.conn.execute("DELETE FROM admin_sessions WHERE session_hash = ?", (session_hash,))
 
     def append_admin_audit(
@@ -1834,7 +2008,7 @@ class SQLiteStore:
         """Record an operator event for the Admin Portal's activity feed (non-authoritative; see ADR-006)."""
         now = utc_now_iso()
         details_json = json.dumps(details or {})
-        with self.conn:
+        with self.transaction():
             cur = self.conn.execute(
                 """
                 INSERT INTO live_events (ts, event_type, actor, role, entity_id, details_json, is_admin)

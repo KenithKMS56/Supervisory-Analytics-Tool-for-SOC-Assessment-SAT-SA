@@ -92,7 +92,9 @@ def rank_processes(
     for r in conn.execute(
         "SELECT domain, entity_id, score FROM domain_scores WHERE run_id = ?", (run_id,)
     ).fetchall():
-        scores.setdefault(r["domain"], []).append((r["entity_id"], float(r["score"] or 0.0)))
+        if r["score"] is None:
+            continue  # not assessed for this entity: neither weak nor strong
+        scores.setdefault(r["domain"], []).append((r["entity_id"], float(r["score"])))
 
     leads: dict[str, int] = {}
     try:

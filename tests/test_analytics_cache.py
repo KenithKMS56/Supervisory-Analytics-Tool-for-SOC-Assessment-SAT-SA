@@ -82,7 +82,8 @@ def test_changed_data_retires_the_cache_even_without_a_run(tmp_path):
     assert _count(cache.view(tmp_path, None)) == 8
     assert cache.loads == 2
 
-    (tmp_path / "parquet" / "alert" / "entity_id=E2" / "data.parquet").unlink()  # and is deleted again
+    for f in (tmp_path / "parquet" / "alert" / "entity_id=E2").glob("*.parquet"):
+        f.unlink()  # and is deleted again (the loader skips the missing published file, with a warning)
     assert _count(cache.view(tmp_path, None)) == 5
     assert cache.loads == 3
 

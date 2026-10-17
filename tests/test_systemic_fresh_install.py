@@ -84,10 +84,12 @@ def test_systemic_finding_survives_reingest_with_partial_entity_rows(fresh_datas
     )
     duck.write_partitioned_parquet("entity", partial)
 
+    # Every version is kept on disk (published files are immutable); the store resolves them
+    # to one record per entity, newest non-null value per attribute.
+    duck.load_all_tables()
     for eid in SYSTEMIC_MSSP_GROUP:
-        part = root / "store_reingest" / "parquet" / "entity" / f"entity_id={eid}" / "data.parquet"
-        rows = pl.read_parquet(part)
-        assert rows.height == 1, f"{eid}: entity partition must hold exactly one row"
+        rows = duck.query("SELECT name, soc_provider FROM entity WHERE entity_id = ?", [eid])
+        assert rows.height == 1, f"{eid}: the entity must resolve to exactly one record"
         assert rows["soc_provider"][0] == SYSTEMIC_MSSP_PROVIDER
         assert rows["name"][0] == f"{eid} (renamed)"  # newer non-null values do win
 

@@ -72,6 +72,15 @@ band_floors:
   critical: high
   high: moderate
 
+# Evidence coverage (docs/analytics_methodology.md, "Evidence coverage"): coverage is the share
+# of an entity's applicable rules that could be assessed (result finding or assessed_clear).
+# At or above assessable_min the entity is "assessable"; below insufficient_below it is
+# "insufficient_evidence" and gets no concern band from its index (only a band floor from a
+# serious finding); in between it is "partially_assessable" and its band says so.
+evidence_coverage:
+  assessable_min: 0.9
+  insufficient_below: 0.25
+
 # Per entity: up to queue_size_per_entity items. Records cited as evidence by findings fill
 # up to top_risk_ratio of it, highest accumulated finding score first; the rest of the size is
 # a random control sample of the entity's other alerts, stratified by severity. An entity with

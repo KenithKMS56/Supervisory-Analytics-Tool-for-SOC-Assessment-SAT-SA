@@ -58,6 +58,8 @@ class ColumnarResult:
     # Positions in the file of the first ROW_SAMPLE rows set aside, for the file ledger.
     unattributed_at: list[int] = field(default_factory=list)
     rejected_at: list[int] = field(default_factory=list)
+    # Rows dropped afterwards because they name another entity than the submission's.
+    other_entity: int = 0
 
 
 def _is(dtype: pl.DataType, kinds: tuple[Any, ...]) -> bool:

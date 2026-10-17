@@ -84,6 +84,14 @@ DOMAIN_ABBR = {
 }
 
 
+
+def _domain_cell(score: float | None) -> str:
+    """One HTML portfolio cell: a domain no rule could assess says so instead of showing 0."""
+    if score is None:
+        return "<td style='background: #f1f5f9' title='No rule of this domain could be assessed'>n/a</td>"
+    bg = "#fee2e2" if score >= 50 else ("#fef9c3" if score >= 25 else "#ffffff")
+    return f"<td style='background: {bg}'>{score:.1f}</td>"
+
 class ReportNotFoundError(LookupError):
     """The requested run, entity, finding or report data does not exist (HTTP 404)."""
 
@@ -96,12 +104,15 @@ def _hex(color: colors.Color) -> str:
     return "#" + color.hexval()[2:]
 
 
-_BADGE_CLASS = {"critical": "badge-crit", "moderate": "badge-mod", "low": "badge-low"}
+# "insufficient" (no classification for want of evidence) is shown with the attention style
+# and its own label, never as low concern.
+_BADGE_CLASS = {"critical": "badge-crit", "moderate": "badge-mod", "low": "badge-low", "insufficient": "badge-mod"}
 
 
 def _tier_bg(risk_band: str) -> colors.Color:
     """Cell background for an entity's stored risk band."""
-    return colors.HexColor({"critical": CRIT_BG, "moderate": MOD_BG, "low": LOW_BG}[band_tier(risk_band)])
+    tiers = {"critical": CRIT_BG, "moderate": MOD_BG, "low": LOW_BG, "insufficient": MOD_BG}
+    return colors.HexColor(tiers[band_tier(risk_band)])
 
 
 def _band_bg(score: float) -> colors.Color:
@@ -237,7 +248,7 @@ class ReportGenerator:
     <table>
       <thead><tr><th>Capability Domain</th><th>Supervisory Risk Score</th><th>Status</th></tr></thead>
       <tbody>
-        {"".join(f"<tr><td><strong>{d['domain']}</strong></td><td>{d['score']:.1f}</td><td><span class='badge {'badge-crit' if d['score'] >= 50 else ('badge-mod' if d['score'] >= 25 else 'badge-low')}'>{'Elevated Concern' if d['score'] >= 50 else ('Moderate Concern' if d['score'] >= 25 else 'Satisfactory')}</span></td></tr>" for d in dom_scores)}
+        {"".join(f"<tr><td><strong>{d['domain']}</strong></td><td>{'not assessed' if d['score'] is None else format(d['score'], '.1f')}</td><td><span class='badge {'badge-low' if d['score'] is None else ('badge-crit' if d['score'] >= 50 else ('badge-mod' if d['score'] >= 25 else 'badge-low'))}'>{'Insufficient evidence' if d['score'] is None else ('Elevated Concern' if d['score'] >= 50 else ('Moderate Concern' if d['score'] >= 25 else 'Satisfactory'))}</span></td></tr>" for d in dom_scores)}
       </tbody>
     </table>
   </div>
@@ -336,7 +347,7 @@ class ReportGenerator:
         return df.to_dicts()[0] if not df.is_empty() else {}
 
     @staticmethod
-    def _ordered_domains(scores: dict[str, float]) -> list[str]:
+    def _ordered_domains(scores: dict[str, Any]) -> list[str]:
         known = [d for d in DOMAIN_ORDER if d in scores]
         return known + sorted(d for d in scores if d not in DOMAIN_ORDER)
 
@@ -362,7 +373,12 @@ class ReportGenerator:
             "SELECT domain, score FROM domain_scores WHERE entity_id = ? AND run_id = ?",
             (entity_id, meta.run_id),
         )
-        dom_scores = {r["domain"]: float(r["score"]) for r in cur.fetchall()}
+        all_dom_scores = {
+            r["domain"]: None if r["score"] is None else float(r["score"]) for r in cur.fetchall()
+        }
+        # Domains no rule could assess have no score: listed as such, never charted as 0.
+        unassessed = [d for d in self._ordered_domains(all_dom_scores) if all_dom_scores[d] is None]
+        dom_scores = {d: s for d, s in all_dom_scores.items() if s is not None}
         findings = self._load_findings("entity_id = ? AND run_id = ?", (entity_id, meta.run_id))
 
         band = band_for_label(score_row["risk_band"])
@@ -469,7 +485,8 @@ class ReportGenerator:
             story.append(
                 data_table(
                     ["Capability domain", "Score (0-100)", "Band"],
-                    [[d, f"{dom_scores[d]:.1f}", band_for(dom_scores[d]).name] for d in domains],
+                    [[d, f"{dom_scores[d]:.1f}", band_for(dom_scores[d]).name] for d in domains]
+                    + [[d, "not assessed", "Insufficient evidence"] for d in unassessed],
                     [260, 110, CONTENT_W - 370],
                 )
             )
@@ -492,9 +509,11 @@ class ReportGenerator:
         cur.execute(
             "SELECT entity_id, domain, score FROM domain_scores WHERE run_id = ?", (meta.run_id,)
         )
-        domain_map: dict[str, dict[str, float]] = {}
+        domain_map: dict[str, dict[str, float | None]] = {}
         for r in cur.fetchall():
-            domain_map.setdefault(r["entity_id"], {})[r["domain"]] = float(r["score"])
+            domain_map.setdefault(r["entity_id"], {})[r["domain"]] = (
+                None if r["score"] is None else float(r["score"])
+            )
         findings = self._load_findings("run_id = ?", (meta.run_id,))
         cur.execute(
             "SELECT entity_id, check_name, severity, count, details FROM dq_issues "
@@ -505,7 +524,7 @@ class ReportGenerator:
         total = len(entities)
         # Same "requires action" definition as the portfolio dashboard: any band above low.
         attention = sum(1 for e in entities if band_tier(e["risk_band"]) != "low")
-        band_counts = {"CRITICAL": 0, "MODERATE": 0, "LOW": 0}
+        band_counts = {"CRITICAL": 0, "MODERATE": 0, "LOW": 0, "INSUFFICIENT": 0}
         for e in entities:
             band_counts[band_tier(e["risk_band"]).upper()] += 1
         escalations = [f for f in findings if action_for(f["severity"]).label == "ESCALATE"]
@@ -550,7 +569,7 @@ class ReportGenerator:
                     sum(
                         1
                         for e in entities
-                        if domain_map.get(e["entity_id"], {}).get(d, 0.0) >= CRITICAL_THRESHOLD
+                        if (domain_map.get(e["entity_id"], {}).get(d, 0.0) or 0.0) >= CRITICAL_THRESHOLD
                     ),
                     total,
                 )
@@ -958,13 +977,13 @@ class ReportGenerator:
             (run_id,),
         )
         domain_rows = cur.fetchall()
-        domain_map: dict[str, dict[str, float]] = {}
+        domain_map: dict[str, dict[str, float | None]] = {}
         domains = set()
         for r in domain_rows:
             eid = r["entity_id"]
             dom = r["domain"]
             domains.add(dom)
-            domain_map.setdefault(eid, {})[dom] = float(r["score"])
+            domain_map.setdefault(eid, {})[dom] = None if r["score"] is None else float(r["score"])
 
         sorted_domains = sorted(domains)
 
@@ -1015,7 +1034,7 @@ class ReportGenerator:
                 f"<td><span class='badge {_BADGE_CLASS[band_tier(e['risk_band'])]}'>{e['risk_band']}</span></td>"
                 f"<td>{e['distinct_rules_triggered']}</td>"
                 + "".join(
-                    f"<td style='background: {'#fee2e2' if domain_map.get(e['entity_id'], {}).get(d, 0) >= 50 else ('#fef9c3' if domain_map.get(e['entity_id'], {}).get(d, 0) >= 25 else '#ffffff')}'>{domain_map.get(e['entity_id'], {}).get(d, 0.0):.1f}</td>"
+                    _domain_cell(domain_map.get(e["entity_id"], {}).get(d, 0.0))
                     for d in sorted_domains
                 )
                 + "</tr>"

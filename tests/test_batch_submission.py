@@ -49,9 +49,17 @@ def test_first_submission_accepted_repeat_rejected(analyst, entity_id):
     assert first.json()["ingested_counts"] == {"alerts": 1}
     assert (Path("data/parquet/alert") / f"entity_id={entity_id}").is_dir()
 
+    # Exactly the same batch again is a retry: acknowledged, never stored twice (brief B03).
     again = analyst.post("/api/v1/submissions", json=_batch(entity_id))
-    assert again.status_code == 409
-    assert "already been submitted" in again.json()["detail"]
+    assert again.status_code == 200 and again.json()["idempotent_replay"] is True
+    assert again.json()["batch_id"] == first.json()["batch_id"]
+
+    # Different content for the same entity and period is refused.
+    changed = _batch(entity_id)
+    changed["alerts"][0]["severity_final"] = "low"
+    conflict = analyst.post("/api/v1/submissions", json=changed)
+    assert conflict.status_code == 409
+    assert "already been submitted" in conflict.json()["detail"]
 
     # A different period for the same entity is a new periodic batch.
     next_period = analyst.post("/api/v1/submissions", json=_batch(entity_id, period="2026-Q3"))
