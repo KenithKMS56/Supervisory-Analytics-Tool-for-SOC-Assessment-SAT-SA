@@ -43,3 +43,9 @@ wheelhouse/
 __pycache__/
 *.pyc
 .hypothesis/
+# Deployment state kept in data/ (Phase 2): secrets, backups, staging and job inputs.
+data/secrets/
+data/backups/
+data/staging/
+data/quarantine/
+data/jobs/

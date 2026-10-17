@@ -313,6 +313,20 @@ def migrate_cmd(
             console.print(f"    {problem}")
         raise typer.Exit(code=1)
     console.print("[bold green][+] Every published file is present and matches its recorded hash.[/bold green]")
+    _report_pseudonym_key(data_dir)
+
+
+def _report_pseudonym_key(data_dir: str) -> None:
+    """Move a legacy .satsa_salt into the keyring (satsa.keys), or say why it cannot."""
+    from satsa.keys import PseudonymKeyMissing, current_key, status
+
+    try:
+        key = current_key(data_dir)
+    except PseudonymKeyMissing as exc:
+        console.print(f"[bold red][!] Pseudonymisation key: {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+    origin = status(data_dir)["versions"][-1]["origin"]
+    console.print(f"[bold blue]Pseudonymisation key[/bold blue] {key.key_id} ({origin})")
 
 
 @app.command("verify-data")
@@ -1392,6 +1406,71 @@ def audit_checkpoint_cmd(
         )
     else:
         typer.echo(text, nl=False)
+
+
+
+def _audit_key_change(data_dir: str, action: str, key_id: str) -> None:
+    import getpass
+
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(Path(data_dir) / "satsa.db")
+    try:
+        store.append_audit(action=action, actor=f"cli:{getpass.getuser()}", details={"key_id": key_id})
+    finally:
+        store.close()
+
+
+keys_app = typer.Typer(help="Pseudonymisation keys kept in data/secrets/ (docs/key_management.md)")
+app.add_typer(keys_app, name="keys")
+
+
+@keys_app.command("status")
+def keys_status(data_dir: str = typer.Option("data", "--data-dir")) -> None:
+    """Show the key versions (ids and dates only, never key material)."""
+    from satsa.keys import status
+
+    console.print_json(data=status(data_dir))
+
+
+@keys_app.command("init")
+def keys_init(
+    data_dir: str = typer.Option("data", "--data-dir"),
+    new_key_breaks_linkage: bool = typer.Option(
+        False, "--new-key-breaks-linkage",
+        help="Create a new key although existing data used a key that is lost. Pseudonyms will not link.",
+    ),
+) -> None:
+    """Create the keyring (importing a legacy .satsa_salt if present)."""
+    from satsa.keys import PseudonymKeyMissing, current_key, init_new_key_breaking_linkage
+
+    try:
+        key = current_key(data_dir)
+    except PseudonymKeyMissing as exc:
+        if not new_key_breaks_linkage:
+            console.print(f"[bold red][!] {exc}[/bold red]")
+            raise typer.Exit(code=1) from exc
+        key = init_new_key_breaking_linkage(data_dir)
+        _audit_key_change(data_dir, "pseudonym_key_created_breaking_linkage", key.key_id)
+        console.print("[bold yellow][!] New key created: pseudonyms from now on do not match earlier ones.[/bold yellow]")
+    console.print(f"Current key: {key.key_id}")
+
+
+@keys_app.command("rotate")
+def keys_rotate(
+    data_dir: str = typer.Option("data", "--data-dir"),
+    confirm: bool = typer.Option(False, "--i-understand-pseudonyms-will-not-link",
+                                 help="Required: pseudonyms made after rotation differ from earlier ones."),
+) -> None:
+    """Add a new key version for new submissions; earlier versions are kept."""
+    from satsa.keys import rotate
+
+    if not confirm:
+        console.print("[bold red]Refusing: pass --i-understand-pseudonyms-will-not-link.[/bold red]")
+        raise typer.Exit(code=2)
+    key = rotate(data_dir)
+    _audit_key_change(data_dir, "pseudonym_key_rotated", key.key_id)
+    console.print(f"Current key is now {key.key_id}. Batches record the key they used.")
 
 
 if __name__ == "__main__":

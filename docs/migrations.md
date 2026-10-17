@@ -80,6 +80,25 @@ declared period, content hash, idempotency key, parent batch, submitter, and rec
 published times. `batch_tables` records each published file with its SHA-256 and row count,
 and each table a batch declared `declared_empty` or `rejected`.
 
+### v2: pseudonymisation key per batch (Phase 2)
+
+Adds the nullable column `batches.pseudonym_key_id`. It holds the id of the key a batch was
+pseudonymised with (docs/key_management.md). Batches published before v2 keep `NULL`, which
+means "not recorded". This is additive: no existing row changes.
+
+### Pseudonymisation key moved into `data/secrets/` (Phase 2)
+
+This is not a schema change, but it is a change to deployment state. The first ingestion or
+`satsa migrate` imports a legacy `.satsa_salt` from the working directory into
+`data/secrets/pseudonym_keys.json` as key version 1, byte for byte. The legacy file is left in
+place.
+
+To undo: delete `data/secrets/pseudonym_keys.json`. The previous release reads `.satsa_salt`
+again.
+
+If data exists but neither file does, ingestion stops instead of generating a key. See
+docs/key_management.md.
+
 ### Adopting Parquet files written before the catalog
 
 Before the catalog, each entity's rows lived in one `data.parquet` per table, rewritten in
@@ -125,6 +144,7 @@ published file. It prints the versions applied and the backup paths.
 | The migrated database is wrong | Stop SAT-SA. Replace `data/satsa.db` (or `catalog.db`) with `data/backups/<db>-pre-v<N>-<time>.db`, delete its `-wal` and `-shm` files, and run the previous release. |
 | Legacy Parquet adoption must be undone | Stop SAT-SA. Delete `data/parquet` and `data/catalog.db`, then copy `data/backups/legacy-parquet-<time>/` back to `data/parquet/`. |
 | A writer crashed mid-submission | Nothing to do. Staged files are discarded and orphan batch files are moved to `data/quarantine/<batch>/` the next time anything publishes, or with `satsa recover`. Readers never saw them. |
+| `PseudonymKeyMissing` at ingestion or migration | `data/secrets/` was not restored or `.satsa_salt` was lost. Restore it from a backup (docs/key_management.md). Do not create a new key unless the old one is truly gone. |
 | A published file is missing or altered | `satsa verify-data` lists it. The loader skips a missing or unreadable file with a logged warning and does not drop the rest of the table. Restore the file from a backup; its SHA-256 is in `batch_tables`. |
 
 ## Developer rules for a new migration

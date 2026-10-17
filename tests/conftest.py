@@ -7,7 +7,7 @@ the seeding helpers are wrapped to lift the requirement right after seeding. Thi
 in the tests only: the application has no switch that turns the requirement off.
 
 The application keeps its state relative to the working directory (`data/`, `reports/`,
-`.satsa_salt`). So that the suite never writes to a developer's working database, salt or
+`data/secrets/`). So that the suite never writes to a developer's working database, salt or
 reports, it runs from a fresh scratch directory holding copies of the repository inputs that
 tests read by relative path (`config/`, `docs/`, `src/` ...). The scratch directory is
 bootstrapped the way CI bootstraps a clean checkout (`satsa generate-data`, `satsa ingest`,
@@ -39,7 +39,7 @@ _REAL = {
 }
 REPO = Path(__file__).resolve().parent.parent
 _INPUT_DIRS = ("config", "demo_data", "docs", "scripts", "src")
-_STATE = {".satsa_salt"}  # application state at the top level, never copied
+_STATE = {".satsa_salt"}  # legacy pseudonym salt at the top level, never copied
 _WORKDIR: Path | None = None
 if os.environ.get("SATSA_TESTS_IN_PLACE") != "1":
     _WORKDIR = Path(tempfile.mkdtemp(prefix="satsa-t-"))
