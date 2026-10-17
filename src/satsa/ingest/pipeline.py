@@ -30,6 +30,7 @@ from satsa.ingest.sanitise import (
     read_header,
     report_for,
 )
+from satsa.keys import current_key, keyring_path
 from satsa.models.outputs import DQIssue
 from satsa.rules.registry import RULE_ALERT_FIELDS, rule_coverage
 from satsa.scoring.selection import period_bounds
@@ -512,12 +513,20 @@ class IngestionPipeline:
         duckdb_store: DuckDBStore,
         sqlite_store: SQLiteStore,
         taxonomy_path: Path | str = "config/taxonomy.yaml",
-        salt_file: Path | str = ".satsa_salt",
+        salt_file: Path | str | None = None,
     ):
+        """Without `salt_file`, pseudonyms use the deployment key kept with the data
+        (satsa.keys, `data/secrets/`); a test may pass its own key file instead."""
         self.duckdb_store = duckdb_store
         self.sqlite_store = sqlite_store
         self.normaliser = TaxonomyNormaliser(taxonomy_path)
-        self.pseudonymiser = Pseudonymiser(salt_file)
+        if salt_file is None:
+            key = current_key(duckdb_store.data_dir)
+            self.pseudonymiser = Pseudonymiser(keyring_path(duckdb_store.data_dir), key=key.key)
+            self.pseudonym_key_id: str | None = key.key_id
+        else:
+            self.pseudonymiser = Pseudonymiser(salt_file)
+            self.pseudonym_key_id = None
         self.redactor = Redactor()
 
     @classmethod
@@ -1570,6 +1579,7 @@ class IngestionPipeline:
                     parent_batch_id=revision_of,
                     submitted_by=submitted_by,
                     mapping_version=getattr(mapping, "version", None) if mapping is not None else None,
+                    pseudonym_key_id=self.pseudonym_key_id,
                     batch_id=batch_id,
                 ) as writer,
             ):

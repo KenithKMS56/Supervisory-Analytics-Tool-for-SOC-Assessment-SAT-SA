@@ -9,9 +9,11 @@ from pathlib import Path
 class Pseudonymiser:
     """Deterministic HMAC-SHA256 pseudonymisation with a secure local salt."""
 
-    def __init__(self, salt_file: Path | str = ".satsa_salt"):
+    def __init__(self, salt_file: Path | str = ".satsa_salt", key: bytes | None = None):
+        """`key` is the deployment key (satsa.keys); `salt_file` alone is for tests and tools that
+        keep their own throwaway key file."""
         self.salt_path = Path(salt_file)
-        self.salt = self._load_or_create_salt()
+        self.salt = key if key is not None else self._load_or_create_salt()
 
     def _load_or_create_salt(self) -> bytes:
         if self.salt_path.exists():

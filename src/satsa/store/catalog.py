@@ -125,7 +125,16 @@ def _m1_catalog(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX idx_batches_entity_period ON batches (entity_id, period_start, period_end)")
 
 
-CATALOG_MIGRATIONS: list[Migration] = [Migration(1, "publication catalog", _m1_catalog)]
+def _m2_pseudonym_key_id(conn: sqlite3.Connection) -> None:
+    # Which pseudonymisation key a batch used (satsa.keys). NULL for batches from before keys
+    # were versioned, and for writes that pseudonymise nothing.
+    conn.execute("ALTER TABLE batches ADD COLUMN pseudonym_key_id TEXT")
+
+
+CATALOG_MIGRATIONS: list[Migration] = [
+    Migration(1, "publication catalog", _m1_catalog),
+    Migration(2, "pseudonymisation key per batch", _m2_pseudonym_key_id),
+]
 
 
 @dataclass(frozen=True)
@@ -434,6 +443,7 @@ class Catalog:
         mapping_version: str | None = None,
         transform_version: str | None = None,
         provenance: str = "submitted",
+        pseudonym_key_id: str | None = None,
         batch_id: str | None = None,
     ) -> Iterator[BatchWriter]:
         """Hold the writer lock for one batch. Leaving the block without `publish()` aborts it."""
@@ -447,13 +457,14 @@ class Catalog:
                     """
                     INSERT INTO batches (batch_id, state, entity_id, source, transport, period_label,
                         period_start, period_end, content_hash, idempotency_key, parent_batch_id,
-                        submitted_by, mapping_version, transform_version, provenance, received_at)
-                    VALUES (?, 'staging', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        submitted_by, mapping_version, transform_version, provenance, received_at,
+                        pseudonym_key_id)
+                    VALUES (?, 'staging', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         bid, entity_id, source, transport, period_label, period_start, period_end,
                         content_hash, idempotency_key, parent_batch_id, submitted_by, mapping_version,
-                        transform_version, provenance, _now(),
+                        transform_version, provenance, _now(), pseudonym_key_id,
                     ),
                 )
             writer = BatchWriter(self, bid)

@@ -64,9 +64,8 @@ def copy_deployment(dest: Path) -> Path:
         backup_database(store.conn, data / "satsa.db")
     finally:
         store.close()
-    for secret in (".satsa_salt",):
-        if Path(secret).exists():
-            shutil.copy2(secret, dest / secret)
+    if Path("data/secrets").is_dir():
+        shutil.copytree("data/secrets", data / "secrets")
     return dest
 
 
