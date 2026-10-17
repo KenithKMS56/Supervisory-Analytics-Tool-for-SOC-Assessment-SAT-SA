@@ -244,14 +244,65 @@ satsa audit verify --db-path data/satsa.db --chain admin   # Admin Portal chain
   the trail is tamper-evident, not tamper-proof.
 
 ### Backup & Disaster Recovery
-To back up the complete supervisory state:
-```bash
-# 1. Snapshot SQLite database safely using SQLite online backup
-sqlite3 data/satsa.db ".backup backup/satsa_$(date +%Y%m%d).db"
 
-# 2. Archive the Parquet submission directory
-tar -czf backup/parquet_$(date +%Y%m%d).tar.gz data/parquet/
+Use `satsa backup` and `satsa restore`. See docs/backup_restore.md for the full procedure.
+
+Copying `data/` by hand is not a backup:
+- copying a live SQLite file leaves out what is still in its write-ahead log;
+- the two databases and the published Parquet files must come from the same moment.
+
+```bash
+satsa backup --dest /mnt/backup-disk --encrypt --keep 7
+satsa restore /mnt/backup-disk/satsa-backup-<time>.satsa-backup --target /srv/satsa-restored --replay RUN-...
 ```
+
+### SOP-06: Health and readiness
+
+- `GET /healthz` on either portal is liveness: the process answers.
+- `GET /readyz` on SAT-SA is readiness. It checks:
+  - the database (`quick_check`);
+  - the schema version;
+  - the catalog;
+  - free disk on the data volume (`SATSA_MIN_FREE_DISK_MB`, default 512).
+
+  It answers 503 if any check fails. It also reports whether a worker is alive and how many jobs
+  are queued. A missing worker does not make it 503, because reads still work.
+- The container healthcheck uses `/healthz`.
+- From the shell: `satsa ops ready` (exit status 1 when not ready).
+
+### SOP-07: Retention
+
+```bash
+satsa ops retention --dry-run                      # what would go
+satsa ops retention --backups-dir /mnt/backup-disk
+```
+
+Retention deletes only:
+- the uploaded files of finished jobs older than the configured number of days;
+- local backups beyond the configured number.
+
+The settings are made in first-run setup (docs/first_run_setup.md). Published submissions, runs,
+findings, decisions and the audit log are never deleted by retention. Every deletion is audited
+(`retention_applied`). Run it from a scheduler, for example daily.
+
+### SOP-08: Diagnostics for support
+
+```bash
+satsa ops diagnostics --out diag.zip
+```
+
+The package contains:
+- versions and schema migrations;
+- table row counts;
+- job states and error types;
+- worker heartbeats;
+- recent run ids and their fingerprints;
+- configuration file hashes;
+- disk space and readiness.
+
+It contains no submitted data, keys, tokens, passphrase hashes or usernames. Actors appear only
+as hashes valid within that one package. Nothing is uploaded anywhere: review the package, then
+hand it over.
 
 ---
 

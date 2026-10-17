@@ -152,7 +152,7 @@ templates.env.globals["deployment"] = _deployment_settings
 # Paths anyone may reach without a session. Everything else requires one; the
 # route's own dependency then enforces the specific role (see the RBAC table
 # in tests/test_rbac_matrix.py, which must list every route).
-PUBLIC_PATHS = {"/", "/login", "/logout", "/splash", "/api/session/status"}
+PUBLIC_PATHS = {"/", "/login", "/logout", "/splash", "/api/session/status", "/healthz", "/readyz"}
 # The only gated paths open to a session that still owes a passphrase change.
 PASSWORD_CHANGE_PATH = "/change-password"
 PASSWORD_CHANGE_REQUIRED = "A new passphrase must be set at /change-password before this account can be used."
@@ -240,6 +240,22 @@ async def enforce_auth_middleware(request: Request, call_next):
 
 
 WORKER_WINDOW_SECONDS = 60
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz() -> dict[str, str]:
+    """Liveness: the process answers. No dependencies are checked."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz", include_in_schema=False)
+def readyz() -> Response:
+    """Readiness (satsa.ops.readiness): database, schema, catalog and disk; worker reported.
+    503 when not ready. Holds no data and no secrets, so it is public, like /healthz."""
+    from satsa.ops import readiness
+
+    report = readiness("data")
+    return JSONResponse(report, status_code=200 if report["ready"] else 503)
 
 
 def enqueue_job(

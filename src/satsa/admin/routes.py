@@ -418,6 +418,12 @@ async def admin_logout_post(request: Request) -> Any:
 # =========================================================================
 
 
+@router.get("/healthz", include_in_schema=False)
+async def admin_healthz() -> dict[str, str]:
+    """Liveness of the Admin Portal process."""
+    return {"status": "ok"}
+
+
 @router.get("/splash", response_class=HTMLResponse)
 async def admin_splash_page(request: Request) -> Any:
     """Render NCIIPC Control Console splash/welcome screen like SAT-SA."""
