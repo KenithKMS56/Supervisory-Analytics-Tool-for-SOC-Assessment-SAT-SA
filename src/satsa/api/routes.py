@@ -132,6 +132,20 @@ templates.env.globals["is_analyst"] = is_analyst
 templates.env.globals["is_examiner"] = is_examiner
 
 
+def _deployment_settings(_request: Request | None = None) -> dict[str, str]:
+    """The deployment's settings (mode, name ...) for page chrome such as the demo banner."""
+    from satsa.deployment import settings
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        return settings(store)
+    finally:
+        store.close()
+
+
+templates.env.globals["deployment"] = _deployment_settings
+
+
 # Paths anyone may reach without a session. Everything else requires one; the
 # route's own dependency then enforces the specific role (see the RBAC table
 # in tests/test_rbac_matrix.py, which must list every route).
@@ -2135,7 +2149,11 @@ def handle_trigger_demo(
     identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
 ) -> Response:
     """Queue the demonstration dataset: synthetic data, its assessment and three historical
-    periods (see satsa.jobs.handlers.demo_seed). The browser goes to the job's page."""
+    periods (see satsa.jobs.handlers.demo_seed). The browser goes to the job's page.
+
+    Demonstration deployments only: synthetic data never enters a production deployment."""
+    if _deployment_settings().get("mode") != "demo":
+        raise HTTPException(status_code=403, detail="Demonstration data can only be loaded in a demo deployment.")
     job = enqueue_job("demo_seed", {}, identity, max_attempts=1)
     return RedirectResponse(url=f"/jobs/{job['job_id']}", status_code=303)
 

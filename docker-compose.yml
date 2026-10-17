@@ -14,7 +14,7 @@ services:
     volumes:
       # data/ holds everything that must survive the container: the databases, published
       # Parquet, the pseudonymisation keys (data/secrets/) and job inputs.
-      - ./data:/app/data
+      - ${SATSA_DATA_DIR:-./data}:/app/data
       - ./reports:/app/reports
       # Approved configuration (rules, scoring, peers ...). Tuning writes here, so it must
       # outlive the container too.
@@ -29,6 +29,9 @@ services:
       # Rule-pack signing key (>= 32 chars). Passed through from the host; left unset,
       # rule-pack export/import are disabled (HTTP 503) -- there is no built-in key.
       SATSA_RULEPACK_SECRET: ${SATSA_RULEPACK_SECRET:-}
+      # Demonstration deployment (synthetic data, published passphrases, labelled pages). Only on a
+      # data directory of its own: a demo start against production data refuses to run.
+      SATSA_DEMO: ${SATSA_DEMO:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "/app/entrypoint.py", "--healthcheck"]

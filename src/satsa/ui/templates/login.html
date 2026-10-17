@@ -143,7 +143,8 @@
       </a>
     </div>
 
-    <!-- Offline Security & Demo Credentials Notice -->
+    {% if deployment(request).get("mode") == "demo" %}
+    <!-- Demonstration accounts: only a demo deployment has them (satsa.deployment) -->
     <div class="login-demo-helper">
       <div class="demo-helper-title">
         <span class="pulse-dot"></span> Offline Local RBAC (PBKDF2-HMAC-SHA256)
@@ -159,10 +160,15 @@
         </div>
       </div>
       <div class="demo-hint-text">
-        Click any role above to pre-fill credentials for demonstration review.
+        Demonstration deployment: these accounts' passphrases are published.
         NCIIPC administrators use the Admin Portal (:8000).
       </div>
     </div>
+    {% else %}
+    <p class="demo-hint-text" style="margin-top: 1.5rem;">
+      Analyst and examiner accounts are issued by your deployment administrator in the Admin Portal (:8000).
+    </p>
+    {% endif %}
 
   </div>
 </div>

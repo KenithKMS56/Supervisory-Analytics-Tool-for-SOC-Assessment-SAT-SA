@@ -94,6 +94,7 @@
   </style>
 </head>
 <body>
+  {% include "_demo_banner.html" %}
   <div class="login-wrapper">
     <div class="admin-login-card">
       
@@ -133,7 +134,7 @@
             name="username"
             class="form-input"
             style="border-radius: var(--radius-pill); padding: 0 1.2rem;"
-            placeholder="nciipc_admin / admin"
+            placeholder="administrator username"
             autocomplete="username"
             required
             autofocus
@@ -160,16 +161,18 @@
         </button>
       </form>
 
+      {% if deployment(request).get("mode") == "demo" %}
       <div style="margin-top: 2rem; border-top: 1px solid var(--admin-border); padding-top: 1.25rem;">
         <div style="font-size: 0.72rem; font-weight: 600; text-transform: uppercase; color: var(--accent-primary); margin-bottom: 0.5rem; letter-spacing: 0.05em;">
-          Initial Administrator Bootstrap
+          Demonstration accounts
         </div>
         <div style="font-size: 0.76rem; color: var(--admin-text-muted); line-height: 1.5;">
-          For first-time deployment, use bootstrap credentials:<br>
+          This is a demonstration deployment. Its accounts' passphrases are published:<br>
           <code style="font-family: 'JetBrains Mono', monospace; color: var(--accent-primary);">nciipc_admin / ChangeMe-NCIIPC#2026</code><br>
           or demo administrator: <code style="font-family: 'JetBrains Mono', monospace; color: var(--accent-primary);">admin / ChangeMe-Admin#2026</code>.
         </div>
       </div>
+      {% endif %}
 
       <div style="text-align: center; margin-top: 1.5rem;">
         <a href="http://localhost:8001" style="font-size: 0.78rem; color: var(--admin-text-secondary); text-decoration: none;">

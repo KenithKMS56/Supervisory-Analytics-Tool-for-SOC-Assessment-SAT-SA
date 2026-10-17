@@ -37,6 +37,8 @@ from satsa.auth.identities import (
     passphrase_policy_error,
     verify_passphrase,
 )
+from satsa.deployment import SetupError, complete_setup, setup_pending
+from satsa.deployment import settings as deployment_settings
 from satsa.security import is_valid_username
 from satsa.store.sqlite import LIVE_EVENTS_MAX_LIMIT, SQLiteStore
 
@@ -45,6 +47,15 @@ _ADMIN_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(_ADMIN_DIR / "templates"))
 
 router = APIRouter()
+
+
+def _deployment(request: Request) -> dict[str, str]:
+    """The deployment's settings (mode, name ...) for page chrome such as the demo banner."""
+    store = getattr(request.app.state, "store", None)
+    return deployment_settings(store) if store is not None else {}
+
+
+templates.env.globals["deployment"] = _deployment
 
 ADMIN_COOKIE_NAME = "nciipc_admin_session"
 
@@ -145,16 +156,91 @@ def require_valid_username(username: str) -> None:
 
 @router.get("/login", response_class=HTMLResponse)
 async def admin_login_page(request: Request, error: str | None = None) -> Any:
-    """Render the admin login page or redirect if already authenticated."""
+    """Render the admin login page or redirect if already authenticated (or to first-run setup)."""
     operator = get_current_operator(request)
     if operator:
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    if setup_pending(get_store(request)):
+        return RedirectResponse(url="/setup", status_code=status.HTTP_303_SEE_OTHER)
 
     return templates.TemplateResponse(
         request=request,
         name="admin_login.html",
         context={"request": request, "error": error},
     )
+
+
+# ---- First-run setup (satsa.deployment): open only while a production deployment has no administrator.
+
+SETUP_TARGET = "first-run-setup"
+COMMON_TIMEZONES = ("Asia/Kolkata", "UTC", "Asia/Dubai", "Asia/Singapore", "Europe/London", "America/New_York")
+
+
+def _setup_page(request: Request, error: str | None = None, values: dict[str, Any] | None = None,
+                status_code: int = 200) -> Any:
+    from satsa.serving import ServingConfigError, exposure_warning, serving_config
+
+    try:
+        config = serving_config()
+        warning = exposure_warning(config) if not config.tls else None
+        network = (
+            f"The portals listen on {config.host} over {config.scheme.upper()}"
+            + (" (this machine only)." if not config.external else " (reachable from other machines).")
+        )
+    except ServingConfigError as exc:
+        warning, network = str(exc), "The TLS configuration is incomplete."
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_setup.html",
+        context={"request": request, "error": error, "values": values or {}, "network_status": network,
+                 "network_warning": warning, "timezones": COMMON_TIMEZONES, "min_passphrase": MIN_PASSPHRASE_LENGTH,
+                 "data_dir": str(Path("data").resolve())},
+        status_code=status_code,
+    )
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def admin_setup_page(request: Request) -> Any:
+    if not setup_pending(get_store(request)):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _setup_page(request)
+
+
+@router.post("/setup")
+async def admin_setup_post(
+    request: Request,
+    token: str = Form(""),
+    username: str = Form(""),
+    password: str = Form(""),
+    confirm_password: str = Form(""),
+    deployment_name: str = Form(""),
+    timezone: str = Form(""),
+    job_inputs_days: int = Form(30),
+    backups_keep: int = Form(7),
+) -> Any:
+    """Create the first administrator with the one-time token, then send them to the login page."""
+    store = get_store(request)
+    if not setup_pending(store):
+        raise HTTPException(status_code=404, detail="Not Found")
+    values = {"username": username, "deployment_name": deployment_name, "timezone": timezone,
+              "job_inputs_days": job_inputs_days, "backups_keep": backups_keep}
+    failures = store.count_recent_login_failures(
+        SETUP_TARGET, LOGIN_LOCKOUT_MINUTES, table="admin_audit_log",
+        fail_action="SETUP_FAILED", success_action="FIRST_RUN_SETUP",
+    )
+    if failures >= LOGIN_MAX_FAILURES:
+        return _setup_page(request, f"Too many failed attempts. Try again in {LOGIN_LOCKOUT_MINUTES} minutes.",
+                           values, status_code=429)
+    try:
+        complete_setup(store, "data", token=token, admin_username=username, passphrase=password,
+                       confirm=confirm_password, deployment_name=deployment_name, timezone=timezone,
+                       job_inputs_days=job_inputs_days, backups_keep=backups_keep, actor=username.strip())
+    except SetupError as exc:
+        store.append_admin_audit("SETUP_FAILED", SETUP_TARGET, target=SETUP_TARGET, details={"reason": str(exc)})
+        return _setup_page(request, str(exc), values, status_code=400)
+    store.append_admin_audit("FIRST_RUN_SETUP", SETUP_TARGET, target=username.strip(),
+                             details={"deployment_name": deployment_name.strip(), "timezone": timezone.strip()})
+    return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
 
 
 ADMIN_LOGIN_FAILED_MESSAGE = "Invalid administrative credentials."

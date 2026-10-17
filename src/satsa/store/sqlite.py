@@ -121,6 +121,7 @@ class SQLiteStore:
     def __init__(self, db_path: Path | str = "data/satsa.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        fresh = not self.db_path.exists() or self.db_path.stat().st_size == 0
         self.conn = sqlite3.connect(
             str(self.db_path),
             check_same_thread=False,
@@ -148,13 +149,19 @@ class SQLiteStore:
 
         if needs_init:
             self._init_tables()
-            self.seed_default_identities()
         self._ensure_migrations()
         # Numbered migrations on top of the version-0 layout above (docs/migrations.md). A database
         # that already existed is backed up first; one created just now has nothing to protect.
         self.schema_versions_applied = apply_migrations(
             self.conn, OPERATIONAL_MIGRATIONS, self.db_path, backup=not needs_init
         )
+        # Production or demo is decided when the database is created (satsa.deployment). Only a
+        # demo deployment gets the accounts whose passphrases are published; production gets
+        # its first administrator from first-run setup.
+        from satsa.deployment import DEMO, settle_mode
+
+        if settle_mode(self, fresh=fresh) == DEMO and needs_init:
+            self.seed_default_identities()
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Cursor]:
@@ -860,11 +867,14 @@ class SQLiteStore:
             for username, role, passphrase in DEFAULT_IDENTITIES:
                 salt = generate_salt()
                 pass_hash = hash_passphrase(passphrase, salt)
-                # The passphrase is published, so the account must rotate it at first login.
+                # The passphrase is published, so the account must rotate it at first login. The
+                # demo administrator is created with its Admin Portal standing here, once; nothing
+                # restores it later if an administrator changes it (see seed_default_admin).
+                is_admin = role == "admin"
                 self.conn.execute(
                     "INSERT OR REPLACE INTO identities (username, role, pass_hash, pass_salt, "
-                    "force_password_change) VALUES (?, ?, ?, ?, 1)",
-                    (username, role, pass_hash, salt.hex()),
+                    "force_password_change, org_id, status, is_admin_user) VALUES (?, ?, ?, ?, 1, ?, 'ACTIVE', ?)",
+                    (username, role, pass_hash, salt.hex(), "ORG-NCIIPC" if is_admin else None, int(is_admin)),
                 )
         return True
 
@@ -1500,9 +1510,17 @@ class SQLiteStore:
                 )
 
     def seed_default_admin(self) -> None:
-        """Seed initial bootstrap NCIIPC Administrator and ensure admin user has full admin access."""
-        from satsa.auth.identities import BOOTSTRAP_ADMIN_IDENTITY, generate_salt, hash_passphrase
+        """Seed the demonstration bootstrap administrator (`nciipc_admin`) if it does not exist.
 
+        Demo deployments only: production gets its first administrator from first-run setup
+        (satsa.deployment), never an account with a published passphrase. Existing accounts are
+        never changed here. Until Phase 2 this also re-promoted and re-activated `admin` on every
+        start, undoing any demotion or block an administrator had made."""
+        from satsa.auth.identities import BOOTSTRAP_ADMIN_IDENTITY, generate_salt, hash_passphrase
+        from satsa.deployment import is_demo
+
+        if not is_demo(self):
+            return
         username, role, passphrase = BOOTSTRAP_ADMIN_IDENTITY
         cur = self.conn.cursor()
         cur.execute("SELECT username FROM identities WHERE username = ?", (username,))
@@ -1519,21 +1537,6 @@ class SQLiteStore:
                     ) VALUES (?, ?, ?, ?, 0, 'ORG-NCIIPC', NULL, 'ACTIVE', 1, 1)
                     """,
                     (username, role, pass_hash, salt.hex()),
-                )
-
-        # Ensure demo 'admin' has admin portal access and active status
-        cur.execute("SELECT username FROM identities WHERE username = 'admin'")
-        if cur.fetchone():
-            with self.transaction():
-                self.conn.execute(
-                    """
-                    UPDATE identities SET
-                        role = 'admin',
-                        org_id = COALESCE(org_id, 'ORG-NCIIPC'),
-                        status = 'ACTIVE',
-                        is_admin_user = 1
-                    WHERE username = 'admin'
-                    """
                 )
 
     def list_organisations(self) -> list[dict[str, Any]]:

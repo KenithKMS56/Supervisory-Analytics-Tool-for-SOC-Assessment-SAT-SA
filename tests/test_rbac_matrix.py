@@ -107,6 +107,9 @@ ADMIN_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("GET", "/change-password"): (ADMIN_ONLY, True),
     ("POST", "/change-password"): (ADMIN_ONLY, False),
     ("GET", "/splash"): (PUBLIC, True),
+    # First-run setup: open only while a production deployment has no administrator (then 404).
+    ("GET", "/setup"): (PUBLIC, True),
+    ("POST", "/setup"): (PUBLIC, False),
     ("GET", "/"): (PUBLIC, True),  # splash for guests, overview for admins
     ("GET", "/overview"): (ADMIN_ONLY, True),
     ("GET", "/users"): (ADMIN_ONLY, True),

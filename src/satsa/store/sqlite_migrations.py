@@ -183,8 +183,24 @@ def _m3_jobs(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m4_deployment_settings(conn: sqlite3.Connection) -> None:
+    """Deployment identity and mode (satsa.deployment): demo or production, name, time zone,
+    retention, first-run setup state. Key-value, one row per setting."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS deployment_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL
+        )
+        """
+    )
+
+
 OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(1, "evidence coverage and rule results", _m1_evidence_coverage),
     Migration(2, "run snapshots and analytical fingerprint", _m2_run_snapshots),
     Migration(3, "durable jobs and worker heartbeats", _m3_jobs),
+    Migration(4, "deployment settings and mode", _m4_deployment_settings),
 ]
