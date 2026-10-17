@@ -3,6 +3,7 @@
 Coordinates concurrent startup of:
 - NCIIPC Administration Portal (port 8000)
 - SAT-SA Supervisory Tool (port 8001)
+- the job worker (`satsa worker`), which runs imports and assessments
 
 Both portals share the exact same underlying SQLite database (in WAL mode),
 DuckDB Parquet storage, and the admin activity feed.
@@ -134,32 +135,34 @@ def main() -> None:
         env=child_env,
     )
 
+    # 4. Launch the job worker: imports and assessments run here, not in web requests (satsa.jobs).
+    # Exactly one: it is the deployment's single analytical writer.
+    print("[+] Launching the job worker...")
+    worker_proc = subprocess.Popen([sys.executable, "-m", "satsa.cli", "worker"], env=child_env)
+    processes = {"NCIIPC Admin Portal": admin_proc, "SAT-SA Portal": satsa_proc, "Job worker": worker_proc}
+
     def handle_shutdown(signum, frame):
         print("\n[!] Received shutdown signal. Stopping platform services...")
-        admin_proc.terminate()
-        satsa_proc.terminate()
-        try:
-            admin_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            admin_proc.kill()
-        try:
-            satsa_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            satsa_proc.kill()
+        for proc in processes.values():
+            proc.terminate()
+        for proc in processes.values():
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
         print("[+] Platform services stopped cleanly.")
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
-    # 4. Monitor health of child processes
+    # 5. Monitor health of child processes. A job the worker was running when it died is
+    # requeued (or failed) from its expired lease by the next worker, so nothing is lost.
     while True:
-        if admin_proc.poll() is not None:
-            print("[!] NCIIPC Admin Portal terminated unexpectedly.")
-            handle_shutdown(None, None)
-        if satsa_proc.poll() is not None:
-            print("[!] SAT-SA Portal terminated unexpectedly.")
-            handle_shutdown(None, None)
+        for name, proc in processes.items():
+            if proc.poll() is not None:
+                print(f"[!] {name} terminated unexpectedly.")
+                handle_shutdown(None, None)
         time.sleep(1)
 
 

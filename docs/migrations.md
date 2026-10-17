@@ -71,6 +71,17 @@ recorded". They are never reclassified after the fact.
   parameters that produced a result. Legacy runs have no snapshot, and pages say so instead
   of showing the current configuration as if it applied.
 
+### v3: durable jobs and worker heartbeats (Phase 2)
+
+- New table `jobs`: state, stage, parameters, input fingerprint, attempts, lease and heartbeat,
+  cancellation flag, result or structured error.
+  - A unique partial index keeps at most one queued or running job per input fingerprint.
+- New table `worker_heartbeats`: which worker processes are alive and what they run.
+- Both tables are new and empty. No existing row changes.
+- To undo: the previous release ignores both tables. Drop them, or restore the pre-v3 backup.
+- Jobs still queued when downgrading are not run by the previous release. Their uploaded files
+  stay in `data/jobs/` and can be uploaded again.
+
 ## Publication catalog (`catalog.db`)
 
 ### v1: publication catalog

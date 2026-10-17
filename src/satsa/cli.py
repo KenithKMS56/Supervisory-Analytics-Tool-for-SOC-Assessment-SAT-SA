@@ -1473,5 +1473,77 @@ def keys_rotate(
     console.print(f"Current key is now {key.key_id}. Batches record the key they used.")
 
 
+
+@app.command("worker")
+def worker_cmd(
+    db_path: str = typer.Option("data/satsa.db", "--db-path"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+    once: bool = typer.Option(False, "--once", help="Run the queued jobs, then exit"),
+    lease_seconds: int = typer.Option(120, "--lease-seconds", help="How long a job stays leased without a heartbeat"),
+    poll_seconds: float = typer.Option(2.0, "--poll-seconds"),
+) -> None:
+    """Run the local job worker: imports, assessments and demo seeding (docs/deployment_ops.md)."""
+    import signal
+    import threading
+
+    from satsa.jobs.worker import Worker
+    from satsa.netguard import install_egress_guard
+
+    # Same best-effort, loopback-only egress guard as the portals (satsa.netguard).
+    install_egress_guard()
+    worker = Worker(db_path, data_dir, lease_seconds=lease_seconds)
+    try:
+        if once:
+            done = worker.run_until_idle()
+            for job in done:
+                console.print(f"{job['job_id']} {job['kind']}: {job['state']}")
+            return
+        stop = threading.Event()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda *_: stop.set())
+        console.print(f"[bold blue]Worker {worker.worker_id}[/bold blue] waiting for jobs (Ctrl+C stops it)")
+        worker.run_forever(stop, poll_seconds)
+    finally:
+        worker.close()
+
+
+jobs_app = typer.Typer(help="Inspect and cancel durable jobs")
+app.add_typer(jobs_app, name="jobs")
+
+
+@jobs_app.command("list")
+def jobs_list(db_path: str = typer.Option("data/satsa.db", "--db-path"), limit: int = 20) -> None:
+    """Recent jobs, newest first."""
+    from satsa.jobs.queue import JobQueue
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        queue = JobQueue(store)
+        for job in queue.recent(limit):
+            console.print(f"{job['job_id']}  {job['kind']:<10} {job['state']:<9} {job['stage'] or ''}")
+        workers = queue.live_workers()
+        console.print(f"Live workers: {', '.join(w['worker_id'] for w in workers) or 'none'}")
+    finally:
+        store.close()
+
+
+@jobs_app.command("cancel")
+def jobs_cancel(job_id: str, db_path: str = typer.Option("data/satsa.db", "--db-path")) -> None:
+    """Cancel a queued job, or ask a running one to stop at its next stage."""
+    from satsa.jobs.queue import JobQueue
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        job = JobQueue(store).cancel(job_id)
+    finally:
+        store.close()
+    if job is None:
+        console.print(f"[bold red]No job {job_id}[/bold red]")
+        raise typer.Exit(code=1)
+    console.print(f"{job_id}: {job['state']}{' (cancel requested)' if job['cancel_requested'] else ''}")
+
+
 if __name__ == "__main__":
     app()

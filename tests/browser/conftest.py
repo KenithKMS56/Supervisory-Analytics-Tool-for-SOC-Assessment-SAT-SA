@@ -16,7 +16,6 @@ install chromium`), these tests are skipped with that reason; they are never sil
 from __future__ import annotations
 
 import os
-import shutil
 import socket
 import subprocess
 import sys
@@ -28,10 +27,7 @@ from urllib.parse import urlparse
 
 import httpx
 import pytest
-
-from satsa.store.catalog import CATALOG_FILE, Catalog
-from satsa.store.migrations import backup_database
-from satsa.store.sqlite import SQLiteStore
+from deploy_utils import copy_deployment
 
 sync_api = pytest.importorskip("playwright.sync_api", reason="Playwright is not installed (uv sync --dev)")
 
@@ -43,30 +39,6 @@ def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return int(s.getsockname()[1])
-
-
-def copy_deployment(dest: Path) -> Path:
-    """A consistent private copy of the current deployment directory (`config/`, `data/`)."""
-    dest.mkdir(parents=True, exist_ok=True)
-    shutil.copytree("config", dest / "config")
-    data = dest / "data"
-    shutil.copytree("data/parquet", data / "parquet")
-    for name in ("templates",):
-        if Path("data", name).is_dir():
-            shutil.copytree(Path("data", name), data / name)
-    catalog = Catalog("data")
-    try:
-        backup_database(catalog.conn, data / CATALOG_FILE)
-    finally:
-        catalog.close()
-    store = SQLiteStore("data/satsa.db")
-    try:
-        backup_database(store.conn, data / "satsa.db")
-    finally:
-        store.close()
-    if Path("data/secrets").is_dir():
-        shutil.copytree("data/secrets", data / "secrets")
-    return dest
 
 
 @dataclass

@@ -130,7 +130,61 @@ def _m2_run_snapshots(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m3_jobs(conn: sqlite3.Connection) -> None:
+    """Durable jobs (satsa.jobs): imports, assessments and demo seeding run in a worker process.
+
+    A job survives a restart of the web app or the worker. `lease_until` and `heartbeat_at`
+    say whether its worker is still alive; an expired lease is requeued or failed by the next
+    worker (satsa.jobs.queue.JobQueue.recover_expired). At most one job with the same input
+    fingerprint is queued or running at a time.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            job_id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
+            stage TEXT,
+            params_json TEXT NOT NULL DEFAULT '{}',
+            input_fingerprint TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            max_attempts INTEGER NOT NULL DEFAULT 3,
+            lease_owner TEXT,
+            lease_until TEXT,
+            heartbeat_at TEXT,
+            cancel_requested INTEGER NOT NULL DEFAULT 0,
+            result_json TEXT,
+            error_json TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_state_created ON jobs (state, created_at)")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_active_fingerprint ON jobs (input_fingerprint) "
+        "WHERE state IN ('queued', 'running')"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS worker_heartbeats (
+            worker_id TEXT PRIMARY KEY,
+            hostname TEXT,
+            pid INTEGER,
+            started_at TEXT NOT NULL,
+            heartbeat_at TEXT NOT NULL,
+            current_job_id TEXT,
+            stopped_at TEXT
+        )
+        """
+    )
+
+
 OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(1, "evidence coverage and rule results", _m1_evidence_coverage),
     Migration(2, "run snapshots and analytical fingerprint", _m2_run_snapshots),
+    Migration(3, "durable jobs and worker heartbeats", _m3_jobs),
 ]

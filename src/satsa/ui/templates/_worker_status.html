@@ -1,0 +1,12 @@
+{# Whether a worker is running. Expects `workers` (live heartbeats) and `worker_window` (seconds). #}
+{% if workers %}
+  <p role="status" style="margin-bottom: 1rem; color: var(--text-secondary);">
+    &#10003; Worker running: {{ workers[0].worker_id }} (last heartbeat {{ workers[0].heartbeat_at[:19] }} UTC).
+  </p>
+{% else %}
+  <div role="alert" class="card" style="margin-bottom: 1rem; border-left: 4px solid var(--risk-high);">
+    <strong>&#9888; No worker has reported in the last {{ worker_window }} seconds.</strong>
+    Queued jobs wait until one runs. The platform start script starts one; on a native install run
+    <code>satsa worker</code> in the deployment directory.
+  </div>
+{% endif %}

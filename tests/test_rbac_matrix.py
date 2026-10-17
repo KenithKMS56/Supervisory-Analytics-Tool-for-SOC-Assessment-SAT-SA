@@ -25,6 +25,7 @@ import satsa.api.routes as satsa_routes
 from satsa.admin.app import app as admin_app
 from satsa.admin.routes import ADMIN_COOKIE_NAME
 from satsa.api.routes import app as satsa_app
+from satsa.jobs.queue import JobQueue
 from satsa.store.sqlite import SQLiteStore
 
 ROLES = ("anonymous", "examiner", "analyst", "admin")
@@ -88,6 +89,10 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("POST", "/upload/add-entity"): (INGEST, False),
     ("POST", "/upload/delete-entity/{entity_id}"): (INGEST, False),
     ("POST", "/upload/trigger-demo"): (INGEST, False),
+    ("GET", "/jobs"): (SUP_READ, True),
+    ("GET", "/jobs/{job_id}"): (SUP_READ, True),
+    ("GET", "/api/v1/jobs/{job_id}"): (SUP_READ, False),
+    ("POST", "/jobs/{job_id}/cancel"): (INGEST, False),
     ("POST", "/api/v1/submissions"): (INGEST, False),
     ("POST", "/tuning/save"): (TUNING, False),
     ("POST", "/tuning/preview"): (TUNING, False),
@@ -193,23 +198,8 @@ def _satsa_url(path: str, finding_id: str) -> str:
         path.replace("{entity_id}", "CSE-03")
         .replace("{finding_id}", finding_id)
         .replace("{template_name}", "alerts.csv")
+        .replace("{job_id}", "JOB-RBAC-NO-SUCH-JOB")
     )
-
-
-class _Stub:
-    """No-op stand-in for heavy collaborators so trigger-demo only exercises auth."""
-
-    def __init__(self, *a, **k):
-        pass
-
-    def save_dataset(self, path):
-        return path, path
-
-    def ingest_directory(self, *a, **k):
-        return {"status": "empty"}
-
-    def run_assessment(self, *a, **k):
-        return {"findings_count": 0}
 
 
 @pytest.fixture
@@ -231,10 +221,6 @@ def test_satsa_rbac(route, role, satsa_clients, real_finding_id, rules_yaml_guar
     url = _satsa_url(path, real_finding_id)
     if path == "/upload/delete-entity/{entity_id}":
         url = "/upload/delete-entity/ZZ-RBAC-NO-SUCH-ENTITY"  # never deletes real data
-    if path == "/upload/trigger-demo":
-        for name in ("SyntheticDataGenerator", "IngestionPipeline", "AssessmentRunner"):
-            monkeypatch.setattr(satsa_routes, name, _Stub)
-        monkeypatch.setattr(satsa_routes, "seed_historical_periods", lambda *a, **k: [])
     if path == "/tuning/export-pack":
         monkeypatch.setenv("SATSA_RULEPACK_SECRET", "rbac-test-secret-" + "x" * 32)
     if path == "/logout":
@@ -245,6 +231,21 @@ def test_satsa_rbac(route, role, satsa_clients, real_finding_id, rules_yaml_guar
     else:
         resp = client.request(method, url, follow_redirects=False)
     _check(resp, allowed, is_page, role)
+    _cancel_jobs_queued_by(resp)
+
+
+def _cancel_jobs_queued_by(resp) -> None:
+    """A gated request may queue a job (trigger-demo, tuning save ...): cancel it, so no later
+    test's worker runs work that only an authorisation check asked for."""
+    location = resp.headers.get("location", "")
+    store = SQLiteStore("data/satsa.db")
+    try:
+        queue = JobQueue(store)
+        for job in queue.recent(20, states=("queued",)):
+            if job["job_id"] in location or job["created_by"] in ("analyst", "examiner"):
+                queue.cancel(job["job_id"])
+    finally:
+        store.close()
 
 
 # ---------------------------------------------------------------- Admin portal
