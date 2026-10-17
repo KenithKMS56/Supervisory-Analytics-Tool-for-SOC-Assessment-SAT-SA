@@ -241,10 +241,39 @@ def _m5_access_controls(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m6_admin_mfa(conn: sqlite3.Connection) -> None:
+    """Offline TOTP second factor for Admin Portal accounts (satsa.auth.mfa): one factor per
+    account, hashed one-time recovery codes, and per-session verification."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mfa_factors (
+            username TEXT PRIMARY KEY,
+            secret_b32 TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            confirmed_at TEXT,
+            last_step INTEGER
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mfa_recovery_codes (
+            username TEXT NOT NULL,
+            code_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            used_at TEXT,
+            PRIMARY KEY (username, code_hash)
+        )
+        """
+    )
+    _add_column(conn, "admin_sessions", "mfa_verified_at", "TEXT")
+
+
 OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(1, "evidence coverage and rule results", _m1_evidence_coverage),
     Migration(2, "run snapshots and analytical fingerprint", _m2_run_snapshots),
     Migration(3, "durable jobs and worker heartbeats", _m3_jobs),
     Migration(4, "deployment settings and mode", _m4_deployment_settings),
     Migration(5, "service credentials, session idle timeout, entity retirement", _m5_access_controls),
+    Migration(6, "administrator MFA", _m6_admin_mfa),
 ]

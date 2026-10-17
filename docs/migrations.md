@@ -111,6 +111,18 @@ recorded". They are never reclassified after the fact.
   - **To undo a retirement:** `satsa entity reinstate <id>`.
 - To undo the migration: the previous release ignores the new table and columns.
 
+### v6: administrator MFA (Phase 2)
+
+- New tables:
+  - `mfa_factors`: TOTP secret, enrolment, last step used;
+  - `mfa_recovery_codes`: SHA-256 hashes and when each was used.
+- New nullable column `admin_sessions.mfa_verified_at`.
+- Behaviour change: in production deployments (`SATSA_ADMIN_MFA` unset), administrators must
+  enrol a second factor at their next sign-in before the Admin Portal opens.
+- Existing administrator sessions have no verification, so they are sent to enrolment too.
+- To undo: the previous release ignores the tables. Or set `SATSA_ADMIN_MFA=optional` to stop
+  enforcing MFA without removing the factors.
+
 ## Publication catalog (`catalog.db`)
 
 ### v1: publication catalog

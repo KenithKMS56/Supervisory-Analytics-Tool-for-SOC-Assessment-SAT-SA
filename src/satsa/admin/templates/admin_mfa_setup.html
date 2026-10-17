@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Set up a second factor | NCIIPC Administration Portal</title>
+  <link rel="stylesheet" href="/static/admin.css">
+</head>
+<body>
+  {% include "_demo_banner.html" %}
+  <div style="min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 1.5rem;">
+    <main style="width: 100%; max-width: 560px; border: 1px solid var(--admin-border); border-radius: 16px; padding: 2rem;">
+      {% if codes %}
+      <h1 style="font-size: 1.3rem; margin-bottom: 0.5rem;">Second factor enrolled</h1>
+      <p>These recovery codes are shown <strong>once</strong>. Each works once, instead of an authenticator code.
+        Store them apart from the device, e.g. printed in a sealed envelope.</p>
+      <ul id="recoveryCodes" style="font-family: monospace; font-size: 1.05rem; columns: 2;">
+        {% for c in codes %}<li>{{ c }}</li>{% endfor %}
+      </ul>
+      <p><a href="/" class="btn-admin btn-admin-primary">Continue to the portal</a></p>
+      {% else %}
+      <h1 style="font-size: 1.3rem; margin-bottom: 0.5rem;">Set up a second factor</h1>
+      {% if required %}<p>Administrator accounts must use a second factor before the portal opens.</p>{% endif %}
+      <ol>
+        <li>In an authenticator app on a separate device, add an account by entering this key
+          (time-based, 6 digits, 30 seconds):
+          <p><code id="mfaSecret" style="font-size: 1.05rem; word-break: break-all;">{{ secret }}</code></p>
+          <details><summary>Or paste this setup URI</summary><code style="word-break: break-all;">{{ uri }}</code></details>
+        </li>
+        <li>Enter the code it shows.</li>
+      </ol>
+      {% if error %}<div class="admin-alert admin-alert-error" role="alert"><div>{{ error }}</div></div>{% endif %}
+      <form method="post" action="/mfa/setup" autocomplete="off">
+        <div class="form-group" style="margin-bottom: 1.25rem;">
+          <label for="code" class="form-label">Code from the app</label>
+          <input id="code" name="code" class="form-input" inputmode="numeric" autocomplete="one-time-code" required>
+        </div>
+        <button type="submit" class="btn-admin btn-admin-primary">Confirm</button>
+      </form>
+      {% endif %}
+    </main>
+  </div>
+</body>
+</html>

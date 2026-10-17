@@ -15,7 +15,7 @@ Statuses:
 | V2.1.1 | Passphrases at least 12 characters | verified | `passphrase_policy_error`; `tests/test_first_login_password_change.py` |
 | V2.1.7 | Reject known or breached passwords | partial | Published defaults are rejected; there is no offline breach list |
 | V2.2.1 | Anti-automation on authentication | verified | Lockout; `tests/test_login_lockout.py`; setup throttling |
-| V2.2.2 / V2.8 | Multi-factor authentication for privileged users | **not implemented** | Planned (offline TOTP plus recovery codes) |
+| V2.2.2 / V2.8 | Multi-factor authentication for privileged users | partial | Admin Portal: offline TOTP (RFC 6238 vector tested), replay protection, hashed one-time recovery codes, audited reset; required in production (`tests/test_admin_mfa.py`). **SAT-SA analyst and examiner accounts have no MFA yet** |
 | V2.4.1 | Passwords stored with an approved KDF | verified | PBKDF2-HMAC-SHA256, 200k iterations, per-user salt |
 | V2.5.4 | No shared or default accounts | verified (production) | Production starts empty; demo accounts exist only in a demo deployment; `tests/test_deployment_setup.py` |
 | V2.10.1–4 | Service authentication without static, long-lived secrets in code | verified | Service credentials expire, can be revoked, and only their verifiers are stored; `tests/test_access_controls.py` |
@@ -26,7 +26,7 @@ Statuses:
 | V3.5.3 / V4.2.2 | CSRF protection | verified | Origin, Referer and Sec-Fetch-Site checks; `tests/test_csrf.py` |
 | V4.1.1 / V4.1.3 | Access control enforced server-side, least privilege | verified | `tests/test_rbac_matrix.py` (every route x every role) |
 | V4.2.1 | IDOR: data scoped to the principal | partial | A service credential's entity scope is verified. Operators are portfolio-wide by design (docs/security/permission_matrix.md) |
-| V4.3.1 | Admin interfaces need appropriate authentication | partial | Separate portal and roles; MFA missing |
+| V4.3.1 | Admin interfaces need appropriate authentication | verified | Separate portal and roles; MFA required in production (`tests/test_admin_mfa.py`) |
 | V5.1.3 / V5.1.4 | Input validation by allow-list | verified | Entity, run, job and batch id patterns; `tests/test_injection.py` |
 | V5.2.2 / V5.3.3 | Output encoding / XSS | verified | Jinja autoescape; `tests/test_injection.py` |
 | V5.3.4 | Parameterised queries | verified | DuckDB and SQLite parameters; `tests/test_injection.py` |

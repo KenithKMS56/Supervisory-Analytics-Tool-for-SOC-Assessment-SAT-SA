@@ -40,7 +40,7 @@ release gate that is still **blocked** (docs/release_readiness.md).
 | # | Threat | Controls | Verified by |
 |---|---|---|---|
 | T1 | Unauthorised access to a route or resource | Middleware plus route dependency; complete route matrix | `tests/test_rbac_matrix.py` (every route x 4 roles), `tests/test_access_controls.py` |
-| T2 | Credential stuffing or guessing | PBKDF2-SHA256 (200k); lockout after 5 failures in 15 min, generic errors; setup-token throttling | `tests/test_login_lockout.py`, `tests/test_deployment_setup.py::test_setup_token_guessing_is_throttled` |
+| T2 | Credential stuffing or guessing | PBKDF2-SHA256 (200k); lockout after 5 failures in 15 min, generic errors; setup-token throttling; administrator TOTP second factor (5 wrong codes end the session) | `tests/test_login_lockout.py`, `tests/test_deployment_setup.py::test_setup_token_guessing_is_throttled`, `tests/test_admin_mfa.py` |
 | T3 | CSRF / cross-site WebSocket hijacking | SameSite cookies; same-origin check on unsafe methods and on the WS handshake (`satsa.web_security`) | `tests/test_csrf.py` |
 | T4 | Session theft or reuse | Random 256-bit tokens, stored hashed; HttpOnly; Secure under TLS; 8 h absolute and 30 min idle expiry; blocking ends sessions | `tests/test_access_controls.py::test_an_idle_session_ends`, `tests/test_auth*.py` |
 | T5 | Published default passphrases in production | Production has no seeded accounts; one-time setup token; demo mode is isolated and labelled; demo accounts must change their passphrase at first login | `tests/test_deployment_setup.py`, `tests/test_first_login_password_change.py` |
@@ -59,7 +59,8 @@ release gate that is still **blocked** (docs/release_readiness.md).
 - **A privileged host administrator** can read the databases, the keys and the setup token. File
   permissions and encryption at rest by the application cannot stop them. Volume encryption and
   custody of recovery keys are deployment controls (docs/key_management.md).
-- **No MFA yet** for privileged accounts. This is planned and is not implemented in this phase.
+- **MFA covers Admin Portal accounts only.** Administrators use offline TOTP, required in
+  production. Analyst and examiner accounts on SAT-SA have passphrases only.
 - **Reverse proxies** that rewrite `Host` must set `SATSA_ALLOWED_ORIGINS`, or CSRF checks will
   refuse legitimate posts. That fails closed.
 - **Shared deployments** are not multi-tenant: analysts and examiners see the whole portfolio by
