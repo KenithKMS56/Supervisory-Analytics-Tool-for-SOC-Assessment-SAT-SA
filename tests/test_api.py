@@ -129,7 +129,7 @@ def test_ui_upload_view():
     assert resp.status_code == 200
     assert "Periodic Submission & Ingestion Wizard" in resp.text
     assert "Quick Demo Launcher" in resp.text
-    assert "Run Full Assessment Pipeline" in resp.text
+    assert "Load Demonstration Data" in resp.text  # the suite runs as a demo deployment
 
 
 def test_ui_blind_review():

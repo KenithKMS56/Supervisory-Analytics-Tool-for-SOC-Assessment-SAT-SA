@@ -198,9 +198,53 @@ def _m4_deployment_settings(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m5_access_controls(conn: sqlite3.Connection) -> None:
+    """Service credentials, session activity (idle timeout) and entity retirement.
+
+    - `service_credentials`: scoped, expiring, revocable machine credentials for the submission
+      API (satsa.auth.service_credentials). Only a verifier (SHA-256 of a 256-bit random secret)
+      is stored; the secret is shown once.
+    - `sessions.last_seen_at`, `admin_sessions.last_seen_at`: when a session was last used, for the
+      idle timeout. NULL on existing sessions, which then count from their creation.
+    - `entity_retirements`: entities taken out of future assessments. Retiring never deletes an
+      entity's submissions, runs, findings or scores (it replaces the old delete, which did).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS service_credentials (
+            credential_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            verifier TEXT NOT NULL,
+            scopes_json TEXT NOT NULL,
+            entity_scope_json TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            revoked_by TEXT,
+            last_used_at TEXT,
+            use_count INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    _add_column(conn, "sessions", "last_seen_at", "TEXT")
+    _add_column(conn, "admin_sessions", "last_seen_at", "TEXT")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS entity_retirements (
+            entity_id TEXT PRIMARY KEY,
+            retired_at TEXT NOT NULL,
+            retired_by TEXT NOT NULL,
+            reason TEXT NOT NULL
+        )
+        """
+    )
+
+
 OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(1, "evidence coverage and rule results", _m1_evidence_coverage),
     Migration(2, "run snapshots and analytical fingerprint", _m2_run_snapshots),
     Migration(3, "durable jobs and worker heartbeats", _m3_jobs),
     Migration(4, "deployment settings and mode", _m4_deployment_settings),
+    Migration(5, "service credentials, session idle timeout, entity retirement", _m5_access_controls),
 ]

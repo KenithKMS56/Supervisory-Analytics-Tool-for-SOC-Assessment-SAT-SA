@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -18,6 +19,7 @@ from satsa.admin.routes import AdminAuthRequired, AdminPasswordChangeRequired
 from satsa.admin.routes import router as admin_router
 from satsa.netguard import install_egress_guard, uninstall_egress_guard
 from satsa.store.sqlite import SQLiteStore
+from satsa.web_security import CROSS_SITE_REFUSED, cross_site_reason
 
 _ADMIN_DIR = Path(__file__).resolve().parent
 _STATIC_DIR = _ADMIN_DIR / "static"
@@ -58,6 +60,15 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="admin_static
 
 # Include administrative routes
 app.include_router(admin_router)
+
+
+@app.middleware("http")
+async def refuse_cross_site_requests(request: Request, call_next: Any) -> Response:
+    """CSRF defence (satsa.web_security): state-changing requests only from this portal's pages."""
+    if cross_site_reason(request.method, request.headers, str(request.base_url)) is not None:
+        return JSONResponse({"detail": CROSS_SITE_REFUSED}, status_code=403)
+    response: Response = await call_next(request)
+    return response
 
 
 @app.exception_handler(AdminAuthRequired)

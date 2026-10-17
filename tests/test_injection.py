@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from satsa.api.routes import app
 from satsa.ingest.pipeline import IngestionPipeline
+from satsa.jobs.queue import JobQueue
 from satsa.rules.registry import RuleRegistry
 from satsa.security import (
     is_valid_entity_id,
@@ -214,7 +215,10 @@ def test_delete_entity_rejects_malicious(admin_client, payload):
     assert _partition_dirs() == before, "a malicious ID must not delete any partition"
 
 
-def test_delete_entity_only_removes_its_own_partitions(admin_client):
+def test_retiring_an_entity_keeps_every_partition_and_touches_no_other_entity(admin_client):
+    """The delete action retires the entity (brief section 10: ordinary deletion must not erase
+    historical evidence). It used to remove the entity's partitions; now none is removed, its
+    own included, and it is left out of future assessments instead."""
     tmp_id = "ZZTEST-DEL"
     resp = admin_client.post(
         "/upload/add-entity",
@@ -227,10 +231,18 @@ def test_delete_entity_only_removes_its_own_partitions(admin_client):
     others_before = _partition_dirs() - mine
 
     resp = admin_client.post(f"/upload/delete-entity/{tmp_id}", follow_redirects=False)
-    assert resp.status_code == 303
+    assert resp.status_code == 303 and "retired" in resp.headers["location"]
     after = _partition_dirs()
-    assert not (after & mine)
-    assert others_before <= after, "deleting one entity must not remove another's data"
+    assert mine <= after, "retiring must not erase the entity's submitted data"
+    assert others_before <= after, "retiring one entity must not remove another's data"
+    store = SQLiteStore("data/satsa.db")
+    try:
+        assert tmp_id in store.retired_entities()
+        store.reinstate_entity(tmp_id, "test")  # leave the shared deployment as it was
+        for job in JobQueue(store).recent(5, states=("queued",)):
+            JobQueue(store).cancel(job["job_id"])
+    finally:
+        store.close()
 
 
 def test_add_entity_rejects_malicious(admin_client):
