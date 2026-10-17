@@ -81,6 +81,8 @@ def _html_pages() -> list[str]:
             continue
         if path.startswith(("/api/", "/reports/", "/templates/", "/docs", "/openapi", "/tuning/export-pack")):
             continue
+        if path in ("/healthz", "/readyz"):
+            continue  # JSON probes for the container runtime, not pages
         pages.append(path)
     return sorted(set(pages))
 

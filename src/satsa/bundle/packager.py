@@ -48,8 +48,12 @@ class OfflinePackager:
             wheelhouse = self.root_dir / "wheelhouse"
         self.wheelhouse = Path(wheelhouse).resolve() if wheelhouse is not None else None
 
-    def create_bundle(self, output_tar: bool = True) -> Path:
-        """Assemble all source, configs, vendored assets, containerfiles, and offline scripts."""
+    def create_bundle(self, output_tar: bool = True, signing_key: Path | str | None = None) -> Path:
+        """Assemble all source, configs, vendored assets, containerfiles, and offline scripts.
+
+        The bundle also carries an SBOM, licence notices, RELEASE.json, the docs and SHA256SUMS;
+        with `signing_key` (an Ed25519 key from `satsa release keygen`) SHA256SUMS is signed.
+        """
         self.dist_dir.mkdir(parents=True, exist_ok=True)
         if self.bundle_dir.exists():
             shutil.rmtree(self.bundle_dir)
@@ -63,7 +67,7 @@ class OfflinePackager:
             shutil.copytree(self.root_dir / "config", self.bundle_dir / "config", ignore=_NOT_SHIPPED)
 
             # 3. Copy project files
-            for f in ["pyproject.toml", "README.md", "LICENSE"]:
+            for f in ["pyproject.toml", "uv.lock", "README.md", "LICENSE"]:
                 src_f = self.root_dir / f
                 if src_f.exists():
                     shutil.copy(src_f, self.bundle_dir / f)
@@ -90,7 +94,15 @@ class OfflinePackager:
         # 6. Create offline install scripts and instructions
         self._write_offline_scripts(self.bundle_dir)
 
-        # 7. Create archive
+        # 7. Release metadata, then checksums over everything, then the optional signature
+        from satsa.bundle import release
+
+        release.write_release_metadata(self.bundle_dir, self.root_dir, self._version())
+        release.write_checksums(self.bundle_dir)
+        if signing_key is not None:
+            release.sign(self.bundle_dir, signing_key)
+
+        # 8. Create archive
         if output_tar:
             archive_path = self.dist_dir / "satsa_bundle.tar.gz"
             with tarfile.open(archive_path, "w:gz") as tar:
@@ -105,6 +117,14 @@ class OfflinePackager:
                         rel_p = abs_p.relative_to(self.dist_dir)
                         zip_f.write(abs_p, rel_p)
             return archive_path
+
+    def _version(self) -> str:
+        import tomllib
+
+        pyproject = self.root_dir / "pyproject.toml"
+        if not pyproject.exists():
+            return "unknown"
+        return str(tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"])
 
     def _longest_destination(self) -> str:
         """The longest path the bundle writes, for explaining a copy that Windows refused."""
