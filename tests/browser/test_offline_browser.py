@@ -4,8 +4,9 @@ from local assets, and the main pages make no external request and raise no brow
 from __future__ import annotations
 
 import pytest
-from conftest import LiveServer, OfflinePage, sign_in
 from playwright.sync_api import Error
+
+from .conftest import LiveServer, OfflinePage, sign_in
 
 
 def test_docs_renders_offline(offline_page: OfflinePage, live_server: LiveServer):

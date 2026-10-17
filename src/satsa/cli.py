@@ -1029,6 +1029,9 @@ def offline_bundle_cmd(
         "--wheelhouse",
         help="Wheelhouse from scripts/build_wheelhouse.sh to include (default: ./wheelhouse if present)",
     ),
+    signing_key: str | None = typer.Option(
+        None, "--signing-key", help="Ed25519 release key (satsa release keygen) to sign SHA256SUMS"
+    ),
 ) -> None:
     """Package SAT-SA for air-gapped installation: sources, configs, wheelhouse, containerfiles, and scripts."""
     from satsa.bundle.packager import BundlePathTooLongError, OfflinePackager, WheelhouseError
@@ -1036,8 +1039,8 @@ def offline_bundle_cmd(
     console.print("[bold blue]Building SAT-SA offline deployment bundle...[/bold blue]")
     packager = OfflinePackager(dist_dir=output_dir, wheelhouse=wheelhouse)
     try:
-        archive = packager.create_bundle(output_tar=True)
-    except (WheelhouseError, BundlePathTooLongError) as exc:
+        archive = packager.create_bundle(output_tar=True, signing_key=signing_key)
+    except (WheelhouseError, BundlePathTooLongError, TypeError, ValueError) as exc:
         console.print(f"[bold red][!] {exc}[/bold red]")
         raise typer.Exit(code=1) from None
     console.print(
@@ -1050,6 +1053,10 @@ def offline_bundle_cmd(
             "is rebuilt with one (scripts/build_wheelhouse.sh, docs/offline_install.md).[/bold yellow]"
         )
     console.print("  * Deployment instructions: [dim]README_OFFLINE.md inside bundle[/dim]")
+    if signing_key is None:
+        console.print("[yellow]  * SHA256SUMS is not signed (pass --signing-key to sign it)[/yellow]")
+    else:
+        console.print("  * SHA256SUMS signed; verify with: satsa release verify <bundle dir> --public-key <key>")
 
 
 @app.command("benchmark")
@@ -1808,6 +1815,48 @@ def ops_diagnostics(
     from satsa.ops import diagnostics_bundle
 
     console.print(f"Diagnostics package: {diagnostics_bundle(out, data_dir)} (review it before sharing)")
+
+
+release_app = typer.Typer(help="Release signing and verification of offline bundles (docs/offline_install.md)")
+app.add_typer(release_app, name="release")
+
+
+@release_app.command("keygen")
+def release_keygen(out: str = typer.Option(..., "--out", help="Directory for the key pair")) -> None:
+    """Create an Ed25519 release key pair. Keep the private key offline; publish the public key."""
+    from satsa.bundle.release import generate_keypair, public_key_fingerprint
+
+    Path(out).mkdir(parents=True, exist_ok=True)
+    try:
+        private, public = generate_keypair(out)
+    except FileExistsError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    console.print(f"Private key: {private} (keep offline)")
+    console.print(f"Public key: {public}")
+    console.print(f"Fingerprint: {public_key_fingerprint(public.read_bytes())} (publish it out of band)")
+
+
+@release_app.command("verify")
+def release_verify(
+    bundle: str = typer.Argument(..., help="Extracted bundle directory"),
+    public_key: str | None = typer.Option(
+        None, "--public-key", help="Release public key obtained separately (never the one inside the bundle)"
+    ),
+) -> None:
+    """Check the signature, every file hash, and that no file was added or removed."""
+    from satsa.bundle.release import ReleaseVerificationError, public_key_fingerprint, verify
+
+    try:
+        result = verify(bundle, public_key)
+    except ReleaseVerificationError as exc:
+        console.print(f"[bold red][!] Verification failed: {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    console.print(f"[green]{result['files']} files match SHA256SUMS[/green]")
+    if result["signature_verified"] and public_key is not None:
+        console.print(f"[green]Signature valid for key {public_key_fingerprint(Path(public_key).read_bytes())}[/green]")
+    else:
+        console.print("[yellow]Signature not checked: pass --public-key[/yellow]")
 
 
 if __name__ == "__main__":

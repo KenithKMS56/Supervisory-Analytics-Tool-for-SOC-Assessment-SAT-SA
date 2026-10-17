@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import hashlib
 import io
 import json
 
@@ -140,6 +141,10 @@ def test_the_api_without_any_credential_is_refused(deployment):
 # ---------------------------------------------------------------- sessions
 
 
+def _hash(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def test_an_idle_session_ends(deployment, monkeypatch):
     monkeypatch.setenv("SATSA_SESSION_IDLE_MINUTES", "30")
     store = _store()
@@ -148,17 +153,21 @@ def test_an_idle_session_ends(deployment, monkeypatch):
         assert store.get_session(token) is not None
         an_hour_ago = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=1)).isoformat()
         with store.transaction():
-            store.conn.execute("UPDATE sessions SET created_at = ?, last_seen_at = ?", (an_hour_ago, an_hour_ago))
+            store.conn.execute("UPDATE sessions SET created_at = ?, last_seen_at = ? WHERE session_hash = ?",
+                               (an_hour_ago, an_hour_ago, _hash(token)))
         assert store.get_session(token) is None, "idle for an hour"
         assert store.conn.execute("SELECT count(*) FROM sessions WHERE session_hash = ?",
-                                  (__import__("hashlib").sha256(token.encode()).hexdigest(),)).fetchone()[0] == 0
+                                  (_hash(token),)).fetchone()[0] == 0
 
         active = store.create_session("analyst", "analyst")
         ten_minutes_ago = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=10)).isoformat()
         with store.transaction():
-            store.conn.execute("UPDATE sessions SET last_seen_at = ?", (ten_minutes_ago,))
+            store.conn.execute("UPDATE sessions SET last_seen_at = ? WHERE session_hash = ?",
+                               (ten_minutes_ago, _hash(active)))
         assert store.get_session(active) is not None
-        seen = store.conn.execute("SELECT last_seen_at FROM sessions").fetchone()[0]
+        # The shared deployment holds other sessions too: read this one's row.
+        seen = store.conn.execute("SELECT last_seen_at FROM sessions WHERE session_hash = ?",
+                                  (_hash(active),)).fetchone()[0]
         assert seen > ten_minutes_ago, "use refreshes the idle clock"
     finally:
         store.close()
