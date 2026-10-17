@@ -27,7 +27,7 @@ SATSA_PORT = 8001
 
 
 def healthcheck() -> int:
-    """Exit status 0 when both portals answer /splash, over whichever scheme is configured."""
+    """Exit status 0 when both portals answer /healthz, over whichever scheme is configured."""
     import ssl
     import urllib.request
 
@@ -39,7 +39,7 @@ def healthcheck() -> int:
     context = ssl._create_unverified_context() if config.tls else None
     try:
         for port in (ADMIN_PORT, SATSA_PORT):
-            url = f"{config.scheme}://127.0.0.1:{port}/splash"
+            url = f"{config.scheme}://127.0.0.1:{port}/healthz"
             with urllib.request.urlopen(url, timeout=3, context=context) as resp:
                 if resp.status != 200:
                     return 1

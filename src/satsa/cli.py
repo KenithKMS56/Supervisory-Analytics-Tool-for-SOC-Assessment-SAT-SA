@@ -1705,5 +1705,110 @@ def entity_reinstate(entity_id: str, db_path: str = typer.Option("data/satsa.db"
     console.print(f"{entity_id} reinstated.")
 
 
+
+def _backup_passphrase(encrypt: bool, confirm: bool) -> str | None:
+    import os
+
+    if not encrypt:
+        return None
+    return os.environ.get("SATSA_BACKUP_PASSPHRASE") or typer.prompt(
+        "Backup passphrase", hide_input=True, confirmation_prompt=confirm
+    )
+
+
+@app.command("backup")
+def backup_cmd(
+    dest: str = typer.Option(..., "--dest", help="Directory to write the backup into (ideally another disk)"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+    config_dir: str = typer.Option("config", "--config-dir"),
+    encrypt: bool = typer.Option(False, "--encrypt", help="One AES-256-GCM file; passphrase from SATSA_BACKUP_PASSPHRASE or a prompt"),
+    keep: int = typer.Option(0, "--keep", help="Afterwards keep only the newest N backups in --dest (0: keep all)"),
+) -> None:
+    """Consistent backup of databases, published data, held batches, keys and configuration (docs/backup_restore.md)."""
+    from satsa.backup import BackupError, create_backup, prune_backups
+
+    try:
+        out = create_backup(data_dir, dest, config_dir=config_dir, passphrase=_backup_passphrase(encrypt, True))
+    except BackupError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[bold green][+] Backup written:[/bold green] {out}")
+    if keep:
+        for removed in prune_backups(dest, keep):
+            console.print(f"    removed old backup {removed.name}")
+
+
+@app.command("restore")
+def restore_cmd(
+    source: str = typer.Argument(..., help="A backup directory or .satsa-backup file"),
+    target: str = typer.Option(..., "--target", help="A new, empty directory (the restored deployment root)"),
+    replay: str = typer.Option("", "--replay", help="Also replay this run in the restored instance"),
+) -> None:
+    """Verify a backup, restore it into an empty directory, and optionally prove a run reproduces."""
+    from satsa.backup import BackupError, restore_backup
+
+    passphrase = _backup_passphrase(Path(source).is_file(), False)
+    try:
+        report = restore_backup(source, target, passphrase=passphrase)
+    except BackupError as exc:
+        console.print(f"[bold red][!] Restore refused: {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+    console.print_json(data=report)
+    if replay:
+        from satsa.scoring.replay import replay_run
+        from satsa.store.sqlite import SQLiteStore
+
+        store = SQLiteStore(Path(target) / "data" / "satsa.db")
+        try:
+            result = replay_run(replay, Path(target) / "data", store)
+        finally:
+            store.close()
+        ok = result["results_match"] and result["fingerprint_match"]
+        console.print(f"Replay of {replay}: {'reproduced' if ok else 'DIFFERS'} {result['differences'] or ''}")
+        if not ok:
+            raise typer.Exit(code=1)
+
+
+ops_app = typer.Typer(help="Readiness, retention and diagnostics (docs/deployment_ops.md)")
+app.add_typer(ops_app, name="ops")
+
+
+@ops_app.command("ready")
+def ops_ready(data_dir: str = typer.Option("data", "--data-dir")) -> None:
+    """Readiness checks; exit status 1 when not ready."""
+    from satsa.ops import readiness
+
+    report = readiness(data_dir)
+    console.print_json(data=report)
+    if not report["ready"]:
+        raise typer.Exit(code=1)
+
+
+@ops_app.command("retention")
+def ops_retention(
+    data_dir: str = typer.Option("data", "--data-dir"),
+    backups_dir: str = typer.Option("", "--backups-dir", help="Also prune backups here to the configured number"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Apply the retention settings: old job inputs and surplus backups. Never assessment evidence."""
+    import getpass
+
+    from satsa.ops import apply_retention
+
+    console.print_json(data=apply_retention(data_dir, backups_dir=backups_dir or None,
+                                            actor=f"cli:{getpass.getuser()}", dry_run=dry_run))
+
+
+@ops_app.command("diagnostics")
+def ops_diagnostics(
+    out: str = typer.Option(..., "--out", help="Zip file to write"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+) -> None:
+    """Write a redacted support package (no data, secrets or usernames) for review before sharing."""
+    from satsa.ops import diagnostics_bundle
+
+    console.print(f"Diagnostics package: {diagnostics_bundle(out, data_dir)} (review it before sharing)")
+
+
 if __name__ == "__main__":
     app()

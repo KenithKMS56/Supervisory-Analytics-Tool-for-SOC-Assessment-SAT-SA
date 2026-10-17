@@ -49,6 +49,8 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("GET", "/change-password"): (ALL, True),
     ("POST", "/change-password"): (ALL, False),
     ("GET", "/api/session/status"): (PUBLIC, False),
+    ("GET", "/healthz"): (PUBLIC, False),
+    ("GET", "/readyz"): (PUBLIC, False),
     ("GET", "/splash"): (PUBLIC, True),
     ("GET", "/"): (PUBLIC, True),
     ("GET", "/portfolio"): (ALL, True),
@@ -107,6 +109,7 @@ ADMIN_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("GET", "/change-password"): (ADMIN_ONLY, True),
     ("POST", "/change-password"): (ADMIN_ONLY, False),
     ("GET", "/splash"): (PUBLIC, True),
+    ("GET", "/healthz"): (PUBLIC, False),
     # First-run setup: open only while a production deployment has no administrator (then 404).
     ("GET", "/setup"): (PUBLIC, True),
     ("POST", "/setup"): (PUBLIC, False),
