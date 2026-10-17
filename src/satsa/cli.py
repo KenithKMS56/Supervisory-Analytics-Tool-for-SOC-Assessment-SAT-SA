@@ -1545,5 +1545,61 @@ def jobs_cancel(job_id: str, db_path: str = typer.Option("data/satsa.db", "--db-
     console.print(f"{job_id}: {job['state']}{' (cancel requested)' if job['cancel_requested'] else ''}")
 
 
+
+@app.command("setup")
+def setup_cmd(
+    admin_username: str = typer.Option(..., "--admin-username", help="First administrator of the Admin Portal"),
+    deployment_name: str = typer.Option(..., "--deployment-name"),
+    timezone: str = typer.Option("Asia/Kolkata", "--timezone", help="IANA time zone name"),
+    job_inputs_days: int = typer.Option(30, "--keep-job-inputs-days"),
+    backups_keep: int = typer.Option(7, "--keep-backups"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+) -> None:
+    """First-run setup from the shell, instead of the Admin Portal's /setup page.
+
+    The passphrase is read from the SATSA_SETUP_PASSPHRASE environment variable or prompted for
+    (never a command-line argument, which would land in shell history). Shell access to the data
+    directory stands in for the one-time token."""
+    import os
+
+    from satsa.deployment import SetupError, complete_setup
+    from satsa.store.sqlite import SQLiteStore
+
+    passphrase = os.environ.get("SATSA_SETUP_PASSPHRASE") or typer.prompt(
+        "Administrator passphrase", hide_input=True, confirmation_prompt=True
+    )
+    store = SQLiteStore(Path(data_dir) / "satsa.db")
+    try:
+        complete_setup(store, data_dir, token=None, admin_username=admin_username, passphrase=passphrase,
+                       confirm=passphrase, deployment_name=deployment_name, timezone=timezone,
+                       job_inputs_days=job_inputs_days, backups_keep=backups_keep,
+                       actor=f"cli:{admin_username}", require_token=False)
+    except SetupError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+    finally:
+        store.close()
+    console.print(f"[bold green][+] Set up. Sign in to the Admin Portal (:8000) as {admin_username}.[/bold green]")
+
+
+deployment_app = typer.Typer(help="Deployment mode and settings (docs/first_run_setup.md)")
+app.add_typer(deployment_app, name="deployment")
+
+
+@deployment_app.command("show")
+def deployment_show(data_dir: str = typer.Option("data", "--data-dir")) -> None:
+    """Mode, name, time zone, retention and setup state (no secrets)."""
+    from satsa.deployment import settings, setup_pending
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(Path(data_dir) / "satsa.db")
+    try:
+        shown = {k: v for k, v in settings(store).items() if k != "setup_token_sha256"}
+        shown["setup_pending"] = str(setup_pending(store))
+    finally:
+        store.close()
+    console.print_json(data=shown)
+
+
 if __name__ == "__main__":
     app()

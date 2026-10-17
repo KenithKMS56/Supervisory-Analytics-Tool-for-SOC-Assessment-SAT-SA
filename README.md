@@ -288,7 +288,19 @@ Runs both portals (Admin Portal and SAT-SA, shared RBAC and activity feed) witho
    - **NCIIPC Admin Portal**: [http://localhost:8000](http://localhost:8000)
    - **SAT-SA Supervisory Tool**: [http://localhost:8001](http://localhost:8001)
 
-3. **Default Seeded Credentials:**
+3. **First run.** A new deployment is a **production** deployment. It starts empty, with no
+   accounts and no data. The platform console prints a one-time setup token (also written to
+   `data/secrets/setup_token`). Open the Admin Portal, which sends you to `/setup`, and enter the
+   token there. Setup creates the first administrator and records the deployment name, time zone
+   and retention. That administrator then creates the analyst and examiner accounts. Headless
+   alternative: `satsa setup --admin-username ... --deployment-name ...`. See
+   `docs/first_run_setup.md`.
+
+   **Demonstration deployment.** Start with `SATSA_DEMO=1` on a separate data directory, for
+   example `SATSA_DEMO=1 SATSA_DATA_DIR=./demo-data docker compose -p satsa-demo up -d`. A demo
+   deployment loads synthetic data, labels every page as a demonstration, and has these accounts
+   with published passphrases. A production deployment never has them:
+
    | Username | Assigned Role | Default Passphrase | Accessible Interfaces |
    | :--- | :--- | :--- | :--- |
    | `nciipc_admin` | NCIIPC Super Administrator | `ChangeMe-NCIIPC#2026` | Admin Portal (`:8000`) only |

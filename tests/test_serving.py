@@ -122,10 +122,12 @@ def test_entrypoint_launches_both_portals_on_the_configured_address(tmp_path, mo
     monkeypatch.setattr(sqlite_module, "SQLiteStore", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("skip")))
     with pytest.raises(SystemExit):
         entrypoint.main()
-    assert [cmd[3:7] for cmd in launched] == [
+    assert [cmd[3:7] for cmd in launched[:2]] == [
         ["satsa.admin.app:app", "--host", "127.0.0.1", "--port"],
         ["satsa.api:app", "--host", "127.0.0.1", "--port"],
     ]
+    # ... and exactly one job worker, which runs imports and assessments (satsa.jobs).
+    assert [cmd[1:] for cmd in launched[2:]] == [["-m", "satsa.cli", "worker"]]
 
 
 # ------------------------------------------------------------------ TLS configuration

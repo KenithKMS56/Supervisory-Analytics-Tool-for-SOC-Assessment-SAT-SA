@@ -82,6 +82,20 @@ recorded". They are never reclassified after the fact.
 - Jobs still queued when downgrading are not run by the previous release. Their uploaded files
   stay in `data/jobs/` and can be uploaded again.
 
+### v4: deployment settings and mode (Phase 2)
+
+- New key-value table `deployment_settings`: mode (`production` or `demo`), how the mode was
+  chosen, deployment name, time zone, retention, and setup state.
+- A database created before v4 is recorded as `production`, with `mode_origin` saying so. It
+  gets `setup_completed_at = "before deployment modes"`, because its accounts already exist.
+  Nothing else changes, and existing accounts keep their passphrases.
+- Behaviour change in the same release:
+  - `seed_default_admin` no longer re-promotes and re-activates the `admin` account on every
+    start.
+  - Production databases are no longer seeded with demonstration accounts.
+  - Neither change touches existing rows.
+- To undo: the previous release ignores the table.
+
 ## Publication catalog (`catalog.db`)
 
 ### v1: publication catalog

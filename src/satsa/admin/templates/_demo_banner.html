@@ -1,0 +1,7 @@
+{# Persistent label of a demonstration deployment (satsa.deployment). #}
+{% if deployment(request).get("mode") == "demo" %}
+<div role="note" id="demoBanner" style="position: sticky; top: 0; z-index: 1000; padding: 0.45rem 1rem; text-align: center;
+     font-size: 0.8rem; font-weight: 700; background: #7a4a00; color: #fff;">
+  DEMONSTRATION DEPLOYMENT &mdash; synthetic data and published passphrases. Not for real SOC evidence.
+</div>
+{% endif %}
