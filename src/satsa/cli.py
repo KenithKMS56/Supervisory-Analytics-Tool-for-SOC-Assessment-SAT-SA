@@ -756,11 +756,11 @@ def validate_cmd(
         if shadow_res.get("status") == "success":
             sqlite_store.save_shadow_result(results["run_id"], "cli", Path(shadow_csv).name, shadow_res)
             if adjudication_csv:
-                import csv
+                from satsa.csv_safe import SafeDictWriter
 
                 sheet = adjudication_sheet(sqlite_store, shadow_res)
                 with open(adjudication_csv, "w", encoding="utf-8", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=ADJUDICATION_COLUMNS)
+                    writer = SafeDictWriter(f, fieldnames=ADJUDICATION_COLUMNS)
                     writer.writeheader()
                     writer.writerows(sheet)
                 console.print(
@@ -1599,6 +1599,110 @@ def deployment_show(data_dir: str = typer.Option("data", "--data-dir")) -> None:
     finally:
         store.close()
     console.print_json(data=shown)
+
+
+
+credentials_app = typer.Typer(help="Service credentials for the submission API (docs/api_credentials.md)")
+app.add_typer(credentials_app, name="service-credential")
+
+
+@credentials_app.command("create")
+def credential_create(
+    name: str = typer.Option(..., "--name", help="Who or what uses it, e.g. 'CSE-01 Splunk connector'"),
+    entity: list[str] = typer.Option(..., "--entity", help="An entity it may submit for (repeatable)"),
+    expires_days: int = typer.Option(90, "--expires-days", help="Lifetime, 1-365 days"),
+    db_path: str = typer.Option("data/satsa.db", "--db-path"),
+) -> None:
+    """Issue a credential. The token is printed once and cannot be shown again."""
+    import getpass
+
+    from satsa.auth.service_credentials import CredentialError, issue
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        token, record = issue(store, name=name, entities=entity, expires_days=expires_days,
+                              created_by=f"cli:{getpass.getuser()}")
+    except CredentialError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+    finally:
+        store.close()
+    console.print(f"Credential {record['credential_id']} ({record['name']}) for {', '.join(record['entities'])}, "
+                  f"expires {record['expires_at']}.")
+    console.print("Token (shown once; store it in the client's secret store):")
+    print(token)
+
+
+@credentials_app.command("list")
+def credential_list(db_path: str = typer.Option("data/satsa.db", "--db-path")) -> None:
+    """Every credential with its scope, expiry, revocation and last use (never the secret)."""
+    from satsa.auth.service_credentials import listing
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        console.print_json(data=listing(store))
+    finally:
+        store.close()
+
+
+@credentials_app.command("revoke")
+def credential_revoke(credential_id: str, db_path: str = typer.Option("data/satsa.db", "--db-path")) -> None:
+    """Revoke a credential; it stops working on its next request."""
+    import getpass
+
+    from satsa.auth.service_credentials import revoke
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        done = revoke(store, credential_id, f"cli:{getpass.getuser()}")
+    finally:
+        store.close()
+    if not done:
+        console.print(f"[bold red]No active credential {credential_id}[/bold red]")
+        raise typer.Exit(code=1)
+    console.print(f"Revoked {credential_id}.")
+
+
+
+entity_app = typer.Typer(help="Retire or reinstate entities (nothing is ever erased)")
+app.add_typer(entity_app, name="entity")
+
+
+@entity_app.command("retire")
+def entity_retire(entity_id: str, reason: str = typer.Option(..., "--reason"),
+                  db_path: str = typer.Option("data/satsa.db", "--db-path")) -> None:
+    """Leave an entity out of future assessments; its submissions and history are kept."""
+    import getpass
+
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        done = store.retire_entity(entity_id.strip().upper(), f"cli:{getpass.getuser()}", reason)
+    finally:
+        store.close()
+    console.print(f"{entity_id}: {'retired' if done else 'already retired'}. The next assessment leaves it out.")
+
+
+@entity_app.command("reinstate")
+def entity_reinstate(entity_id: str, db_path: str = typer.Option("data/satsa.db", "--db-path")) -> None:
+    """Undo a retirement: the entity is assessed again from the next run."""
+    import getpass
+
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        done = store.reinstate_entity(entity_id.strip().upper(), f"cli:{getpass.getuser()}")
+    finally:
+        store.close()
+    if not done:
+        console.print(f"[bold red]{entity_id} is not retired[/bold red]")
+        raise typer.Exit(code=1)
+    console.print(f"{entity_id} reinstated.")
 
 
 if __name__ == "__main__":

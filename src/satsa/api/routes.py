@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from satsa import FINDING_NOTICE, SUPERVISORY_NOTICE
 from satsa.admin.rbac import SATSA_OPERATOR_ROLES, is_analyst, is_examiner
 from satsa.auth.identities import MIN_PASSPHRASE_LENGTH, passphrase_policy_error
+from satsa.auth.service_credentials import authenticate as authenticate_service
 from satsa.auth.session import (
     SESSION_COOKIE_NAME,
     Identity,
@@ -38,6 +39,7 @@ from satsa.auth.session import (
     require_role,
 )
 from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
+from satsa.csv_safe import SafeWriter
 from satsa.explain.finding_card import WHY_IT_MATTERS, FindingCard
 from satsa.ingest.pipeline import IngestionPipeline
 from satsa.ingest.uploads import MAX_UPLOAD_BYTES, _copy_limited, check_zip_limits
@@ -65,6 +67,7 @@ from satsa.security import (
 from satsa.store.catalog import PublicationError
 from satsa.store.duckdb import DuckDBStore, analytics_cache
 from satsa.store.sqlite import SQLiteStore
+from satsa.web_security import CROSS_SITE_REFUSED, cross_site_reason
 
 # Roles permitted for each protected action category, matching
 # docs/functional_design.md Section 2 (User Personas & Permissions). SAT-SA has
@@ -163,6 +166,20 @@ NOT_SATSA_OPERATOR = (
 )
 
 
+# Paths that accept a service credential instead of a session (docs/api_credentials.md), and the
+# cap on their request bodies (SATSA_MAX_API_BODY_MB, default 64).
+SERVICE_CREDENTIAL_PATHS = {"/api/v1/submissions"}
+MAX_API_BODY_BYTES = int(os.environ.get("SATSA_MAX_API_BODY_MB", "64")) * 1024 * 1024
+
+
+def require_submitter(request: Request) -> Identity:
+    """An analyst session, or a service credential with the `submit` scope (set by the middleware)."""
+    principal = getattr(request.state, "service_principal", None)
+    if principal is not None:
+        return Identity(username=principal.actor, role="service")
+    return require_role(*INGEST_RUN_ROLES)(request)
+
+
 def _is_public_path(path: str) -> bool:
     return path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES)
 
@@ -179,6 +196,24 @@ async def enforce_auth_middleware(request: Request, call_next):
     path = request.url.path
     if _is_public_path(path):
         return await call_next(request)
+
+    # Machine integration (satsa.auth.service_credentials): a Bearer service credential on the
+    # submission API, checked on every request so revocation and expiry apply at once.
+    if path in SERVICE_CREDENTIAL_PATHS:
+        length = request.headers.get("content-length")
+        if length is not None and (not length.isdigit() or int(length) > MAX_API_BODY_BYTES):
+            return JSONResponse({"detail": f"The request body is larger than {MAX_API_BODY_BYTES // (1024 * 1024)} MiB."},
+                                status_code=413)
+        if request.headers.get("authorization"):
+            store = SQLiteStore("data/satsa.db")
+            try:
+                principal = authenticate_service(store, request.headers.get("authorization"))
+            finally:
+                store.close()
+            if principal is None:
+                return JSONResponse({"detail": "Invalid, expired or revoked service credential."}, status_code=401)
+            request.state.service_principal = principal
+            return await call_next(request)
 
     identity = get_current_identity(request)
     if identity is None:
@@ -334,6 +369,17 @@ def cancel_job(job_id: str, identity: Identity = Depends(require_role(*INGEST_RU
     finally:
         store.close()
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@app.middleware("http")
+async def refuse_cross_site_requests(request: Request, call_next):
+    """CSRF defence (satsa.web_security): a state-changing request must come from this portal's
+    own pages. Registered after the authentication middleware, so it runs before it."""
+    reason = cross_site_reason(request.method, request.headers, str(request.base_url))
+    if reason is not None:
+        logger.warning("Refused cross-site %s %s: %s", request.method, request.url.path, reason)
+        return JSONResponse({"detail": CROSS_SITE_REFUSED}, status_code=403)
+    return await call_next(request)
 
 
 def require_valid_entity_id(entity_id: str) -> str:
@@ -1622,7 +1668,7 @@ async def api_export_queue_csv() -> Response:
     sqlite_store.close()
 
     output = io.StringIO()
-    writer = csv.writer(output)
+    writer = SafeWriter(output)
     if rows:
         writer.writerow([*rows[0].keys(), "supervisory_notice"])
         for r in rows:
@@ -1778,8 +1824,17 @@ async def view_upload(request: Request, message: str = "") -> Response:
             "all_entities": all_entities,
             "submissions": submissions,
             "held_batches": held_batches,
+            "retired_entities": _retired_entities(),
         },
     )
+
+
+def _retired_entities() -> set[str]:
+    store = get_sqlite_store()
+    try:
+        return store.retired_entities()
+    finally:
+        store.close()
 
 
 BATCH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -1953,50 +2008,25 @@ def handle_add_entity(
 async def handle_delete_entity(
     entity_id: str, identity: Identity = Depends(require_role(*INGEST_RUN_ROLES))
 ) -> Response:
-    """Permanently delete an entity, its data partitions, and recalculate portfolio."""
+    """Retire an entity: leave it out of future assessments and queue a re-assessment.
+
+    Nothing is erased. Its published submissions, past runs, findings, scores and review history
+    stay (brief section 10: ordinary deletion must not silently erase historical evidence); a
+    retirement can be undone with `satsa entity reinstate`. Until Phase 2 this route deleted the
+    entity's findings and scores from every run and removed its Parquet partitions."""
     clean_id = require_valid_entity_id(entity_id.strip().upper())
-    duckdb_store, sqlite_store = get_write_stores()
-
-    # 1. Delete from SQLite
-    cur = sqlite_store.conn.cursor()
-    cur.execute("DELETE FROM entities WHERE entity_id = ?", (clean_id,))
-    cur.execute("DELETE FROM entity_scores WHERE entity_id = ?", (clean_id,))
-    cur.execute("DELETE FROM findings WHERE entity_id = ?", (clean_id,))
-    cur.execute("DELETE FROM domain_scores WHERE entity_id = ?", (clean_id,))
-    cur.execute("DELETE FROM review_queue WHERE entity_id = ?", (clean_id,))
-    cur.execute("DELETE FROM submitted_tables WHERE entity_id = ?", (clean_id,))
-    sqlite_store.conn.commit()
-
-    # 2. Delete from DuckDB parquet files: only the exact `entity_id=<id>`
-    # partition directory under each table (no glob patterns, so an ID can
-    # never match another entity's partitions), confined to the parquet root.
-    parquet_root = duckdb_store.parquet_dir
-    partition_name = f"entity_id={clean_id}"
-    if parquet_root.is_dir():
-        for table_dir in parquet_root.iterdir():
-            if not table_dir.is_dir():
-                continue
-            part = safe_join(parquet_root, f"{table_dir.name}/{partition_name}")
-            if part.is_dir() and part.name == partition_name:
-                shutil.rmtree(part, ignore_errors=True)
-
-    # 3. Audit log
-    sqlite_store.append_audit(
-        action="delete_entity",
-        actor=identity.username,
-        details={"entity_id": clean_id},
-    )
-
-    # 4. Queue an assessment to re-score the remaining entities
-    period = _latest_period(sqlite_store)
-    duckdb_store.close()
-    sqlite_store.close()
-    enqueue_assessment(period, identity, f"entity {clean_id} deleted")
-
-    return RedirectResponse(
-        url=f"/upload?message=Entity+{clean_id}+has+been+permanently+deleted+and+portfolio+recalculated.",
-        status_code=303,
-    )
+    sqlite_store = get_sqlite_store()
+    try:
+        retired = sqlite_store.retire_entity(clean_id, identity.username, "retired from the upload page")
+        period = _latest_period(sqlite_store)
+    finally:
+        sqlite_store.close()
+    if not retired:
+        return RedirectResponse(url=f"/upload?message=Error:+{clean_id}+is+already+retired.", status_code=303)
+    job = enqueue_assessment(period, identity, f"entity {clean_id} retired")
+    msg = (f"Entity {clean_id} retired: it is left out of future assessments; its submissions, runs and "
+           f"findings are kept. Re-assessment queued as job {job['job_id']}.")
+    return RedirectResponse(url=f"/upload?message={msg}", status_code=303)
 
 
 @app.get("/templates/{template_name}", dependencies=[Depends(require_role(*ANALYST_ROLES))])
@@ -3038,7 +3068,8 @@ class BatchSubmissionPayload(BaseModel):
 @app.post("/api/v1/submissions", tags=["Periodic Batch Submission"])
 async def api_batch_submission(
     payload: BatchSubmissionPayload,
-    identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
+    request: Request,
+    identity: Identity = Depends(require_submitter),
 ) -> dict[str, Any]:
     """
     Submit ONE periodic batch (a CSE's records for a supervisory review period) as JSON -- the
@@ -3058,13 +3089,28 @@ async def api_batch_submission(
       submission (`2026-02` inside `2026-Q1`), is rejected with HTTP 409. A correction names
       the batch it corrects in `revision_of`; it then replaces the earlier records by key.
 
-    Requires an authenticated analyst session (POST /login first and
-    retain the session cookie).
+    Machine clients authenticate with a service credential (`Authorization: Bearer
+    satsa_sc_...`, docs/api_credentials.md), which may submit only for the entities it was
+    issued for. An analyst's browser session is also accepted.
     """
     clean_id = payload.entity_id.strip().upper()
     if not clean_id:
         raise HTTPException(status_code=400, detail="entity_id is required")
     require_valid_entity_id(clean_id)
+    principal = getattr(request.state, "service_principal", None)
+    if principal is not None:
+        store = get_sqlite_store()
+        try:
+            allowed = principal.may_submit_for(clean_id)
+            store.append_audit(
+                action="service_credential_used" if allowed else "service_credential_refused",
+                actor=principal.actor,
+                details={"credential_id": principal.credential_id, "entity_id": clean_id, "period": payload.period},
+            )
+        finally:
+            store.close()
+        if not allowed:
+            raise HTTPException(status_code=403, detail=f"This credential may not submit for {clean_id}.")
     sections = {name: getattr(payload, name) for name in SUBMISSION_SECTIONS}
     for rows in sections.values():
         for row in rows:

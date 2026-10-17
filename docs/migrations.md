@@ -96,6 +96,21 @@ recorded". They are never reclassified after the fact.
   - Neither change touches existing rows.
 - To undo: the previous release ignores the table.
 
+### v5: service credentials, session idle timeout, entity retirement (Phase 2)
+
+- New table `service_credentials`: name, verifier, scopes, entity scope, created, expires,
+  revoked, last used and use count (docs/api_credentials.md).
+- New nullable column `last_seen_at` on `sessions` and `admin_sessions`. Existing sessions count
+  idle time from their creation, so a session older than the idle timeout ends at its next use.
+- New table `entity_retirements`. The "Delete" action on the upload page now retires an entity
+  instead of deleting it:
+  - **Before:** it erased the entity's findings and scores from every run and removed its Parquet
+    files.
+  - **Now:** nothing is erased. The entity is left out of future runs, and each run records the
+    excluded ids in `selection.retired_entities`, so replay reproduces it.
+  - **To undo a retirement:** `satsa entity reinstate <id>`.
+- To undo the migration: the previous release ignores the new table and columns.
+
 ## Publication catalog (`catalog.db`)
 
 ### v1: publication catalog

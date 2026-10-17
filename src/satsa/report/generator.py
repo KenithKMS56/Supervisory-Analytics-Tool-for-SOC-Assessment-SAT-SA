@@ -1,6 +1,5 @@
 """Supervisory report generation module: self-contained HTML, PDF (ReportLab), and CSV."""
 
-import csv
 import html
 import json
 from pathlib import Path
@@ -20,6 +19,7 @@ from reportlab.platypus import (
 )
 
 from satsa import FINDING_NOTICE
+from satsa.csv_safe import SafeWriter
 from satsa.explain.finding_card import WHY_IT_MATTERS
 from satsa.peers.anomaly_scan import format_value
 from satsa.report.pdf_charts import (
@@ -899,7 +899,7 @@ class ReportGenerator:
         # Every exported row carries the notice: a CSV is read and forwarded without the
         # page it was downloaded from.
         with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
+            writer = SafeWriter(f)
             if rows:
                 writer.writerow([*rows[0].keys(), "supervisory_notice"])
                 for r in rows:
@@ -919,7 +919,7 @@ class ReportGenerator:
         rows = cur.fetchall()
 
         with open(path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
+            writer = SafeWriter(f)
             if rows:
                 writer.writerow([*rows[0].keys(), "supervisory_notice"])
                 for r in rows:
@@ -934,7 +934,10 @@ class ReportGenerator:
             df = self.duckdb_store.query(
                 "SELECT * FROM metrics_daily ORDER BY entity_id, date, metric_name"
             )
-            df.write_csv(str(path))
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                writer = SafeWriter(f)
+                writer.writerow(df.columns)
+                writer.writerows(df.iter_rows())
         except (duckdb.Error, OSError):
             # Fallback if metrics table empty or different schema
             with open(path, "w", newline="", encoding="utf-8") as f:

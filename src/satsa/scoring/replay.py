@@ -97,6 +97,7 @@ def replay_run(run_id: str, data_dir: Path | str, sqlite_store: SQLiteStore) -> 
                 window=_window(selection),
                 reference_date=datetime.fromisoformat(ref) if ref else None,
                 record_data_gaps=False,
+                excluded_entities=selection.get("retired_entities", []),
             )
         finally:
             duck.close()

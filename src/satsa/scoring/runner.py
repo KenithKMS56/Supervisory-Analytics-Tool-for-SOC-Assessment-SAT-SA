@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -346,8 +347,12 @@ class AssessmentRunner:
         window: AssessmentWindow | None = None,
         max_pub_seq: int | None = None,
         run_id: str | None = None,
+        excluded_entities: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         """Run full evaluation pipeline.
+
+        Retired entities (SQLiteStore.retire_entity) are not assessed; the run records which
+        were left out, and `excluded_entities` replays that list instead of the current one.
 
         `run_id` makes the run idempotent (satsa.jobs): if a run with that id was already
         published, it is returned instead of being assessed again.
@@ -405,7 +410,9 @@ class AssessmentRunner:
         # is never handed to any rule (rules bind entity_id as a query parameter,
         # but a malformed ID must not reach a query at all).
         all_entities = [Entity(**row) for row in df_entities.iter_rows(named=True)]
-        entities = [e for e in all_entities if is_valid_entity_id(e.entity_id)]
+        retired = set(excluded_entities) if excluded_entities is not None else self.sqlite_store.retired_entities()
+        excluded = sorted(e.entity_id for e in all_entities if e.entity_id in retired)
+        entities = [e for e in all_entities if is_valid_entity_id(e.entity_id) and e.entity_id not in retired]
         skipped_entity_ids = sorted(
             repr(e.entity_id) for e in all_entities if not is_valid_entity_id(e.entity_id)
         )
@@ -504,6 +511,9 @@ class AssessmentRunner:
             **window.as_dict(),
             "reference_date": as_of.isoformat() if as_of else None,
             "applicability_decisions": sorted(d["decision_id"] for d in decisions.values()),
+            # Only when some entity was left out, so runs recorded before retirement existed
+            # keep their identity.
+            **({"retired_entities": excluded} if excluded else {}),
         }
         fingerprint = analytical_fingerprint(snapshot, data_fp, selection, environment)
 

@@ -41,6 +41,7 @@ from satsa.deployment import SetupError, complete_setup, setup_pending
 from satsa.deployment import settings as deployment_settings
 from satsa.security import is_valid_username
 from satsa.store.sqlite import LIVE_EVENTS_MAX_LIMIT, SQLiteStore
+from satsa.web_security import cross_site_reason
 
 # Setup Jinja2 template environment for admin portal
 _ADMIN_DIR = Path(__file__).resolve().parent
@@ -1104,6 +1105,11 @@ async def admin_activity_recent(
 async def admin_activity_websocket(websocket: WebSocket) -> None:
     """Admin activity feed over WebSocket: pushes new SAT-SA operator events (admin session required)."""
     store: SQLiteStore = websocket.app.state.store
+    # Browsers send Origin on every WebSocket handshake and SameSite does not apply to it, so a
+    # page on another site could otherwise open this feed with the administrator's cookie.
+    if cross_site_reason("GET", websocket.headers, str(websocket.url), websocket=True) is not None:
+        await websocket.close(code=1008)
+        return
     # Same authorization as every other admin route: a valid, unblocked admin
     # session with an administrator role. Otherwise refuse the handshake
     # (policy violation, 1008) before any event is sent.

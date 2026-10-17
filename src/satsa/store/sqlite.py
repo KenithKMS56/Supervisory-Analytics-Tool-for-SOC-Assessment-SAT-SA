@@ -3,6 +3,7 @@
 import datetime as _dt
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 from collections.abc import Iterable, Iterator
@@ -111,6 +112,14 @@ class AuditHead:
     count: int
     head_hash: str
     hash_alg: str | None
+
+
+def session_idle_minutes() -> int:
+    """Minutes a session may go unused before it ends (SATSA_SESSION_IDLE_MINUTES, default 30)."""
+    try:
+        return max(1, int(os.environ.get("SATSA_SESSION_IDLE_MINUTES", "30")))
+    except ValueError:
+        return 30
 
 
 class SQLiteStore:
@@ -987,7 +996,7 @@ class SQLiteStore:
         cur = self.conn.cursor()
         cur.execute(
             """
-            SELECT s.session_hash, s.username, s.created_at, s.expires_at,
+            SELECT s.session_hash, s.username, s.created_at, s.expires_at, s.last_seen_at,
                    COALESCE(i.role, s.role) as role,
                    i.is_blocked, i.status, i.org_id, i.cse_id, i.is_admin_user,
                    i.force_password_change,
@@ -1012,7 +1021,58 @@ class SQLiteStore:
         if datetime.datetime.now(datetime.UTC) > expires_at:
             self.delete_session(raw_token)
             return None
+        if self._idle_expired("sessions", row):
+            self.delete_session(raw_token)
+            return None
         return dict(row)
+
+    def _idle_expired(self, table: str, row: sqlite3.Row) -> bool:
+        """True when the session has been unused for longer than the idle timeout
+        (SATSA_SESSION_IDLE_MINUTES, default 30); otherwise record that it was used now.
+        The write is skipped within a minute of the last one, so reads stay cheap."""
+        now = _dt.datetime.now(_dt.UTC)
+        last_text = row["last_seen_at"] or row["created_at"]
+        last = _dt.datetime.fromisoformat(str(last_text))
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=_dt.UTC)
+        if now - last > _dt.timedelta(minutes=session_idle_minutes()):
+            return True
+        if now - last > _dt.timedelta(seconds=60):
+            with self.transaction():
+                self.conn.execute(
+                    f"UPDATE {table} SET last_seen_at = ? WHERE session_hash = ?",
+                    (now.isoformat(timespec="microseconds"), row["session_hash"]),
+                )
+        return False
+
+    # --- Entity retirement (never deletes evidence) ---
+
+    def retire_entity(self, entity_id: str, actor: str, reason: str) -> bool:
+        """Take an entity out of future assessments. Its submissions, runs, findings and scores
+        stay. Returns False if it is already retired."""
+        now = _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
+        with self.audited_transaction():
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO entity_retirements (entity_id, retired_at, retired_by, reason) "
+                "VALUES (?, ?, ?, ?)",
+                (entity_id, now, actor, reason),
+            )
+            if cur.rowcount != 1:
+                return False
+            self.append_audit(action="entity_retired", actor=actor, details={"entity_id": entity_id, "reason": reason})
+        return True
+
+    def reinstate_entity(self, entity_id: str, actor: str) -> bool:
+        """Undo a retirement: the entity is assessed again from the next run."""
+        with self.audited_transaction():
+            cur = self.conn.execute("DELETE FROM entity_retirements WHERE entity_id = ?", (entity_id,))
+            if cur.rowcount != 1:
+                return False
+            self.append_audit(action="entity_reinstated", actor=actor, details={"entity_id": entity_id})
+        return True
+
+    def retired_entities(self) -> set[str]:
+        return {r[0] for r in self.conn.execute("SELECT entity_id FROM entity_retirements")}
 
     def delete_session(self, raw_token: str) -> None:
         session_hash = hashlib.sha256(raw_token.encode()).hexdigest()
@@ -1838,6 +1898,9 @@ class SQLiteStore:
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=datetime.UTC)
         if datetime.datetime.now(datetime.UTC) > expires_at:
+            self.delete_admin_session(raw_token)
+            return None
+        if self._idle_expired("admin_sessions", row):
             self.delete_admin_session(raw_token)
             return None
         return dict(row)
