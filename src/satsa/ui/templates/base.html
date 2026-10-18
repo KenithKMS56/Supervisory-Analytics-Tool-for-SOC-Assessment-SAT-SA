@@ -17,7 +17,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=9.2.5">
+  <link rel="stylesheet" href="/static/style.css?v=9.2.6">
   <script src="/static/echarts.min.js"></script>
   <script src="/static/echarts-theme.js?v=9.0.0"></script>
   {% block head %}{% endblock %}
@@ -337,58 +337,44 @@
   {% endif %}
 
   <script>
-    /* Sideways scrollbars for every wide table (.hscroll-dock and .hscroll-top in
-       style.css): one above the table, pinned to the top of the window, and one below it,
-       pinned to the bottom, so a mouse user can drag across from either end without first
-       scrolling to the table's last row. Keyboard users get the table itself as a focusable
-       region that the arrow keys scroll; the bars are mouse-only copies (aria-hidden). */
+    /* One sideways scrollbar for every wide table (.hscroll-top in style.css), above the
+       table and sticky: a mouse user can drag across from anywhere in a long table without
+       first scrolling to its last row. Keyboard users get the table itself as a focusable
+       region that the arrow keys scroll; the bar is a mouse-only copy (aria-hidden). */
     (function () {
-      function bar(cls) {
-        var el = document.createElement('div');
-        el.className = cls;
-        el.setAttribute('aria-hidden', 'true');
-        el.hidden = true;
-        el.appendChild(document.createElement('div'));
-        return el;
-      }
-
       function attach(wrap) {
-        if (wrap.satsaDock) return;
-        var top = bar('hscroll-top');
-        var dock = bar('hscroll-dock');
-        var bars = [top, dock];
-        wrap.before(top);
-        wrap.after(dock);
-        wrap.satsaDock = dock;
+        if (wrap.satsaBar) return;
+        var bar = document.createElement('div');
+        bar.className = 'hscroll-top';
+        bar.setAttribute('aria-hidden', 'true');
+        bar.hidden = true;
+        bar.appendChild(document.createElement('div'));
+        wrap.before(bar);
+        wrap.satsaBar = bar;
         var labelled = wrap.hasAttribute('aria-label');
 
         function fit() {
           var wide = wrap.scrollWidth > wrap.clientWidth + 1;
           wrap.classList.toggle('has-hdock', wide);
+          bar.hidden = !wide;
           if (wide) {
             wrap.setAttribute('tabindex', '0');
             wrap.setAttribute('role', 'region');
             if (!labelled) wrap.setAttribute('aria-label', 'Wide table: use the arrow keys to scroll sideways');
+            bar.style.width = wrap.getBoundingClientRect().width + 'px';
+            bar.firstChild.style.width = wrap.scrollWidth + 'px';
+            bar.scrollLeft = wrap.scrollLeft;
           } else {
             wrap.removeAttribute('tabindex');
             wrap.removeAttribute('role');
             if (!labelled) wrap.removeAttribute('aria-label');
           }
-          bars.forEach(function (b) {
-            b.hidden = !wide;
-            if (!wide) return;
-            b.style.width = wrap.getBoundingClientRect().width + 'px';
-            b.firstChild.style.width = wrap.scrollWidth + 'px';
-            b.scrollLeft = wrap.scrollLeft;
-          });
         }
-        function follow(source) {
-          [wrap].concat(bars).forEach(function (el) {
-            if (el !== source && Math.abs(el.scrollLeft - source.scrollLeft) > 1) el.scrollLeft = source.scrollLeft;
-          });
-        }
-        [wrap].concat(bars).forEach(function (el) {
-          el.addEventListener('scroll', function () { follow(el); });
+        wrap.addEventListener('scroll', function () {
+          if (Math.abs(bar.scrollLeft - wrap.scrollLeft) > 1) bar.scrollLeft = wrap.scrollLeft;
+        });
+        bar.addEventListener('scroll', function () {
+          if (Math.abs(wrap.scrollLeft - bar.scrollLeft) > 1) wrap.scrollLeft = bar.scrollLeft;
         });
         if (window.ResizeObserver) {
           var ro = new ResizeObserver(fit);

@@ -1116,9 +1116,11 @@ a.stat-card:hover {
 }
 
 /* A wide table's own scrollbar sits under its last row, out of reach for a mouse on a
-   long table (a trackpad's sideways swipe was the only way across). base.html gives it a
-   dock instead: the same scrollbar, pinned to the bottom of the window while the table
-   is on screen, and back under the last row once that is in view. */
+   long table (a trackpad's sideways swipe was the only way across). base.html replaces it
+   with one bar above the table that is sticky, not fixed: it sits above the header row,
+   stays pinned to the top of the window while the rest of the table is on screen, and
+   leaves with the table. --sticky-top is the height of the demonstration banner (set in
+   base.html), which is pinned there too and would otherwise cover it. */
 .table-responsive.has-hdock {
   scrollbar-width: none;
 }
@@ -1127,19 +1129,6 @@ a.stat-card:hover {
   display: none;
 }
 
-.hscroll-dock {
-  position: sticky;
-  bottom: 0;
-  z-index: 5;
-  overflow-x: auto;
-  overflow-y: hidden;
-  background: var(--surface-card);
-  border-top: 1px solid var(--border-default);
-}
-
-/* The same scrollbar above the table, pinned to the top of the window while the table's
-   upper part is off screen. --sticky-top is the height of the demonstration banner (set in
-   base.html), which is pinned there too and would otherwise cover it. */
 .hscroll-top {
   position: sticky;
   top: var(--sticky-top, 0px);
@@ -1150,12 +1139,10 @@ a.stat-card:hover {
   border-bottom: 1px solid var(--border-default);
 }
 
-.hscroll-dock[hidden],
 .hscroll-top[hidden] {
   display: none;
 }
 
-.hscroll-dock > div,
 .hscroll-top > div {
   height: 1px;
 }

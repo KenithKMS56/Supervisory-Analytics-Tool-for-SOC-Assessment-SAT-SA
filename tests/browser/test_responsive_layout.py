@@ -145,11 +145,13 @@ _SCROLLBARS_JS = """
 () => {
   const wrap = document.querySelector("main .table-responsive.has-hdock");
   if (!wrap) return null;
-  const top = wrap.previousElementSibling, dock = wrap.nextElementSibling;
+  const top = wrap.previousElementSibling, after = wrap.nextElementSibling;
   const shown = el => !!el && !el.hidden && el.getBoundingClientRect().height > 0;
   return {
-    top: top && top.className, dock: dock && dock.className,
-    topShown: shown(top), dockShown: shown(dock),
+    top: top && top.className, topShown: shown(top),
+    barsInMain: document.querySelectorAll("main .hscroll-top:not([hidden])").length,
+    wideTables: document.querySelectorAll("main .table-responsive.has-hdock").length,
+    barBelow: !!after && /hscroll/.test(after.className || ""),
     tabindex: wrap.getAttribute("tabindex"), role: wrap.getAttribute("role"),
     label: wrap.getAttribute("aria-label"), topHidden: top && top.getAttribute("aria-hidden"),
   };
@@ -158,7 +160,7 @@ _SCROLLBARS_JS = """
 
 
 @pytest.mark.parametrize("width", (1440, 390))
-def test_a_wide_table_scrolls_from_a_bar_above_it_below_it_and_the_keyboard(
+def test_a_wide_table_scrolls_from_one_sticky_bar_above_it_and_the_keyboard(
     chromium, live_server: LiveServer, width: int
 ):
     context = chromium.new_context(viewport={"width": width, "height": 700})
@@ -169,21 +171,20 @@ def test_a_wide_table_scrolls_from_a_bar_above_it_below_it_and_the_keyboard(
         page.wait_for_load_state("networkidle")
         bars = page.evaluate(_SCROLLBARS_JS)
         assert bars is not None, "the review queue table is not wider than its container"
-        assert bars["top"] == "hscroll-top" and bars["dock"] == "hscroll-dock"
-        assert bars["topShown"] and bars["dockShown"]
-        # The table is one keyboard stop with a name; the two bars are mouse-only copies.
+        assert bars["top"] == "hscroll-top" and bars["topShown"]
+        # One bar per wide table, and none below it.
+        assert bars["barsInMain"] == bars["wideTables"] and not bars["barBelow"]
+        # The table is one keyboard stop with a name; the bar is a mouse-only copy.
         assert bars["tabindex"] == "0" and bars["role"] == "region" and bars["label"]
         assert bars["topHidden"] == "true"
 
         wrap = "document.querySelector('main .table-responsive.has-hdock')"
-        # Dragging the top bar moves the table and the bottom bar with it.
+        # Dragging the bar moves the table.
         page.evaluate(f"{wrap}.previousElementSibling.scrollLeft = 150")
-        page.wait_for_function(
-            f"Math.abs({wrap}.scrollLeft - 150) <= 1 && Math.abs({wrap}.nextElementSibling.scrollLeft - 150) <= 1"
-        )
-        # Scrolling the table (here from the bottom bar) moves the top bar back.
-        page.evaluate(f"{wrap}.nextElementSibling.scrollLeft = 0")
-        page.wait_for_function(f"{wrap}.scrollLeft <= 1 && {wrap}.previousElementSibling.scrollLeft <= 1")
+        page.wait_for_function(f"Math.abs({wrap}.scrollLeft - 150) <= 1")
+        # Scrolling the table itself (a trackpad swipe) moves the bar back.
+        page.evaluate(f"{wrap}.scrollLeft = 0")
+        page.wait_for_function(f"{wrap}.previousElementSibling.scrollLeft <= 1")
 
         # Arrow keys scroll the focused table.
         page.focus("main .table-responsive.has-hdock")
