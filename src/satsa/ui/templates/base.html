@@ -17,7 +17,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=9.2.3">
+  <link rel="stylesheet" href="/static/style.css?v=9.2.5">
   <script src="/static/echarts.min.js"></script>
   <script src="/static/echarts-theme.js?v=9.0.0"></script>
   {% block head %}{% endblock %}
@@ -337,34 +337,58 @@
   {% endif %}
 
   <script>
-    /* Sideways scrollbar dock for every wide table (.hscroll-dock in style.css): a mouse
-       user can drag across without first scrolling to the table's last row. */
+    /* Sideways scrollbars for every wide table (.hscroll-dock and .hscroll-top in
+       style.css): one above the table, pinned to the top of the window, and one below it,
+       pinned to the bottom, so a mouse user can drag across from either end without first
+       scrolling to the table's last row. Keyboard users get the table itself as a focusable
+       region that the arrow keys scroll; the bars are mouse-only copies (aria-hidden). */
     (function () {
+      function bar(cls) {
+        var el = document.createElement('div');
+        el.className = cls;
+        el.setAttribute('aria-hidden', 'true');
+        el.hidden = true;
+        el.appendChild(document.createElement('div'));
+        return el;
+      }
+
       function attach(wrap) {
         if (wrap.satsaDock) return;
-        var dock = document.createElement('div');
-        var spacer = document.createElement('div');
-        dock.className = 'hscroll-dock';
-        dock.setAttribute('aria-hidden', 'true');
-        dock.hidden = true;
-        dock.appendChild(spacer);
+        var top = bar('hscroll-top');
+        var dock = bar('hscroll-dock');
+        var bars = [top, dock];
+        wrap.before(top);
         wrap.after(dock);
         wrap.satsaDock = dock;
+        var labelled = wrap.hasAttribute('aria-label');
 
         function fit() {
           var wide = wrap.scrollWidth > wrap.clientWidth + 1;
           wrap.classList.toggle('has-hdock', wide);
-          dock.hidden = !wide;
-          if (!wide) return;
-          dock.style.width = wrap.getBoundingClientRect().width + 'px';
-          spacer.style.width = wrap.scrollWidth + 'px';
-          dock.scrollLeft = wrap.scrollLeft;
+          if (wide) {
+            wrap.setAttribute('tabindex', '0');
+            wrap.setAttribute('role', 'region');
+            if (!labelled) wrap.setAttribute('aria-label', 'Wide table: use the arrow keys to scroll sideways');
+          } else {
+            wrap.removeAttribute('tabindex');
+            wrap.removeAttribute('role');
+            if (!labelled) wrap.removeAttribute('aria-label');
+          }
+          bars.forEach(function (b) {
+            b.hidden = !wide;
+            if (!wide) return;
+            b.style.width = wrap.getBoundingClientRect().width + 'px';
+            b.firstChild.style.width = wrap.scrollWidth + 'px';
+            b.scrollLeft = wrap.scrollLeft;
+          });
         }
-        wrap.addEventListener('scroll', function () {
-          if (Math.abs(dock.scrollLeft - wrap.scrollLeft) > 1) dock.scrollLeft = wrap.scrollLeft;
-        });
-        dock.addEventListener('scroll', function () {
-          if (Math.abs(wrap.scrollLeft - dock.scrollLeft) > 1) wrap.scrollLeft = dock.scrollLeft;
+        function follow(source) {
+          [wrap].concat(bars).forEach(function (el) {
+            if (el !== source && Math.abs(el.scrollLeft - source.scrollLeft) > 1) el.scrollLeft = source.scrollLeft;
+          });
+        }
+        [wrap].concat(bars).forEach(function (el) {
+          el.addEventListener('scroll', function () { follow(el); });
         });
         if (window.ResizeObserver) {
           var ro = new ResizeObserver(fit);
@@ -375,6 +399,14 @@
         }
         fit();
       }
+
+      var banner = document.getElementById('demoBanner');
+      function stickyTop() {
+        document.documentElement.style.setProperty(
+          '--sticky-top', banner ? banner.getBoundingClientRect().height + 'px' : '0px');
+      }
+      stickyTop();
+      if (banner && window.ResizeObserver) new ResizeObserver(stickyTop).observe(banner);
 
       window.satsaDockScrollbars = function (root) {
         root.querySelectorAll('.table-responsive').forEach(attach);

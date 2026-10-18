@@ -130,6 +130,11 @@ def test_wide_tables_get_a_scrollbar_pinned_to_the_window_bottom():
     dock = css[css.index(".hscroll-dock {") :]
     assert "position: sticky" in dock[: dock.index("}")]
     assert "bottom: 0" in dock[: dock.index("}")]
+    # And the same bar above the table, pinned to the top (tests/browser checks it scrolls).
+    assert "bar('hscroll-top')" in html
+    top = css[css.index(".hscroll-top {") :]
+    assert "position: sticky" in top[: top.index("}")]
+    assert "top: var(--sticky-top, 0px)" in top[: top.index("}")]  # under the demo banner, if any
 
 
 STAT = re.compile(

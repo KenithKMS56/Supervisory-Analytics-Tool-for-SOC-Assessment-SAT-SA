@@ -1137,12 +1137,32 @@ a.stat-card:hover {
   border-top: 1px solid var(--border-default);
 }
 
-.hscroll-dock[hidden] {
+/* The same scrollbar above the table, pinned to the top of the window while the table's
+   upper part is off screen. --sticky-top is the height of the demonstration banner (set in
+   base.html), which is pinned there too and would otherwise cover it. */
+.hscroll-top {
+  position: sticky;
+  top: var(--sticky-top, 0px);
+  z-index: 5;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--surface-card);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.hscroll-dock[hidden],
+.hscroll-top[hidden] {
   display: none;
 }
 
-.hscroll-dock > div {
+.hscroll-dock > div,
+.hscroll-top > div {
   height: 1px;
+}
+
+.table-responsive.has-hdock:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
 }
 
 /* Review queue: one queue per examiner disposition. */

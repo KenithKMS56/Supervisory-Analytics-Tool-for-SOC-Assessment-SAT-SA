@@ -139,3 +139,71 @@ def test_sign_in_screens_fit(chromium, live_server: LiveServer, width: int):
         assert errors == []
     finally:
         context.close()
+
+
+_SCROLLBARS_JS = """
+() => {
+  const wrap = document.querySelector("main .table-responsive.has-hdock");
+  if (!wrap) return null;
+  const top = wrap.previousElementSibling, dock = wrap.nextElementSibling;
+  const shown = el => !!el && !el.hidden && el.getBoundingClientRect().height > 0;
+  return {
+    top: top && top.className, dock: dock && dock.className,
+    topShown: shown(top), dockShown: shown(dock),
+    tabindex: wrap.getAttribute("tabindex"), role: wrap.getAttribute("role"),
+    label: wrap.getAttribute("aria-label"), topHidden: top && top.getAttribute("aria-hidden"),
+  };
+}
+"""
+
+
+@pytest.mark.parametrize("width", (1440, 390))
+def test_a_wide_table_scrolls_from_a_bar_above_it_below_it_and_the_keyboard(
+    chromium, live_server: LiveServer, width: int
+):
+    context = chromium.new_context(viewport={"width": width, "height": 700})
+    try:
+        page = context.new_page()
+        sign_in(page, live_server.base_url, "analyst", "ChangeMe-Analyst#2026")
+        page.goto(f"{live_server.base_url}/queue")
+        page.wait_for_load_state("networkidle")
+        bars = page.evaluate(_SCROLLBARS_JS)
+        assert bars is not None, "the review queue table is not wider than its container"
+        assert bars["top"] == "hscroll-top" and bars["dock"] == "hscroll-dock"
+        assert bars["topShown"] and bars["dockShown"]
+        # The table is one keyboard stop with a name; the two bars are mouse-only copies.
+        assert bars["tabindex"] == "0" and bars["role"] == "region" and bars["label"]
+        assert bars["topHidden"] == "true"
+
+        wrap = "document.querySelector('main .table-responsive.has-hdock')"
+        # Dragging the top bar moves the table and the bottom bar with it.
+        page.evaluate(f"{wrap}.previousElementSibling.scrollLeft = 150")
+        page.wait_for_function(
+            f"Math.abs({wrap}.scrollLeft - 150) <= 1 && Math.abs({wrap}.nextElementSibling.scrollLeft - 150) <= 1"
+        )
+        # Scrolling the table (here from the bottom bar) moves the top bar back.
+        page.evaluate(f"{wrap}.nextElementSibling.scrollLeft = 0")
+        page.wait_for_function(f"{wrap}.scrollLeft <= 1 && {wrap}.previousElementSibling.scrollLeft <= 1")
+
+        # Arrow keys scroll the focused table.
+        page.focus("main .table-responsive.has-hdock")
+        page.keyboard.press("ArrowRight")
+        page.keyboard.press("ArrowRight")
+        page.wait_for_function(f"{wrap}.scrollLeft > 0 && {wrap}.previousElementSibling.scrollLeft > 0")
+
+        # Halfway down the table the top bar is pinned to the top of the window, just under the
+        # demonstration banner if there is one, and nothing covers it.
+        page.evaluate(f"window.scrollTo(0, {wrap}.getBoundingClientRect().top + window.scrollY + 300)")
+        pinned = page.evaluate(
+            f"""() => {{
+              const bar = {wrap}.previousElementSibling, r = bar.getBoundingClientRect();
+              const banner = document.getElementById('demoBanner');
+              const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+              return {{top: r.top, expected: banner ? banner.getBoundingClientRect().bottom : 0,
+                       visible: !!hit && (hit === bar || bar.contains(hit)), hit: hit && hit.outerHTML.slice(0, 80)}};
+            }}"""
+        )
+        assert abs(pinned["top"] - pinned["expected"]) <= 1, f"top bar not pinned: {pinned}"
+        assert pinned["visible"], f"top bar is covered by {pinned['hit']}"
+    finally:
+        context.close()
