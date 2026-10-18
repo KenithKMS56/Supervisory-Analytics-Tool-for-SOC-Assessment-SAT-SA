@@ -17,7 +17,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=9.1.1">
+  <link rel="stylesheet" href="/static/style.css?v=9.2.3">
   <script src="/static/echarts.min.js"></script>
   <script src="/static/echarts-theme.js?v=9.0.0"></script>
   {% block head %}{% endblock %}
@@ -188,9 +188,9 @@
       {% if current_identity %}
         <div class="floating-nav-identity" title="Logged in as {{ current_identity.username }} ({{ current_identity.role }}){% if current_identity.cse_id %} | Scoped: {{ current_identity.cse_id }}{% endif %}{% if current_identity.org_id %} | Org: {{ current_identity.org_name or current_identity.org_id }}{% endif %}">
           <span class="floating-nav-user-chip">{{ current_identity.username }}</span>
-          <span style="font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: rgba(59, 130, 246, 0.12); color: var(--accent-blue); font-weight: 600;">{% if nav_is_analyst %}NCIIPC Analyst{% elif is_examiner(current_identity.role) %}NCIIPC Examiner{% else %}{{ current_identity.role }}{% endif %}</span>
+          <span class="floating-nav-role" style="font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: rgba(59, 130, 246, 0.12); color: var(--accent-blue); font-weight: 600;">{% if nav_is_analyst %}NCIIPC Analyst{% elif is_examiner(current_identity.role) %}NCIIPC Examiner{% else %}{{ current_identity.role }}{% endif %}</span>
           {% if current_identity.cse_id %}
-            <span style="font-size: 0.65rem; padding: 2px 5px; border-radius: 4px; background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); font-family: 'JetBrains Mono', monospace; font-weight: 600;" title="Scoped CSE: {{ current_identity.cse_id }}">{{ current_identity.cse_id }}</span>
+            <span class="floating-nav-scope" style="font-size: 0.65rem; padding: 2px 5px; border-radius: 4px; background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); font-family: 'JetBrains Mono', monospace; font-weight: 600;" title="Scoped CSE: {{ current_identity.cse_id }}">{{ current_identity.cse_id }}</span>
           {% endif %}
           <form method="post" action="/logout" style="display:inline; margin:0;">
             <button type="submit" class="floating-nav-logout-action" title="Log out">

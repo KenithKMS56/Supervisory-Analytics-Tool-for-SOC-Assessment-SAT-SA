@@ -104,6 +104,18 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("POST", "/api/v1/cases"): (REVIEW, False),
     ("GET", "/api/v1/cases/{case_id}"): (SUP_READ, False),
     ("POST", "/api/v1/cases/{case_id}/transitions"): (REVIEW, False),
+    # Entity context: staff record maintenance; examiners approve, except and decide applicability.
+    ("POST", "/entity/{entity_id}/maintenance"): (ALL, False),
+    ("POST", "/entity/{entity_id}/maintenance/{window_id}/approve"): (REVIEW, False),
+    ("POST", "/entity/{entity_id}/maintenance/{window_id}/revoke"): (REVIEW, False),
+    ("POST", "/entity/{entity_id}/exceptions"): (REVIEW, False),
+    ("POST", "/entity/{entity_id}/exceptions/{exception_id}/approve"): (REVIEW, False),
+    ("POST", "/entity/{entity_id}/exceptions/{exception_id}/revoke"): (REVIEW, False),
+    ("POST", "/entity/{entity_id}/applicability"): (REVIEW, False),
+    ("POST", "/entity/{entity_id}/applicability/{decision_id}/revoke"): (REVIEW, False),
+    # A user's own saved portfolio views.
+    ("POST", "/portfolio/views"): (SUP_READ, False),
+    ("POST", "/portfolio/views/{view_id}/delete"): (SUP_READ, False),
     ("POST", "/upload"): (INGEST, False),
     ("POST", "/upload/add-entity"): (INGEST, False),
     ("POST", "/upload/delete-entity/{entity_id}"): (INGEST, False),
@@ -231,6 +243,10 @@ def _satsa_url(path: str, finding_id: str) -> str:
         .replace("{case_id}", "CASE-000000000000")  # well-formed, no such case
         .replace("{attachment_id}", "ATT-000000000000")
         .replace("{task_id}", "BLT-000000000000")
+        .replace("{window_id}", "MW-000000000000")  # well-formed, none of these exist
+        .replace("{exception_id}", "EXC-000000000000")
+        .replace("{decision_id}", "APD-000000000000")
+        .replace("{view_id}", "VIEW-000000000000")
     )
 
 

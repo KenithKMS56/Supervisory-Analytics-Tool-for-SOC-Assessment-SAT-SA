@@ -1,4 +1,4 @@
-# Threat model (version 2, Phase 3)
+# Threat model (version 3, Phase 4)
 
 Scope: one SAT-SA deployment, made up of:
 - the Admin Portal (:8000);
@@ -57,6 +57,8 @@ release gate that is still **blocked** (docs/release_readiness.md).
 | T16 | Rewriting a supervisory decision or its history; lost update by a concurrent edit | Append-only `case_events` (triggers refuse UPDATE/DELETE); superseding decisions instead of edits; every action in the audit chain; `expected_version` check inside one IMMEDIATE transaction | `tests/test_cases.py::test_history_is_immutable_and_corrections_supersede`, `::test_conflicting_concurrent_edits_are_detected` |
 | T17 | Self-approval of a decision | Owner-only actions; closure and verification need an examiner other than the owner and the decision maker; adjudication by a third examiner | `tests/test_cases.py::test_unauthorised_transitions_fail`, `::test_a_disagreement_must_be_adjudicated_by_a_third_examiner` |
 | T18 | Supervisor-only evidence leaking to an entity, or scores leaking into a blind task | Request packages carry no score, peer, severity, evidence record or other entity; blind-task pages are built without any scored field until the reveal | `tests/test_case_packages.py::test_the_request_package_carries_only_what_the_entity_needs`, `tests/test_blind_tasks.py::test_a_task_serves_nothing_scored_until_its_examiner_reveals_it` |
+| T19 | Hiding a concern through context: a self-approved or open-ended exception, maintenance stretched over a silent period, or a rule ruled not applicable | Exceptions and maintenance need an examiner other than the requester (also a database `CHECK`); exceptions expire within 366 days and never cover a critical finding; maintenance covers at most 92 days and only its asset and dates; an excepted finding is still recorded and shown; every request, approval and revocation is in the audit chain; runs record which context was in force and replays use it | `tests/test_context_analytics.py`, `tests/test_context_http.py` |
+| T20 | Stored text rendered as markup in a downloaded report | The HTML reports escape every value; they are built per request in a private temporary directory, not a shared path | `tests/test_context_http.py::test_report_html_escapes_stored_text` |
 
 ## Residual risks (accepted or open)
 

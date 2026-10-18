@@ -14,7 +14,7 @@ criterion of the brief and uses one of four statuses:
 | **blocked** | Blocked by a missing external resource, named in the row. |
 | **not implemented** | Not done yet. The phase that will do it is named. |
 
-Last updated: end of Phase 3 (branch `feat/product-brief-phase3`).
+Last updated: end of Phase 4 (branch `feat/product-brief-phase4`).
 
 ## §2 Defect register
 
@@ -27,27 +27,29 @@ Last updated: end of Phase 3 (branch `feat/product-brief-phase3`).
 | B05 | Revisions are not double-counted | verified | `test_b05_*`, `tests/test_selection.py::test_a_correction_in_a_later_batch_*` |
 | B06 | Config identity covers every result-affecting file | verified | `test_b06_*`: a breadth-weight change alters `config_hash` and `fingerprint` |
 | B07 | `/docs` works offline | verified | Swagger UI 5.17.14 vendored under `ui/static/vendor/swagger-ui`; `tests/test_offline_docs.py` (only local assets, validator badge off, needs a session); `tests/browser/test_offline_browser.py::test_docs_renders_offline` renders it in Chromium with every non-local request blocked |
-| B08 | No overflow at 390 px or on desktop upload | not implemented | Phase 4 (Playwright layout assertions) |
+| B08 | No overflow at 390 px or on desktop upload | verified | `tests/browser/test_responsive_layout.py` failed first (upload scrolled sideways by 178 px at 1440 px; 8 pages overflowed at 390-1024 px). Fixed in `style.css` and the templates: contained table scrolling, collapsing grids, a narrower navigation bar, tooltips that take no room. Every analyst and examiner page, the sign-in and splash pages, at 1440/1024/768/390 px: no page-level overflow, no browser error |
 | extra | Overwrite-on-error data loss in the Parquet writer | verified | Writer removed. Published files are immutable (`tests/test_migrations.py::test_a_published_file_is_never_overwritten`, `test_a_batch_is_published_whole_or_not_at_all`) |
 | extra | KPI case mismatch (`mttr` vs `MTTR`) | verified | `test_declared_kpis_are_compared_whatever_their_case`, failing with `47f10c9`'s EG10 |
 | extra | `seed_default_admin` re-promotes admin on every start | verified | Seeding is demo-only and never re-promotes (`tests/test_deployment_setup.py::test_a_demoted_admin_account_stays_demoted_after_a_restart`) |
-| extra | Findings CSV covers all runs; HTML report always uses the latest run | not implemented | Phase 4 |
+| extra | Findings CSV covers all runs; HTML report always uses the latest run | verified | Reports and exports take `run_id` (default latest), are built per request in a private temporary directory and escape every value (`tests/test_context_http.py::test_reports_follow_the_selected_run_*`, `test_report_html_escapes_stored_text`) |
+| extra | `/api/v1/entities` returned every run's scores (one row per entity per run) | verified | one run (default latest), with coverage (`test_the_entities_api_returns_one_run_*`) |
+| extra | Excluded maintenance days were counted only for assets that stayed flagged | verified | found by `test_maintenance_excludes_only_its_own_asset_and_days` while writing it; counted over every asset considered |
 
 ## §3 Evidence eligibility and risk classification (release blocker)
 
 | Requirement | Status | Evidence / remaining work |
 |---|---|---|
 | Persisted per-rule result states with reason, missing inputs and population | verified | `rule_results` table (migration v1); B01 tests |
-| One rule-contract registry | verified | `satsa.rules.contracts`, read by the runner. **Not yet read by** the ingestion preview, UI or reports (Phase 4) |
-| `not_applicable` only through audited applicability decisions | implemented, not independently validated | `applicability_decisions` table with audit entries; the runner honours them. **No UI or API to record them yet** (moved to Phase 4, with entity context) |
+| One rule-contract registry | verified | `satsa.rules.contracts`, read by the runner; the UI and reports read the per-rule results and coverage it produces. **The ingestion preview does not read it yet** (Phase 5, with the mapping preview) |
+| `not_applicable` only through audited applicability decisions | verified | recorded and revoked by examiners on the entity page (`/entity/{id}/applicability`), audited, resolved as of the run's time so replays see what the run saw (`tests/test_context_http.py::test_an_exception_needs_a_second_examiner_*`) |
 | Table states: omitted, declared empty, rejected, stale | verified | runner `_table_status`; `tests/test_ingest.py` (submitted-empty, not submitted, unreadable), `test_rule_is_not_assessed_when_there_is_no_manifest` |
 | Complete-but-empty escalation evidence can support EG03 | verified | `tests/test_ingest.py::test_rule_runs_when_its_table_was_submitted_empty` |
 | Missing one input does not erase independently supported findings | verified | `test_b01_missing_escalation_table_*` |
 | Unassessable domain is unknown, not 0 | verified | nullable `domain_scores.score`; B01 test |
 | Classification status and coverage | verified | `entity_scores.classification_status` and `coverage`; thresholds in `config/scoring.yaml` `evidence_coverage` |
 | No renormalising a tiny subset into apparent assurance | implemented, not independently validated | Below 25 % coverage an entity gets no index band, only "Insufficient Evidence" or a finding floor. **Partially assessable entities still show an index band** computed over their known domains. The 25 % and 90 % thresholds are proposed, not validated |
-| Limitations shown on portfolio, entity, queue, APIs and exports | not implemented | Stored and returned by the run and API and printed by the CLI; portfolio shows "n/a" and an insufficient-evidence badge. Entity, queue and export display is Phase 4 |
-| Separate data-request priority and observed-risk priority | not implemented | `data_request_priority` stored per entity; display is Phase 4 |
+| Limitations shown on portfolio, entity, queue, APIs and exports | verified | portfolio Evidence column, entity page evidence line, queue badge for entities not fully assessable, `/api/v1/entities` coverage fields, coverage in the HTML/PDF reports and the findings CSV (`tests/test_context_http.py`) |
+| Separate data-request priority and observed-risk priority | implemented, not independently validated | the portfolio's Next action asks for the missing data separately from the observed-risk review, and lists what is missing. The stored `data_request_priority` ranking itself is not displayed |
 
 ## §4 Shared ingestion and connector framework (release blocker)
 
@@ -63,8 +65,8 @@ Last updated: end of Phase 3 (branch `feat/product-brief-phase3`).
 | Overlap policy across month, quarter and half labels; corrections as revisions | verified | `reject_overlap`, `revision_of`, `parent_batch_id`; B03 test |
 | Upload and archive limits (size, entries, expanded size, ratio) | implemented, not independently validated | `check_zip_limits`, `_copy_limited`. **No parse-time or staging-disk limit yet**; zip-bomb tests are Phase 5 |
 | Held submissions need an explicit publish or discard decision | verified | `tests/test_migrations.py::test_a_held_batch_*`; `/batches/{id}/publish|discard` (RBAC matrix updated) |
-| Mapping preview before publication | not implemented | Phase 4 |
-| Connector contract, conformance tests, compatibility matrix | not implemented | Fixture tests exist (`tests/test_connectors.py`). Matrix in Phase 4. Every connector is at most "fixture-verified" |
+| Mapping preview before publication | not implemented | Phase 5 |
+| Connector contract, conformance tests, compatibility matrix | not implemented | Fixture tests exist (`tests/test_connectors.py`). Matrix in Phase 5. Every connector is at most "fixture-verified" |
 | Production-verified connector | blocked | needs an authentic, authorised vendor export |
 
 ## §5 Versioned data, time semantics and atomic publication (release blocker)
@@ -74,8 +76,8 @@ Last updated: end of Phase 3 (branch `feat/product-brief-phase3`).
 | Immutable batches with per-table manifests | verified | `satsa.store.catalog`; `tests/test_migrations.py` |
 | Record revisions by business key, never full-row dedup | verified | `VERSION_KEYS`; B05 and selection tests |
 | Explicit window, source snapshot, per-table selection rules, masking of later state | verified | `satsa.scoring.selection`; `tests/test_selection.py`; snapshot reads `test_a_reader_can_load_an_earlier_source_snapshot` |
-| Entity timezone in operational interpretation | not implemented | Phase 4 (NS03 and context) |
-| Effective-dated inventory | not implemented | Phase 4. Inventory is the latest version in the snapshot |
+| Entity timezone in operational interpretation | verified | NS03 v1.1.0 and the anomaly scan read hours in the entity's IANA zone (DuckDB ICU, offline); unknown zones read as UTC and said so (`tests/test_context_analytics.py::test_fractional_offset_*`, `test_daylight_saving_*`, `test_unknown_time_zone_*`) |
+| Effective-dated inventory | verified | optional asset `in_service_from` / `in_service_to`; NS01 and NS06 v1.1.0 respect them (`test_days_outside_an_assets_in_service_dates_are_not_silence`). Older files load as "in service throughout" |
 | Atomic publication; readers see whole batches only | verified | `test_a_batch_is_published_whole_or_not_at_all` |
 | Orphan and crash recovery, idempotent | verified | `test_files_left_by_an_interrupted_writer_*`; `satsa recover` |
 | Run results published in one transaction; failed runs never latest | verified | `AssessmentRunner` uses `audited_transaction`. A failed run leaves no row and writes a `run_failed` audit entry |
@@ -89,7 +91,7 @@ Last updated: end of Phase 3 (branch `feat/product-brief-phase3`).
 |---|---|---|
 | Full config snapshots and hashes; analytical fingerprint distinct from run id | verified | `run_config_snapshots`, `runs.fingerprint`; B06 test |
 | Old finding pages read the run's parameters | verified | finding page uses the run's snapshot (`tests/test_finding_page.py`) |
-| Reports read the run's parameters | not implemented | Phase 4 |
+| Reports read the run's parameters | verified | HTML, PDF and CSV reports are built from one run's stored results, coverage, recorded cohort and exceptions (`tests/test_context_http.py`) |
 | Offline replay and comparison | verified | `satsa replay`, `tests/test_replay.py` (reproduces after a correction and a configuration change) |
 | Replay bundles with integrity manifest | verified (as a backup) | A backup carries `manifest.json` with every file's hash; restore checks it before writing, then replays a selected run in the restored instance and compares fingerprints (`tests/test_backup_restore.py::test_a_restored_instance_reproduces_an_assessment`, `test_a_damaged_backup_is_refused_*`). There is no separate, smaller replay-only bundle |
 | Rule-pack draft → approve → active → retired lifecycle | not implemented | Signed import and export exist; the lifecycle is pending |
@@ -105,7 +107,7 @@ Last updated: end of Phase 3 (branch `feat/product-brief-phase3`).
 | Retries never duplicate runs or batches; unsafe jobs are not retried | verified | deterministic `RUN-<job>` / `BATCH-<job>-a<n>` ids; `test_an_import_retry_continues_*`, `test_a_job_that_is_unsafe_to_retry_*` |
 | Duplicate pending work is not queued twice | verified | unique fingerprint index; `test_the_same_pending_work_is_not_queued_twice` |
 | Cancellation, structured errors, stage, worker liveness on a job page and API | verified | `/jobs`, `/jobs/{id}`, `/api/v1/jobs/{id}`; `test_cancelling_*`, `test_a_failure_records_*`, `test_the_jobs_page_says_when_a_worker_is_alive` |
-| Report and export generation as jobs | not implemented | PDF and CSV exports still run in the request (Phase 4, with reports reading the run snapshot) |
+| Report and export generation as jobs | not implemented | Reports now read one run's snapshot and are built in a private temporary directory, but still inside the request (Phase 5) |
 | Bounded concurrency beyond one worker | not implemented | One worker per deployment (single writer). Several workers are safe by lease, but untested under load (Phase 5) |
 | First-run setup with a one-time token; production starts empty | verified | `satsa.deployment`; `tests/test_deployment_setup.py` (no accounts, no published passphrase, token works once, guessing throttled, CLI path) |
 | Demo mode opt-in, isolated, labelled | verified | `SATSA_DEMO`; banner on both portals; a demo process refuses production data (`test_a_demo_process_refuses_production_data`); docs/first_run_setup.md |
@@ -113,7 +115,8 @@ Last updated: end of Phase 3 (branch `feat/product-brief-phase3`).
 | Health and readiness endpoints | verified | `/healthz`, `/readyz` (database, worker heartbeat, free disk); `tests/test_backup_restore.py::test_health_and_readiness` |
 | Retention cleanup; redacted diagnostics package | verified | `satsa ops retention` (old job inputs only, audited), `satsa ops diagnostics`; `test_retention_*`, `test_the_diagnostics_package_*` |
 | Memory preflight before large assessments | not implemented | Phase 5 (with benchmarks) |
-| Usability: portfolio, filters, saved views, B08 | not implemented | Phase 4 |
+| Usability: portfolio (who, why, evidence sufficiency, next action), filter/search/sort, saved views, run selection, B08, labelled fields, keyboard-reachable help, chart table alternative | verified | `tests/test_context_http.py::test_the_portfolio_says_why_*`, `tests/browser/test_responsive_layout.py` (overflow, browser errors, unlabelled fields, unreachable tooltips at four widths) |
+| Usability: side-by-side review panel, contextual help throughout, every chart with a table alternative | not implemented | the entity radar has a table alternative; the portfolio heatmap and trend chart do not yet (Phase 5) |
 
 ## §10 Access control, privacy and secure defaults
 
@@ -132,13 +135,13 @@ Last updated: end of Phase 3 (branch `feat/product-brief-phase3`).
 | Threat model and ASVS checklist | implemented, not independently validated | docs/security/threat_model.md, docs/security/asvs_checklist.md (self-assessed; rows marked partial or not implemented are listed there) |
 | Reviewer / approver and read-only auditor roles | not implemented (as roles) | Case sign-off, verification and adjudication are enforced between *different examiner accounts* (Phase 3, `tests/test_cases.py`); no distinct reviewer or auditor role. Rule-pack approval: Phase 4 |
 | Entity-scoped operator accounts | not implemented | Analysts and examiners are portfolio-wide by design (permission matrix) |
-| Configurable branding (no hard-coded regulator wording in product chrome) | not implemented | Phase 4 |
+| Configurable branding (no hard-coded regulator wording in product chrome) | not implemented | Phase 5 |
 
 ## §11 Offline distribution, upgrades and recovery
 
 | Requirement | Status | Evidence / remaining work |
 |---|---|---|
-| Versioned migrations, `satsa migrate`, `verify-data`, `recover` | verified | Phase 1; operational migrations v1–v7, catalog v1–v2 (docs/migrations.md) |
+| Versioned migrations, `satsa migrate`, `verify-data`, `recover` | verified | Phase 1; operational migrations v1–v8, catalog v1–v2 (docs/migrations.md) |
 | Local API docs (B07) and no external requests from the UI | verified | see B07; `tests/browser/test_offline_browser.py::test_main_pages_make_no_external_requests` |
 | Backup: consistent snapshot of SQLite, published Parquet, held batches, job inputs, secrets, case evidence files | verified | `satsa backup` under the catalog writer lock with the SQLite backup API; `tests/test_backup_restore.py` (incl. `test_case_evidence_files_are_backed_up_and_checked_on_restore`) |
 | Optional backup encryption | verified | AES-256-GCM in chunks, scrypt key derivation; tampering detected (`test_an_encrypted_backup_round_trips_and_detects_tampering`) |
@@ -171,10 +174,23 @@ Last updated: end of Phase 3 (branch `feat/product-brief-phase3`).
 
 ## §7, §12
 
-| Section | Status |
-|---|---|
-| §7 Context-aware analytics and peers | not implemented (Phase 4) |
-| §12 Data-model guidance | followed for Phase 1–3 changes (additive migrations, immutable evidence and decision history, projections separate from events, optimistic concurrency, retirement instead of deletion). Examiner routes split into `satsa.api.case_routes` |
+| Requirement | Status | Evidence / remaining work |
+|---|---|---|
+| §7 Entity context: timezone, schedule, SOC model, effective-dated inventory, approved maintenance, documented exceptions | verified | `satsa.context`, migration v8; docs/analytics_context.md; `tests/test_context_analytics.py`, `tests/test_context_http.py` |
+| §7 Exceptions: reason, scope, evidence, approver, expiry; never a permanent hiding place | verified | second-examiner approval (also a database `CHECK`), expiry within 366 days, critical findings never covered, excepted findings kept and shown, next run after expiry or revocation counts them again (`test_a_run_records_each_cohort_and_applies_exceptions_*`) |
+| §7 Maintenance changes only approved scope and time | verified | `test_maintenance_excludes_only_its_own_asset_and_days`, `test_maintenance_needs_a_different_examiners_approval_*` |
+| §7 Missing input is not monitoring silence | verified | a day with no telemetry row is not counted as silent (`test_maintenance_excludes_only_*`); missing tables make a rule `insufficient_evidence`, never a finding (Phase 1, B01) |
+| §7 Fractional-offset and daylight-saving fixtures | verified | Kathmandu +05:45; New York EST/EDT (`tests/test_context_analytics.py`) |
+| §7 Peer cohorts by sector, size, SOC model and schedule, without over-partitioning; membership, exclusions, fallback, denominator, minimum support recorded | verified | `satsa.peers.grouping.PeerResolver.resolve`, `peer_comparisons` table; `test_sparse_cohorts_are_exploratory_*`, `test_a_small_portfolio_is_not_split_by_soc_model` |
+| §7 Sparse cohorts flagged exploratory; pages show the recorded cohort | verified | `_peer_cohort.html` on entity and finding pages; reports state it |
+| §7 Each displayed comparison reproducible from what the run recorded | verified | NS03 records the peer ids and denominator it used; the cohort is stored per run; replay resolves context as of the run (`test_a_run_records_*`) |
+| §7 Provider-level signals with affected / assessable / group size and comparison rate; a hypothesis, not causation; ranked and bounded | verified | `satsa.rules.systemic` (Fisher exact p, Benjamini-Hochberg q), portfolio columns; `test_provider_leads_report_*` |
+| §7 False-discovery rate of exploratory leads on held-out data | blocked | needs held-out, independently labelled data (§14) |
+| §7 Confidence relabelled as evidence support; noisy-OR not presented as a probability | verified | finding page, reports, methodology §4.2; `tests/test_finding_page.py` (section "4. Evidence support and limitations") |
+| §7 Correlated-rule and sensitivity evaluation on reviewed outcomes | not implemented | needs reviewed outcomes (§14); scores are presented as ranking aids meanwhile |
+| §7 Anomaly baselines never include later information | verified | time-shift baseline from the reference months only; CUSUM/EWMA default to a leading phase-I baseline (`test_time_shift_baseline_is_fixed_*`; `tests/test_anomaly_scan.py::test_cusum_spread_floor_*` updated: a later shift is now detected instead of absorbed) |
+| §7 Reporting-law applicability as versioned, authorised policy | not implemented | NS07 still applies its configured rule; per-entity applicability decisions are available (above) |
+| §12 Data-model guidance | followed for Phase 1–4 changes (additive migrations, immutable evidence and decision history, projections separate from events, optimistic concurrency, retirement instead of deletion, context resolved as of a time). Examiner routes in `satsa.api.case_routes`, context routes in `satsa.api.context_routes` | |
 
 ## §13 – §14 Gates
 
@@ -183,7 +199,8 @@ Last updated: end of Phase 3 (branch `feat/product-brief-phase3`).
 | Full automated suite, lint, types | verified (end of Phase 1, local Windows 11 / Python 3.13): `coverage run -m pytest tests` 1271 passed, 33 skipped, 0 failed; branch+statement coverage 88 %; `ruff check` clean; `mypy src` clean |
 | Full automated suite, lint, types (end of Phase 2) | verified (local Windows 11 / Python 3.13, 2026-10-17): `coverage run -m pytest tests` 1379 passed, 54 skipped, 0 failed. All 54 skips are the RBAC matrix's "public route: exercised once anonymously" entries; no browser test was skipped. Statement coverage of `src/` 89 % (`coverage report --include="src/*"`; branch coverage not measured in this run, so not comparable with Phase 1's figure). `ruff check src tests` clean; `mypy src` clean |
 | Full automated suite, lint, types (end of Phase 3) | verified (local Windows 11 / Python 3.13, 2026-10-17): `coverage run -m pytest tests` 1479 passed, 54 skipped, 0 failed. All 54 skips are again the RBAC matrix's "public route: exercised once anonymously" entries; every browser test ran. Statement coverage of `src/` 90 % (`coverage report --include="src/*"`). `ruff check src tests` clean; `mypy src` clean. The first full run found 2 failures, both fixed without weakening a test: the v7 migration's name contained the word "examiner" and so tripped the diagnostics package's no-usernames check (the migration was renamed before release), and the offline page sweep had no ids for the new case, attachment and task routes (it now creates a real case with an evidence file and a real blind task, and requests the task page as its assigned examiner) |
-| Browser tests (Playwright) | verified for Phase 2 scope: `tests/browser/test_offline_browser.py` runs a real server process and Chromium 1248 with every non-local request blocked (`/docs` renders; main pages make no external request and raise no browser error; the block itself is proven). Phase 3 adds `tests/browser/test_case_workflow_browser.py`: two examiners in two browser sessions open, assign and decide a case, record a disagreement, and see closure blocked; the case page does not scroll sideways at 390 px. Layout assertions on every page at 1440/1024/768/390 px (B08) and the full upload-to-report workflow are Phases 4 and 5 |
+| Full automated suite, lint, types (end of Phase 4) | verified (local Windows 11 / Python 3.13, 2026-10-18): `coverage run -m pytest tests` 1560 passed, 54 skipped, 0 failed. All 54 skips are again the RBAC matrix's "public route: exercised once anonymously" entries (rechecked with `-rs`); every browser test ran, and `tests/browser` was re-run after the last stylesheet change (16 passed). Statement coverage of `src/` 90 % (`coverage report --include="src/*"`). `ruff check src tests` clean; `mypy src` clean. Intended test changes, none weakening an assertion: the golden snapshot was regenerated, and only the NS01/NS03 rationale text, the systemic rationale text and the asset table's new null columns changed (scores and severities identical); the anomaly test now expects the step shift to be detected, because the baseline no longer includes the shifted months; the migration test expects versions 1-8 |
+| Browser tests (Playwright) | verified for Phase 2 scope: `tests/browser/test_offline_browser.py` runs a real server process and Chromium 1248 with every non-local request blocked (`/docs` renders; main pages make no external request and raise no browser error; the block itself is proven). Phase 3 adds `tests/browser/test_case_workflow_browser.py`: two examiners in two browser sessions open, assign and decide a case, record a disagreement, and see closure blocked; the case page does not scroll sideways at 390 px. Phase 4 adds `tests/browser/test_responsive_layout.py`: every analyst and examiner page plus sign-in and splash at 1440/1024/768/390 px, with no page-level overflow, no browser error, no unlabelled field and no keyboard-unreachable tooltip (B08). The full upload-to-report workflow in the browser is Phase 5 |
 | Security tests and threat model | implemented, not independently validated: threat model, ASVS self-assessment, CSRF, credential, session, MFA, CSV-injection and RBAC tests (Phase 2). XSS, SQLi, path-traversal and zip-bomb suites are Phase 5 |
 | Independent penetration test | blocked: needs an external tester |
 | Benchmarks on the declared reference hardware | blocked: needs the declared 4-vCPU / 8-GiB machine; local results only |

@@ -28,7 +28,7 @@
 {% endif %}
 
 <!-- Top Stats Grid -->
-<div class="stats-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 2rem;">
+<div class="stats-grid" style="margin-bottom: 2rem;">
   <div class="stat-card">
     <div class="stat-label">Registered CSE Entities</div>
     <div class="stat-value" style="color: var(--accent-blue);">{{ all_entities|length }}</div>
@@ -51,7 +51,7 @@
   </div>
 </div>
 
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; margin-bottom: 2rem;">
+<div class="grid-2" style="gap: 2rem; margin-bottom: 2rem;">
 
   <!-- Card 1: Add New Entity (Onboarding) -->
   <div class="card">
@@ -72,13 +72,13 @@
     </p>
 
     <form method="post" action="/upload/add-entity">
-      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+      <div class="grid-2" style="gap: 1rem; margin-bottom: 1rem;">
         <div>
-          <label style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Entity ID (Unique Code):</label>
-          <input type="text" name="entity_id" placeholder="e.g. CSE-11, GRID-NORTH, SBI-SOC" required class="form-control" style="font-family: var(--font-mono); text-transform: uppercase;">
+          <label for="reg-entity-id" style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Entity ID (Unique Code):</label>
+          <input type="text" id="reg-entity-id" name="entity_id" placeholder="e.g. CSE-11, GRID-NORTH, SBI-SOC" required class="form-control" style="font-family: var(--font-mono); text-transform: uppercase;">
         </div>
         <div>
-          <label style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Critical Sector:</label>
+          <label for="sector_select" style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Critical Sector:</label>
           <select name="sector" id="sector_select" class="form-control" required onchange="toggleCustomSector(this)">
             <option value="Power">Power, Grid & Renewable Energy</option>
             <option value="Banking">Banking, Financial Services & Insurance (BFSI)</option>
@@ -105,32 +105,32 @@
       </div>
 
       <div style="margin-bottom: 1rem;">
-        <label style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Organization / SOC Name:</label>
-        <input type="text" name="name" placeholder="e.g. National Thermal Power Grid - Cyber Operations Centre" required class="form-control">
+        <label for="reg-name" style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Organization / SOC Name:</label>
+        <input type="text" id="reg-name" name="name" placeholder="e.g. National Thermal Power Grid - Cyber Operations Centre" required class="form-control">
       </div>
 
-      <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+      <div class="grid-3" style="gap: 1rem; margin-bottom: 1.25rem;">
         <div>
-          <label style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Size Tier:</label>
-          <select name="size_band" class="form-control">
+          <label for="reg-size-band" style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Size Tier:</label>
+          <select id="reg-size-band" name="size_band" class="form-control">
             <option value="Large">Tier-1 / Large</option>
             <option value="Medium" selected>Tier-2 / Medium</option>
             <option value="Small">Tier-3 / Small</option>
           </select>
         </div>
         <div>
-          <label style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Declared MTTA (min):</label>
-          <input type="number" step="0.1" name="declared_mtta" value="15.0" class="form-control" required>
+          <label for="reg-mtta" style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Declared MTTA (min):</label>
+          <input type="number" step="0.1" id="reg-mtta" name="declared_mtta" value="15.0" class="form-control" required>
         </div>
         <div>
-          <label style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Declared MTTR (min):</label>
-          <input type="number" step="0.1" name="declared_mttr" value="60.0" class="form-control" required>
+          <label for="reg-mttr" style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Declared MTTR (min):</label>
+          <input type="number" step="0.1" id="reg-mttr" name="declared_mttr" value="60.0" class="form-control" required>
         </div>
       </div>
 
       <div style="margin-bottom: 1.5rem;">
-        <label style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Target SLA Compliance (%):</label>
-        <input type="number" step="0.1" name="declared_sla" value="95.0" class="form-control" required>
+        <label for="reg-sla" style="display: block; font-size: 0.78rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Target SLA Compliance (%):</label>
+        <input type="number" step="0.1" id="reg-sla" name="declared_sla" value="95.0" class="form-control" required>
       </div>
 
       <button type="submit" class="btn" style="width: 100%; justify-content: center;">
@@ -159,8 +159,8 @@
 
     <form method="post" action="/upload" enctype="multipart/form-data">
       <div style="margin-bottom: 1rem;">
-        <label style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Target Entity (Optional Override):</label>
-        <select name="target_entity" class="form-control">
+        <label for="upload-target-entity" style="display: block; font-size: 0.8rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 0.35rem;">Target Entity (Optional Override):</label>
+        <select id="upload-target-entity" name="target_entity" class="form-control">
           <option value="">Auto-Detect from CSV "entity_id" column</option>
           {% for ent in all_entities %}
             <option value="{{ ent.entity_id }}">{{ ent.entity_id }} — {{ ent.name }} ({{ ent.sector }})</option>
@@ -202,7 +202,7 @@
     <span>Download Canonical Schema Templates for Real Data</span>
     <span style="font-size: 0.85rem; color: var(--text-secondary);">Fill these templates with your real SOC extracts for 100% schema conformance</span>
   </div>
-  <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 1rem;">
+  <div class="grid-tiles">
     <a href="/templates/alerts.csv" class="stat-card" style="text-decoration: none; padding: 1rem; align-items: center; text-align: center;">
       <div style="font-weight: 700; color: var(--accent-blue); font-size: 0.95rem; margin-bottom: 0.25rem;">Alerts Template</div>
       <div style="font-size: 0.75rem; color: var(--text-muted);">alerts.csv</div>
@@ -297,7 +297,7 @@
 {% endif %}
 
 <!-- Bottom Section: Registered Entities League & Batch Audit History -->
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
+<div class="grid-2" style="gap: 2rem;">
   <!-- Registered Entities List -->
   <div class="card">
     <div class="card-title">

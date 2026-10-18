@@ -248,11 +248,13 @@ flagged when $|z| \geq 3.5$, with at least 3 peer values and at least 30 records
 $$\text{Score}(r) = \frac{\min(2, \; \text{Distance}(r))}{2} \times \text{SeverityWeight}(r) \times \text{Confidence}(r)$$
 - **Distance** is how far the measured value is past the rule's threshold (e.g. measured share ÷ threshold share), capped at 2, so a finding at twice its threshold or more scores the full severity weight.
 - **SeverityWeight** is per rule (`severity_weight` in `config/rules.yaml`, 70–95), and is therefore also the maximum score a rule can produce.
-- **Confidence:** $\min\left(1.0, \; n / n_{\min}\right)$, where $n_{\min}$ is the rule's `min_sample` in `config/rules.yaml` and $n$ is the size of the population the rule examined for that entity (e.g. its critical cases for EG12, its inventory assets for NS06, its alerts for NS02), never the number of offending records. How many offenders there are already drives the Distance term; confidence only says whether there was enough data to judge. So 3 critical cases without containment score 60 when the entity has 20 critical cases, and 12 when those 3 are all it has.
+- **Evidence support** (stored as `confidence`, shown as "Evidence support"): $\min\left(1.0, \; n / n_{\min}\right)$, where $n_{\min}$ is the rule's `min_sample` in `config/rules.yaml` and $n$ is the size of the population the rule examined for that entity (e.g. its critical cases for EG12, its inventory assets for NS06, its alerts for NS02), never the number of offending records. How many offenders there are already drives the Distance term; confidence only says whether there was enough data to judge. So 3 critical cases without containment score 60 when the entity has 20 critical cases, and 12 when those 3 are all it has.
 
-### 4.2 Capability Domain Score (Probabilistic Noisy-OR)
+### 4.2 Capability Domain Score (Noisy-OR combination)
 For domain $d$ encompassing $m$ triggered rules with scores $s_1, s_2, \dots, s_m \in [0, 100]$:
 $$S_d = 100 \times \left(1 - \prod_{i=1}^m \left(1 - \frac{s_i}{100}\right)\right)$$
+
+The noisy-OR form is used so that several moderate failures add up without one rule dominating. It is **not** a probability. Rule scores are not calibrated probabilities: evidence support only measures how much data a rule had. Rules that test related behaviour also fire together, which the formula's independence assumption ignores. Domain scores and the risk index are ranking aids for supervisory attention; they have not been calibrated against reviewed outcomes (docs/analytics_context.md).
 
 ### 4.3 Composite Entity Risk Index
 $$\text{RiskIndex} = (1 - w_{\text{breadth}}) \left(\sum_{d=1}^8 w_d S_d\right) + w_{\text{breadth}} \times \min(100.0, \; 10 \times N_{\text{distinct\_rules}})$$

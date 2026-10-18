@@ -1,0 +1,31 @@
+{# The peer cohort a run recorded for one entity (satsa.peers.grouping). Expects `cohort`. #}
+<div class="peer-cohort" id="peer-cohort">
+  {% if cohort %}
+  <p style="font-size: 0.88rem; margin-bottom: 0.5rem;">
+    <strong>{{ cohort.cohort_label }}</strong>:
+    {{ cohort.denominator }} peer{{ '' if cohort.denominator == 1 else 's' }}
+    {% if cohort.strength == 'established' %}
+      <span class="badge badge-low">Established comparison</span>
+    {% elif cohort.strength == 'exploratory' %}
+      <span class="badge badge-mod">&#9888; Exploratory comparison</span>
+    {% else %}
+      <span class="badge">No comparison</span>
+    {% endif %}
+  </p>
+  <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 0.5rem;">{{ cohort.reason }}</p>
+  <details>
+    <summary style="cursor: pointer; font-size: 0.82rem;">Members, exclusions and support</summary>
+    <ul style="font-size: 0.82rem; padding-left: 1.1rem; margin-top: 0.4rem; line-height: 1.6;">
+      <li>Shared attributes: {{ cohort.attributes | join(', ') or 'none' }} (fallback level {{ cohort.fallback_level }})</li>
+      <li>Minimum support for an established comparison: {{ cohort.min_support }} peers</li>
+      <li>Members ({{ cohort.member_ids | length }}): {{ cohort.member_ids | join(', ') or 'none' }}</li>
+      <li>Excluded ({{ cohort.excluded | length }}):
+        {% for x in cohort.excluded[:25] %}{{ x.entity_id }} ({{ x.reason }}){% if not loop.last %}, {% endif %}{% endfor %}
+        {% if cohort.excluded | length > 25 %} and {{ cohort.excluded | length - 25 }} more{% endif %}
+        {% if not cohort.excluded %}none{% endif %}</li>
+    </ul>
+  </details>
+  {% else %}
+  <p style="font-size: 0.85rem; color: var(--text-muted);">The peer cohort was not recorded for this run (runs before cohort recording).</p>
+  {% endif %}
+</div>

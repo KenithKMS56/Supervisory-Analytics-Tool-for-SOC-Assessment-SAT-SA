@@ -35,7 +35,7 @@
 ---
 
 ## Slide 4: Explainability, Scoring & Validation Results
-- **Scoring:** 20 deterministic rules with configurable thresholds; EG01, EG11, NS02 and NS03 compare each entity with its peer cohort (sector/size, with fallback); NS03 and EG11 flag robust z-score outliers (median/MAD) against that cohort. Probabilistic Noisy-OR aggregates scores into 8 capability domains. (CUSUM/EWMA are implemented but not used by any rule.)
+- **Scoring:** 20 deterministic rules with configurable thresholds; EG01, EG11, NS02 and NS03 compare each entity with its peer cohort (sector/size, with fallback); NS03 and EG11 flag robust z-score outliers (median/MAD) against that cohort. A noisy-OR combination (a ranking aid, not a probability) aggregates scores into 8 capability domains. (CUSUM/EWMA are implemented but not used by any rule.)
 - **Review Queue Prioritisation:** records cited by findings, highest risk first, plus stratified random controls to measure lift and catch blindspots.
 - **Synthetic Ground-Truth Correctness Check** (not a real-world accuracy benchmark; see docs/validation.md §0):
   - **Entity Rank Precision@7:** **100.0%** (all 7 injected entities ranked in top 7; clean entities at bottom).

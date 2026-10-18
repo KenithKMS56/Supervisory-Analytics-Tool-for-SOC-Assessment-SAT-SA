@@ -56,6 +56,10 @@ class Asset(BaseModel):
     criticality: int = Field(ge=1, le=4)
     monitored_flag: bool = True
     owner_unit: str | None = None
+    # Effective-dated inventory: the asset is expected to produce telemetry only between these
+    # dates (inclusive; either may be open). Outside them, silence is not a monitoring gap.
+    in_service_from: date | None = None
+    in_service_to: date | None = None
 
 
 class LogSourceDaily(BaseModel):

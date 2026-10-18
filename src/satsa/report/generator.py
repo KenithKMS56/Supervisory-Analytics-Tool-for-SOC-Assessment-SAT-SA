@@ -130,69 +130,82 @@ class ReportGenerator:
         self.duckdb_store = duckdb_store
         self.sqlite_store = sqlite_store
 
-    def generate_entity_html(self, entity_id: str, output_path: Path | str) -> Path:
-        """Generate self-contained HTML supervisory assessment report."""
+    def generate_entity_html(self, entity_id: str, output_path: Path | str, run_id: str | None = None) -> Path:
+        """Self-contained HTML report of one entity in one run (default: the latest run).
+
+        Everything comes from the run's stored results, as on the entity page: scores, evidence
+        coverage, the recorded peer cohort and exceptions. Every value is HTML-escaped."""
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-
+        meta = self.resolve_run(run_id)
+        e = html.escape
         cur = self.sqlite_store.conn.cursor()
-        cur.execute(
-            "SELECT run_id, config_hash, period, created_at FROM runs ORDER BY created_at DESC LIMIT 1"
-        )
-        run_row = cur.fetchone()
-        run_id = run_row["run_id"] if run_row else "UNKNOWN"
-        config_hash = run_row["config_hash"] if run_row else "N/A"
-        period = run_row["period"] if run_row else "2026-Q1"
-        gen_time = run_row["created_at"] if run_row else "N/A"
+        ent_info = self._entity_info(entity_id) or {"name": entity_id, "sector": "N/A", "size_band": "N/A"}
+        score_row = cur.execute(
+            "SELECT * FROM entity_scores WHERE entity_id = ? AND run_id = ?", (entity_id, meta.run_id)
+        ).fetchone()
+        dom_scores = [dict(r) for r in cur.execute(
+            "SELECT domain, score FROM domain_scores WHERE entity_id = ? AND run_id = ?", (entity_id, meta.run_id)
+        )]
+        findings = [dict(r) for r in cur.execute(
+            "SELECT rule_id, domain, severity, score, confidence, title, rationale, examiner_check, exception_id "
+            "FROM findings WHERE entity_id = ? AND run_id = ? ORDER BY score DESC, finding_id",
+            (entity_id, meta.run_id),
+        )]
+        queue_items = [dict(r) for r in cur.execute(
+            "SELECT record_type, record_id, severity, score, selection_reason, is_random FROM review_queue "
+            "WHERE entity_id = ? AND run_id = ? ORDER BY score DESC, record_id LIMIT 15",
+            (entity_id, meta.run_id),
+        )]
+        cohort = self.sqlite_store.get_peer_comparison(meta.run_id, entity_id)
 
-        # Entity info
-        df_ent = self.duckdb_store.query("SELECT * FROM entity WHERE entity_id = ?", [entity_id])
-        ent_info = (
-            df_ent.to_dicts()[0]
-            if not df_ent.is_empty()
-            else {"name": entity_id, "sector": "N/A", "size_band": "N/A"}
-        )
+        if score_row is None:
+            index_html = "<strong>not assessed in this run</strong>"
+            band_html = "<span class='badge badge-mod'>Not assessed</span>"
+        elif band_tier(score_row["risk_band"]) == "insufficient":
+            index_html = "<strong>n/a</strong> (not classified)"
+            band_html = f"<span class='badge badge-mod'>{e(score_row['risk_band'])}</span>"
+        else:
+            index_html = f"<strong>{float(score_row['risk_index']):.1f} / 100</strong>"
+            band_html = (
+                f"<span class='badge {_BADGE_CLASS[band_tier(score_row['risk_band'])]}'>{e(score_row['risk_band'])}</span>"
+            )
 
-        # Score
-        cur.execute(
-            "SELECT risk_index, risk_band, distinct_rules_triggered FROM entity_scores WHERE entity_id = ? AND run_id = ?",
-            (entity_id, run_id),
-        )
-        score_row = cur.fetchone()
-        risk_index = score_row["risk_index"] if score_row else 0.0
-        risk_band = score_row["risk_band"] if score_row else "Low"
+        def dom_row(d: dict[str, Any]) -> str:
+            s_ = d["score"]
+            if s_ is None:
+                return f"<tr><td><strong>{e(d['domain'])}</strong></td><td>not assessed</td><td><span class='badge badge-mod'>Insufficient evidence</span></td></tr>"
+            cls = "badge-crit" if s_ >= 50 else ("badge-mod" if s_ >= 25 else "badge-low")
+            word = "Elevated Concern" if s_ >= 50 else ("Moderate Concern" if s_ >= 25 else "Satisfactory")
+            return f"<tr><td><strong>{e(d['domain'])}</strong></td><td>{s_:.1f}</td><td><span class='badge {cls}'>{word}</span></td></tr>"
 
-        # Domain scores
-        cur.execute(
-            "SELECT domain, score FROM domain_scores WHERE entity_id = ? AND run_id = ?",
-            (entity_id, run_id),
-        )
-        dom_scores = [dict(r) for r in cur.fetchall()]
+        def finding_row(f: dict[str, Any]) -> str:
+            sev = str(f["severity"])
+            cls = "badge-crit" if sev == "critical" else ("badge-mod" if sev == "high" else "badge-low")
+            exc = (f"<br><em>Recorded under exception {e(f['exception_id'])}: not scored or queued.</em>"
+                   if f.get("exception_id") else "")
+            return (
+                f"<tr><td><strong>{e(f['rule_id'])}</strong></td><td><span class='badge {cls}'>{e(sev.upper())}</span></td>"
+                f"<td>{float(f['score']):.1f}</td><td>{float(f['confidence']):.0%}</td>"
+                f"<td><strong>{e(f['title'])}</strong><br><small>{e(f['rationale'])}</small>{exc}</td>"
+                f"<td style='font-size: 0.85rem;'>{e(f['examiner_check'] or '')}</td></tr>"
+            )
 
-        # Findings
-        cur.execute(
-            "SELECT rule_id, domain, severity, score, title, rationale, examiner_check FROM findings WHERE entity_id = ? AND run_id = ? ORDER BY score DESC",
-            (entity_id, run_id),
+        queue_rows = "".join(
+            f"<tr><td><code>{e(q['record_id'])}</code></td><td>{e(q['record_type'])}</td><td>{e(q['severity'])}</td>"
+            f"<td>{e(q['selection_reason'])}</td><td>{'Random Control' if q['is_random'] else 'Top-Risk'}</td></tr>"
+            for q in queue_items
         )
-        findings = [dict(r) for r in cur.fetchall()]
-
-        # Review queue sample
-        cur.execute(
-            "SELECT record_type, record_id, severity, score, selection_reason, is_random FROM review_queue WHERE entity_id = ? AND run_id = ? LIMIT 15",
-            (entity_id, run_id),
-        )
-        queue_items = [dict(r) for r in cur.fetchall()]
-
         # Exploratory leads: shown apart from the findings, never scored (DECISIONS.md ADR-007).
         lead_rows = "".join(
             "<tr><td>{kind}</td><td>{label}</td><td>{value}</td><td>{baseline}</td><td><small>{why}</small></td></tr>".format(
-                kind="Peer outlier" if s["kind"] == "peer_outlier" else "Time shift",
-                label=html.escape(s["label"]),
-                value=format_value(s["value"], s["detail"].get("scale", "per_unit")),
-                baseline=format_value(s["baseline"], s["detail"].get("scale", "per_unit")),
-                why=html.escape(s["rationale"]),
+                kind="Peer outlier" if s_["kind"] == "peer_outlier" else "Time shift",
+                label=e(s_["label"]),
+                value=e(format_value(s_["value"], s_["detail"].get("scale", "per_unit"))),
+                baseline=e(format_value(s_["baseline"], s_["detail"].get("scale", "per_unit"))),
+                why=e(s_["rationale"]),
             )
-            for s in self.sqlite_store.get_anomaly_signals(run_id, entity_id)
+            for s_ in self.sqlite_store.get_anomaly_signals(meta.run_id, entity_id)
         )
         leads_card = (
             f"""
@@ -208,12 +221,18 @@ class ReportGenerator:
             if lead_rows
             else ""
         )
+        cohort_html = (
+            f"{e(cohort['cohort_label'])}: {cohort['denominator']} peers, {e(cohort['strength'])} comparison. "
+            f"{e(cohort['reason'])}"
+            if cohort else "Not recorded for this run."
+        )
 
         html_content = f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>Supervisory SOC Assessment Report - {entity_id}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Supervisory SOC Assessment Report - {e(entity_id)}</title>
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; color: #1e293b; line-height: 1.5; }}
     h1 {{ color: #0f172a; margin-bottom: 5px; }}
@@ -222,24 +241,24 @@ class ReportGenerator:
     .badge-crit {{ background: #fee2e2; color: #b91c1c; border: 1px solid #b91c1c; }}
     .badge-mod {{ background: #fef9c3; color: #854d0e; border: 1px solid #854d0e; }}
     .badge-low {{ background: #dcfce7; color: #15803d; border: 1px solid #15803d; }}
-    .card {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px; }}
+    .card {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px; overflow-x: auto; }}
     table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }}
     th, td {{ border: 1px solid #cbd5e1; padding: 8px 12px; text-align: left; }}
     th {{ background: #f1f5f9; }}
-    .footer {{ margin-top: 50px; padding-top: 15px; border-top: 2px solid #e2e8f0; font-size: 0.85rem; color: #64748b; text-align: center; }}
+    .footer {{ margin-top: 50px; padding-top: 15px; border-top: 2px solid #e2e8f0; font-size: 0.85rem; color: #64748b; text-align: center; overflow-wrap: anywhere; }}
     .notice {{ color: #b91c1c; font-weight: 700; margin-bottom: 5px; }}
+    @media (max-width: 600px) {{ body {{ margin: 16px; }} }}
   </style>
 </head>
 <body>
-  <h1>Supervisory Assessment Report: {ent_info.get("name")} ({entity_id})</h1>
-  <div class="subtitle">Review Period: {period} | Sector: {str(ent_info.get("sector") or "N/A").upper()} | Size Band: {ent_info.get("size_band")}</div>
+  <h1>Supervisory Assessment Report: {e(str(ent_info.get("name") or entity_id))} ({e(entity_id)})</h1>
+  <div class="subtitle">Review Period: {e(meta.period)} | Sector: {e(str(ent_info.get("sector") or "N/A").upper())} | Size Band: {e(str(ent_info.get("size_band") or "N/A"))}</div>
 
   <div class="card">
     <h2>Supervisory Risk Executive Summary</h2>
-    <p style="font-size: 1.25rem; margin: 10px 0;">
-      Entity Supervisory Risk Index: <strong>{risk_index:.1f} / 100</strong> &nbsp;
-      <span class="badge {_BADGE_CLASS[band_tier(risk_band)]}">{risk_band}</span>
-    </p>
+    <p style="font-size: 1.25rem; margin: 10px 0;">Entity Supervisory Risk Index: {index_html} &nbsp; {band_html}</p>
+    <p id="evidence-coverage"><strong>Evidence:</strong> {e(coverage_sentence(dict(score_row) if score_row else None))}</p>
+    <p><strong>Peer comparison:</strong> {cohort_html}</p>
     <p>This assessment analysed the entity's periodic SOC submission across 8 supervisory domains, evaluating deterministic execution gaps and negative space patterns without AI/ML models.</p>
   </div>
 
@@ -248,17 +267,18 @@ class ReportGenerator:
     <table>
       <thead><tr><th>Capability Domain</th><th>Supervisory Risk Score</th><th>Status</th></tr></thead>
       <tbody>
-        {"".join(f"<tr><td><strong>{d['domain']}</strong></td><td>{'not assessed' if d['score'] is None else format(d['score'], '.1f')}</td><td><span class='badge {'badge-low' if d['score'] is None else ('badge-crit' if d['score'] >= 50 else ('badge-mod' if d['score'] >= 25 else 'badge-low'))}'>{'Insufficient evidence' if d['score'] is None else ('Elevated Concern' if d['score'] >= 50 else ('Moderate Concern' if d['score'] >= 25 else 'Satisfactory'))}</span></td></tr>" for d in dom_scores)}
+        {"".join(dom_row(d) for d in dom_scores)}
       </tbody>
     </table>
   </div>
 
   <div class="card">
     <h3>Top Flagged Indicators Requiring Supervisory Review ({len(findings)})</h3>
+    <p style="font-size: 0.85rem;">Evidence support is the share of the rule's minimum sample the data reached; it is not a probability that the finding is correct.</p>
     <table>
-      <thead><tr><th>Rule</th><th>Severity</th><th>Score</th><th>Finding Rationale</th><th>Suggested Examiner Verification</th></tr></thead>
+      <thead><tr><th>Rule</th><th>Severity</th><th>Score</th><th>Evidence support</th><th>Finding Rationale</th><th>Suggested Examiner Verification</th></tr></thead>
       <tbody>
-        {"".join(f"<tr><td><strong>{f['rule_id']}</strong></td><td><span class='badge {'badge-crit' if f['severity'] == 'critical' else ('badge-mod' if f['severity'] == 'high' else 'badge-low')}'>{f['severity'].upper()}</span></td><td>{f['score']}</td><td><strong>{f['title']}</strong><br><small>{f['rationale']}</small></td><td style='font-size: 0.85rem;'>{f['examiner_check']}</td></tr>" for f in findings)}
+        {"".join(finding_row(f) for f in findings)}
       </tbody>
     </table>
   </div>
@@ -268,14 +288,14 @@ class ReportGenerator:
     <table>
       <thead><tr><th>Record ID</th><th>Type</th><th>Severity</th><th>Selection Reason</th><th>Class</th></tr></thead>
       <tbody>
-        {"".join(f"<tr><td><code>{q['record_id']}</code></td><td>{q['record_type']}</td><td>{q['severity']}</td><td>{q['selection_reason']}</td><td>{'Random Control' if q['is_random'] else 'Top-Risk'}</td></tr>" for q in queue_items)}
+        {queue_rows}
       </tbody>
     </table>
   </div>
 {leads_card}
   <div class="footer">
     <div class="notice">Indicators requiring supervisory review; not a compliance determination.</div>
-    <div>Run ID: {run_id} | Config Hash: {config_hash} | Generated: {gen_time} | Fully Offline / Air-Gapped Engine</div>
+    <div>Run ID: {e(meta.run_id)} | Config Hash: {e(meta.config_hash or "N/A")} | Run recorded: {e(meta.created_at)} | Fully Offline / Air-Gapped Engine</div>
   </div>
 </body>
 </html>
@@ -316,7 +336,7 @@ class ReportGenerator:
         cur.execute(
             "SELECT finding_id, run_id, entity_id, rule_id, rule_version, domain, severity, score, "
             "confidence, title, rationale, peer_comparison_json, benign_explanations_json, "
-            f"examiner_check, created_at FROM findings WHERE {where} "
+            f"examiner_check, created_at, exception_id FROM findings WHERE {where} "
             "ORDER BY score DESC, finding_id",
             params,
         )
@@ -360,12 +380,13 @@ class ReportGenerator:
         cur = self.sqlite_store.conn.cursor()
 
         cur.execute(
-            "SELECT risk_index, risk_band, distinct_rules_triggered FROM entity_scores WHERE entity_id = ? AND run_id = ?",
+            "SELECT * FROM entity_scores WHERE entity_id = ? AND run_id = ?",
             (entity_id, meta.run_id),
         )
         score_row = cur.fetchone()
         if score_row is None:
             raise ReportNotFoundError("Entity")
+        cohort = self.sqlite_store.get_peer_comparison(meta.run_id, entity_id)
         risk_index = float(score_row["risk_index"])
         ent_info = self._entity_info(entity_id)
 
@@ -451,6 +472,29 @@ class ReportGenerator:
                 st["caption"],
             )
         )
+        # The same evidence coverage and recorded cohort the entity page shows for this run.
+        story.append(Paragraph(esc(f"Evidence: {coverage_sentence(dict(score_row))}"), st["body"]))
+        story.append(
+            Paragraph(
+                esc(
+                    f"Peer comparison: {cohort['cohort_label']}, {cohort['denominator']} peers, "
+                    f"{cohort['strength']}. {cohort['reason']}"
+                    if cohort else "Peer comparison: not recorded for this run."
+                ),
+                st["body"],
+            )
+        )
+        excepted = [f for f in findings if f.get("exception_id")]
+        if excepted:
+            story.append(
+                Paragraph(
+                    esc(
+                        f"{len(excepted)} finding(s) recorded under an approved rule exception are shown but "
+                        "were not scored: " + ", ".join(f"{f['rule_id']} ({f['exception_id']})" for f in excepted)
+                    ),
+                    st["body"],
+                )
+            )
 
         domains = self._ordered_domains(dom_scores)
         if domains:
@@ -499,8 +543,7 @@ class ReportGenerator:
         meta = self.resolve_run(run_id)
         cur = self.sqlite_store.conn.cursor()
         cur.execute(
-            "SELECT entity_id, risk_index, risk_band, distinct_rules_triggered FROM entity_scores "
-            "WHERE run_id = ? ORDER BY risk_index DESC, entity_id",
+            "SELECT * FROM entity_scores WHERE run_id = ? ORDER BY risk_index DESC, entity_id",
             (meta.run_id,),
         )
         entities = [dict(r) for r in cur.fetchall()]
@@ -558,6 +601,20 @@ class ReportGenerator:
                 )
             )
             story.append(Spacer(1, 6))
+
+        story += section(
+            "Evidence sufficiency",
+            "How much of each CSE's rule set its submission supported in this run. An entity with "
+            "insufficient evidence is not classified; request the missing tables before relying on it.",
+        )
+        story.append(
+            data_table(
+                ["CSE", "Band", "Evidence"],
+                [[e["entity_id"], e["risk_band"], coverage_sentence(e)] for e in entities],
+                [80, 130, CONTENT_W - 210],
+            )
+        )
+        story.append(Spacer(1, 6))
 
         all_domains = self._ordered_domains(
             {d: 0.0 for scores in domain_map.values() for d in scores}
@@ -888,34 +945,36 @@ class ReportGenerator:
             path, story, meta, f"Finding Report  |  {f['entity_id']}  |  {f['rule_id']}"
         )
 
-    def export_findings_csv(self, output_path: Path | str) -> Path:
-        """Export all findings to CSV."""
+    def export_findings_csv(self, output_path: Path | str, run_id: str | None = None) -> Path:
+        """Export one run's findings (default: the latest run) to CSV, as the UI shows them."""
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        meta = self.resolve_run(run_id)
         cur = self.sqlite_store.conn.cursor()
-        cur.execute("SELECT * FROM findings ORDER BY score DESC")
+        cur.execute("SELECT * FROM findings WHERE run_id = ? ORDER BY score DESC, finding_id", (meta.run_id,))
         rows = cur.fetchall()
+        coverage = {
+            r["entity_id"]: coverage_sentence(dict(r))
+            for r in cur.execute("SELECT * FROM entity_scores WHERE run_id = ?", (meta.run_id,))
+        }
 
         # Every exported row carries the notice: a CSV is read and forwarded without the
         # page it was downloaded from.
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = SafeWriter(f)
             if rows:
-                writer.writerow([*rows[0].keys(), "supervisory_notice"])
+                writer.writerow([*rows[0].keys(), "entity_evidence_coverage", "supervisory_notice"])
                 for r in rows:
-                    writer.writerow([*r, FINDING_NOTICE])
+                    writer.writerow([*r, coverage.get(r["entity_id"], "not recorded"), FINDING_NOTICE])
         return path
 
-    def export_queue_csv(self, output_path: Path | str) -> Path:
-        """Export the latest run's review queue to CSV (earlier runs' copies are history)."""
+    def export_queue_csv(self, output_path: Path | str, run_id: str | None = None) -> Path:
+        """Export one run's review queue (default: the latest run) to CSV."""
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        meta = self.resolve_run(run_id)
         cur = self.sqlite_store.conn.cursor()
-        cur.execute(
-            """SELECT * FROM review_queue
-               WHERE run_id = (SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1)
-               ORDER BY score DESC"""
-        )
+        cur.execute("SELECT * FROM review_queue WHERE run_id = ? ORDER BY score DESC, queue_id", (meta.run_id,))
         rows = cur.fetchall()
 
         with open(path, "w", newline="", encoding="utf-8") as f:
@@ -944,56 +1003,45 @@ class ReportGenerator:
                 f.write("entity_id,date,metric_name,metric_value\n")
         return path
 
-    def generate_portfolio_html(self, output_path: Path | str) -> Path:
-        """Generate self-contained portfolio summary assessment report."""
+    def generate_portfolio_html(self, output_path: Path | str, run_id: str | None = None) -> Path:
+        """Self-contained portfolio report of one run (default: the latest), with each entity's
+        evidence coverage. Every value is HTML-escaped."""
         path = Path(output_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-
+        meta = self.resolve_run(run_id)
+        e = html.escape
         cur = self.sqlite_store.conn.cursor()
-        cur.execute(
-            "SELECT run_id, config_hash, period, created_at FROM runs ORDER BY created_at DESC LIMIT 1"
-        )
-        run_row = cur.fetchone()
-        run_id = run_row["run_id"] if run_row else "UNKNOWN"
-        config_hash = run_row["config_hash"] if run_row else "N/A"
-        period = run_row["period"] if run_row else "2026-Q1"
-        gen_time = run_row["created_at"] if run_row else "N/A"
-
-        cur.execute(
-            """
-            SELECT e.entity_id, e.risk_index, e.risk_band, e.distinct_rules_triggered
-            FROM entity_scores e
-            WHERE e.run_id = ?
-            ORDER BY e.risk_index DESC
-        """,
-            (run_id,),
-        )
-        entities = [dict(r) for r in cur.fetchall()]
-
-        # Query all domain scores for this run
-        cur.execute(
-            """
-            SELECT entity_id, domain, score
-            FROM domain_scores
-            WHERE run_id = ?
-        """,
-            (run_id,),
-        )
-        domain_rows = cur.fetchall()
+        entities = [dict(r) for r in cur.execute(
+            "SELECT * FROM entity_scores WHERE run_id = ? ORDER BY risk_index DESC, entity_id", (meta.run_id,)
+        )]
         domain_map: dict[str, dict[str, float | None]] = {}
         domains = set()
-        for r in domain_rows:
-            eid = r["entity_id"]
-            dom = r["domain"]
-            domains.add(dom)
-            domain_map.setdefault(eid, {})[dom] = None if r["score"] is None else float(r["score"])
-
+        for r in cur.execute("SELECT entity_id, domain, score FROM domain_scores WHERE run_id = ?", (meta.run_id,)):
+            domains.add(r["domain"])
+            domain_map.setdefault(r["entity_id"], {})[r["domain"]] = None if r["score"] is None else float(r["score"])
         sorted_domains = sorted(domains)
 
-        html = f"""<!DOCTYPE html>
+        def index_cell(ent: dict[str, Any]) -> str:
+            if band_tier(ent["risk_band"]) == "insufficient":
+                return "<td>n/a</td>"
+            return f"<td>{float(ent['risk_index']):.1f}</td>"
+
+        rows = "".join(
+            f"<tr><td><strong>{e(ent['entity_id'])}</strong></td>"
+            + index_cell(ent)
+            + f"<td><span class='badge {_BADGE_CLASS[band_tier(ent['risk_band'])]}'>{e(ent['risk_band'])}</span></td>"
+            f"<td>{e(coverage_sentence(ent))}</td>"
+            f"<td>{ent['distinct_rules_triggered']}</td>"
+            + "".join(_domain_cell(domain_map.get(ent["entity_id"], {}).get(d, 0.0)) for d in sorted_domains)
+            + "</tr>"
+            for ent in entities
+        )
+
+        content = f"""<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SAT-SA Portfolio Supervisory Assessment Report</title>
   <style>
     body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 40px; color: #1e293b; line-height: 1.5; }}
@@ -1003,59 +1051,69 @@ class ReportGenerator:
     .badge-crit {{ background: #fee2e2; color: #b91c1c; border: 1px solid #b91c1c; }}
     .badge-mod {{ background: #fef9c3; color: #854d0e; border: 1px solid #854d0e; }}
     .badge-low {{ background: #dcfce7; color: #15803d; border: 1px solid #15803d; }}
-    .card {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px; }}
+    .card {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin-bottom: 20px; overflow-x: auto; }}
     table {{ width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 0.9rem; }}
     th, td {{ border: 1px solid #cbd5e1; padding: 8px 12px; text-align: left; }}
     th {{ background: #f1f5f9; }}
-    .footer {{ margin-top: 50px; padding-top: 15px; border-top: 2px solid #e2e8f0; font-size: 0.85rem; color: #64748b; text-align: center; }}
+    .footer {{ margin-top: 50px; padding-top: 15px; border-top: 2px solid #e2e8f0; font-size: 0.85rem; color: #64748b; text-align: center; overflow-wrap: anywhere; }}
     .notice {{ color: #b91c1c; font-weight: 700; margin-bottom: 5px; }}
+    @media (max-width: 600px) {{ body {{ margin: 16px; }} }}
   </style>
 </head>
 <body>
   <h1>National SOC Supervisory Portfolio Report</h1>
-  <div class="subtitle">Period: {period} | Total Critical Sector Entities Assessed: {
-            len(entities)
-        }</div>
+  <div class="subtitle">Period: {e(meta.period)} | Total Critical Sector Entities Assessed: {len(entities)}</div>
 
   <div class="card">
     <h2>Entity Risk Ranking Summary</h2>
+    <p style="font-size: 0.85rem;">An entity whose submission supports too few rules is not classified ("n/a"); its evidence column says what is missing.</p>
     <table>
       <thead>
         <tr>
           <th>Entity ID</th>
           <th>Risk Index (0-100)</th>
           <th>Risk Band</th>
+          <th>Evidence</th>
           <th>Rules Triggered</th>
-          {"".join(f"<th>{d}</th>" for d in sorted_domains)}
+          {"".join(f"<th>{e(d)}</th>" for d in sorted_domains)}
         </tr>
       </thead>
       <tbody>
-        {
-            "".join(
-                f"<tr><td><strong>{e['entity_id']}</strong></td>"
-                f"<td>{e['risk_index']:.1f}</td>"
-                f"<td><span class='badge {_BADGE_CLASS[band_tier(e['risk_band'])]}'>{e['risk_band']}</span></td>"
-                f"<td>{e['distinct_rules_triggered']}</td>"
-                + "".join(
-                    _domain_cell(domain_map.get(e["entity_id"], {}).get(d, 0.0))
-                    for d in sorted_domains
-                )
-                + "</tr>"
-                for e in entities
-            )
-        }
+        {rows}
       </tbody>
     </table>
   </div>
 
   <div class="footer">
     <div class="notice">Indicators requiring supervisory review; not a compliance determination.</div>
-    <div>Run ID: {run_id} | Config Hash: {config_hash} | Generated: {
-            gen_time
-        } | Fully Offline / Air-Gapped Engine</div>
+    <div>Run ID: {e(meta.run_id)} | Config Hash: {e(meta.config_hash or "N/A")} | Run recorded: {e(meta.created_at)} | Fully Offline / Air-Gapped Engine</div>
   </div>
 </body>
 </html>
 """
-        path.write_text(html, encoding="utf-8")
+        path.write_text(content, encoding="utf-8")
         return path
+
+
+def coverage_sentence(score: dict[str, Any] | None) -> str:
+    """One line on how much of the entity's rule set its evidence supported (rules.contracts)."""
+    if score is None:
+        return "Not assessed in this run."
+    status = score.get("classification_status")
+    if status is None:
+        return "Coverage not recorded (run predates evidence coverage)."
+    applicable, assessed = score.get("rules_applicable"), score.get("rules_assessed")
+    cov = score.get("coverage")
+    words = str(status).replace("_", " ")
+    parts = [f"{words[:1].upper()}{words[1:]}"]
+    if applicable is not None and assessed is not None:
+        parts.append(f"{assessed} of {applicable} applicable rules assessed" + (f" ({cov:.0%})" if cov is not None else ""))
+    if score.get("rules_not_applicable"):
+        parts.append(f"{score['rules_not_applicable']} ruled not applicable")
+    try:
+        missing = json.loads(score.get("missing_inputs_json") or "[]")
+    except (TypeError, ValueError):
+        missing = []
+    if missing:
+        parts.append("missing: " + ", ".join(str(m) for m in missing[:6]))
+    return "; ".join(parts) + "."

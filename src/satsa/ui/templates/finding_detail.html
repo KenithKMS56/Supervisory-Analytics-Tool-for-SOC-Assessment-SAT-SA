@@ -27,6 +27,15 @@
   </div>
 </div>
 
+{% if exception %}
+<div class="notice-banner" id="exception-notice" role="note">
+  <div><strong>Recorded under rule exception <code>{{ exception.exception_id }}</code></strong>
+    (approved by {{ exception.approved_by }}, expires {{ exception.expires_at[:10] }}): {{ exception.scope }}.
+    This finding is kept and shown but was not scored or queued in this run. Reason: {{ exception.reason }}
+    Evidence: {{ exception.evidence_ref }}.</div>
+</div>
+{% endif %}
+
 <div class="grid-4">
   <div class="stat-box">
     <div class="stat-val" style="color: {% if card.score > 70 %}var(--risk-crit){% else %}var(--risk-mod){% endif %};">
@@ -36,7 +45,9 @@
   </div>
   <div class="stat-box">
     <div class="stat-val">{{ (card.confidence * 100)|round|int }}%</div>
-    <div class="stat-lbl">Statistical Confidence</div>
+    <div class="stat-lbl">Evidence support
+      <span class="tooltip-hint" tabindex="0">&#10067;<span class="tooltip-text">How much data the rule had: records examined against the rule's minimum sample, capped at 100%. It is not a probability that the finding is correct.</span></span>
+    </div>
   </div>
   <div class="stat-box">
     <div class="stat-val">{{ card.severity|upper }}</div>
@@ -117,6 +128,8 @@
       {% else %}
       <p style="font-size: 0.85rem; color: var(--text-muted);">This rule records no comparison figures.</p>
       {% endif %}
+      <h4 style="font-size: 0.9rem; color: var(--text-secondary); margin: 1rem 0 0.5rem;">Peer cohort recorded for this run</h4>
+      {% include "_peer_cohort.html" %}
     </div>
     <div>
       <h4 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Rule parameters</h4>
@@ -146,10 +159,14 @@
 
 <section id="confidence" class="card">
   <div class="card-title">
-    <span>4. Confidence and limitations</span>
+    <span>4. Evidence support and limitations</span>
   </div>
   <p style="font-size: 0.95rem; line-height: 1.6;">
-    Statistical confidence: <strong>{{ (card.confidence * 100)|round|int }}%</strong>.
+    Evidence support: <strong>{{ (card.confidence * 100)|round|int }}%</strong>{% if support and support.population is not none %}:
+    the rule examined {{ support.population }} record(s) against a minimum sample of {{ support.min_sample }}{% endif %}.
+    This measures how much data the rule had, not the probability that the finding is correct; it is
+    not calibrated against reviewed outcomes. Rules that test related behaviour can fire together,
+    so domain scores combined from several findings are a ranking aid, not a probability.
   </p>
   <h4 style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 0.5rem;">Limitations</h4>
   <p style="font-size: 0.9rem; color: var(--text-muted);">{{ card.limitations }}</p>

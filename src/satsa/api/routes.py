@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 from itertools import pairwise
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlencode
 
 import polars as pl
 import yaml
@@ -51,7 +52,7 @@ from satsa.models.outputs import EXAMINER_DECISIONS, ExaminerFeedback
 from satsa.netguard import install_egress_guard, uninstall_egress_guard
 from satsa.peers.anomaly_scan import format_value as format_metric_value
 from satsa.peers.grouping import PeerResolver
-from satsa.report.generator import ReportGenerator, ReportNotFoundError
+from satsa.report.generator import ReportGenerator, ReportNotFoundError, coverage_sentence
 from satsa.report.naming import entity_pdf_name, finding_pdf_name, portfolio_pdf_name
 from satsa.rules.negative_space import REVIEW_PERIOD_MONTHS_RANGE
 from satsa.rules.registry import RuleRegistry
@@ -67,7 +68,7 @@ from satsa.security import (
 )
 from satsa.store.catalog import PublicationError
 from satsa.store.duckdb import DuckDBStore, analytics_cache
-from satsa.store.sqlite import SQLiteStore
+from satsa.store.sqlite import SQLiteStore, utc_now_iso
 from satsa.web_security import CROSS_SITE_REFUSED, cross_site_reason
 
 # Roles permitted for each protected action category, matching
@@ -821,7 +822,14 @@ async def view_splash(request: Request) -> Response:
 
 @app.get("/", response_class=HTMLResponse)
 @app.get("/portfolio", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
-async def view_portfolio(request: Request) -> Response:
+async def view_portfolio(
+    request: Request,
+    run_id: str | None = None,
+    q: str = "",
+    band: str = "",
+    evidence: str = "",
+    sort: str = "risk",
+) -> Response:
     identity = get_current_identity(request)
     if identity is None:
         if request.url.path == "/portfolio":
@@ -832,13 +840,19 @@ async def view_portfolio(request: Request) -> Response:
             context={"active_tab": "splash"},
         )
 
+    require_valid_run_id(run_id)
+    filters = _portfolio_filters(q, band, evidence, sort)
     duckdb_store, sqlite_store = get_stores()
 
-    # Query latest run
+    # The selected run (default: the latest)
     cur = sqlite_store.conn.cursor()
-    cur.execute("SELECT run_id, period FROM runs ORDER BY created_at DESC LIMIT 1")
-    run_row = cur.fetchone()
-    period = run_row["period"] if run_row else "2026-Q1"
+    try:
+        run_row = _selected_run(sqlite_store, run_id)
+    except HTTPException:
+        duckdb_store.close()
+        sqlite_store.close()
+        raise
+    period = run_row["period"] if run_row else "no assessment run yet"
     run_id = run_row["run_id"] if run_row else ""
 
     # Fetch entities from DuckDB
@@ -848,7 +862,7 @@ async def view_portfolio(request: Request) -> Response:
     # Fetch entity scores from SQLite
     cur.execute(
         """
-        SELECT entity_id, risk_index, risk_band, distinct_rules_triggered
+        SELECT *
         FROM entity_scores
         WHERE run_id = ?
         ORDER BY risk_index DESC
@@ -870,6 +884,10 @@ async def view_portfolio(request: Request) -> Response:
                 "risk_index": r["risk_index"],
                 "risk_band": r["risk_band"],
                 "distinct_rules": r["distinct_rules_triggered"],
+                "classification_status": r["classification_status"],
+                "coverage": r["coverage"],
+                "evidence": coverage_sentence(dict(r)),
+                "missing_inputs": json.loads(r["missing_inputs_json"] or "[]"),
             }
         )
 
@@ -997,6 +1015,16 @@ async def view_portfolio(request: Request) -> Response:
         lead_counts[sig["entity_id"]] = lead_counts.get(sig["entity_id"], 0) + 1
     for e in ranked_entities:
         e["lead_count"] = lead_counts.get(e["entity_id"], 0)
+    _attention(cur, run_id, ranked_entities)
+    league = _filter_league(ranked_entities, filters)
+    recent_runs = [dict(r) for r in cur.execute(
+        "SELECT run_id, period, created_at FROM runs ORDER BY created_at DESC LIMIT 25"
+    )]
+    saved_views = [dict(r) for r in cur.execute(
+        "SELECT view_id, name, query_json FROM saved_views WHERE owner = ? ORDER BY name", (identity.username,)
+    )]
+    for v in saved_views:
+        v["href"] = "/portfolio?" + urlencode(json.loads(v.pop("query_json")))
 
     duckdb_store.close()
     sqlite_store.close()
@@ -1026,21 +1054,156 @@ async def view_portfolio(request: Request) -> Response:
             "systemic_findings": systemic_findings,
             "priority_controls": priority_controls,
             "priority_processes": priority_processes,
+            "league": league,
+            "filters": filters,
+            "run": dict(run_row) if run_row else None,
+            "recent_runs": recent_runs,
+            "saved_views": saved_views,
+            "portfolio_sorts": PORTFOLIO_SORTS,
         },
     )
 
 
+PORTFOLIO_SORTS = {
+    "risk": "Risk index (highest first)",
+    "evidence": "Evidence coverage (lowest first)",
+    "findings": "Rules triggered (most first)",
+    "entity": "Entity ID",
+}
+PORTFOLIO_BANDS = ("critical", "moderate", "low", "insufficient")
+PORTFOLIO_EVIDENCE = ("assessable", "partially_assessable", "insufficient_evidence")
+
+
+def _portfolio_filters(q: str, band: str, evidence: str, sort: str) -> dict[str, str]:
+    """The portfolio's filters, each reduced to a known value (anything else means "all")."""
+    return {
+        "q": q.strip()[:100],
+        "band": band if band in PORTFOLIO_BANDS else "",
+        "evidence": evidence if evidence in PORTFOLIO_EVIDENCE else "",
+        "sort": sort if sort in PORTFOLIO_SORTS else "risk",
+    }
+
+
+def _attention(cur: Any, run_id: str, entities: list[dict[str, Any]]) -> None:
+    """Why each entity needs attention and the next supervisory action, from this run's
+    findings, evidence coverage and the entity's open supervisory cases."""
+    top: dict[str, dict[str, Any]] = {}
+    for r in cur.execute(
+        "SELECT entity_id, rule_id, title, severity, score FROM findings WHERE run_id = ? AND exception_id IS NULL "
+        "ORDER BY score DESC, finding_id", (run_id,)
+    ):
+        top.setdefault(r["entity_id"], dict(r))
+    cases: dict[str, dict[str, Any]] = {}
+    for r in cur.execute(
+        "SELECT case_id, entity_id, rule_id, state FROM cases WHERE state <> 'closed' ORDER BY created_at, case_id"
+    ):
+        cases.setdefault(r["entity_id"], dict(r))
+    for e in entities:
+        tier = band_tier(e["risk_band"])
+        missing = ", ".join(e["missing_inputs"][:4])
+        finding = top.get(e["entity_id"])
+        case = cases.get(e["entity_id"])
+        if tier == "insufficient":
+            e["why"] = "Too little evidence to classify" + (f" (missing: {missing})" if missing else "")
+            e["next_action"] = "Request the missing data" + (f": {missing}" if missing else "")
+        elif finding is None:
+            e["why"] = "No finding in this run"
+            e["next_action"] = "No action; reassess next period"
+        else:
+            e["why"] = f"{finding['rule_id']}: {finding['title']}"
+            if case is not None:
+                state = str(case["state"]).replace("_", " ")
+                e["next_action"] = f"Continue case {case['case_id']} ({state})"
+                e["case_id"] = case["case_id"]
+            elif tier in ("critical", "moderate"):
+                e["next_action"] = f"Review {finding['rule_id']} evidence and open a supervisory case if it holds"
+            else:
+                e["next_action"] = "Review the findings in the queue"
+        if e.get("classification_status") == "partially_assessable" and missing and tier != "insufficient":
+            e["next_action"] += f"; request {missing}"
+
+
+def _filter_league(entities: list[dict[str, Any]], f: dict[str, str]) -> list[dict[str, Any]]:
+    out = [
+        e for e in entities
+        if (not f["band"] or band_tier(e["risk_band"]) == f["band"])
+        and (not f["evidence"] or e.get("classification_status") == f["evidence"])
+        and (not f["q"] or f["q"].lower() in f"{e['entity_id']} {e['name']} {e['sector']}".lower())
+    ]
+    if f["sort"] == "evidence":
+        out.sort(key=lambda e: (e["coverage"] if e["coverage"] is not None else -1.0, e["entity_id"]))
+    elif f["sort"] == "findings":
+        out.sort(key=lambda e: (-(e["distinct_rules"] or 0), e["entity_id"]))
+    elif f["sort"] == "entity":
+        out.sort(key=lambda e: e["entity_id"])
+    return out
+
+
+SAVED_VIEW_NAME_RE = re.compile(r"^[\w .,()-]{1,60}$")
+SAVED_VIEW_ID_RE = re.compile(r"^VIEW-[A-F0-9]{12}$")
+
+
+@app.post("/portfolio/views")
+async def save_portfolio_view(
+    name: Annotated[str, Form()],
+    q: Annotated[str, Form()] = "",
+    band: Annotated[str, Form()] = "",
+    evidence: Annotated[str, Form()] = "",
+    sort: Annotated[str, Form()] = "risk",
+    run_id: Annotated[str, Form()] = "",
+    identity: Identity = Depends(require_role(*SUPERVISORY_READ_ROLES)),
+) -> Response:
+    """Save the current portfolio filters under a name, for this user only."""
+    name = name.strip()
+    if not SAVED_VIEW_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="A view name is 1-60 letters, digits, spaces or .,()-")
+    require_valid_run_id(run_id or None)
+    query = {k: v for k, v in {**_portfolio_filters(q, band, evidence, sort), "run_id": run_id}.items() if v}
+    store = get_sqlite_store()
+    try:
+        view_id = "VIEW-" + hashlib.sha256(f"{identity.username}:{name}".encode()).hexdigest()[:12].upper()
+        with store.transaction():
+            store.conn.execute(
+                "INSERT OR REPLACE INTO saved_views (view_id, owner, name, query_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (view_id, identity.username, name, json.dumps(query, sort_keys=True), utc_now_iso()),
+            )
+    finally:
+        store.close()
+    return RedirectResponse(url="/portfolio?" + urlencode(query), status_code=303)
+
+
+@app.post("/portfolio/views/{view_id}/delete")
+async def delete_portfolio_view(
+    view_id: str, identity: Identity = Depends(require_role(*SUPERVISORY_READ_ROLES))
+) -> Response:
+    if not SAVED_VIEW_ID_RE.match(view_id):
+        raise HTTPException(status_code=400, detail="Malformed view id")
+    store = get_sqlite_store()
+    try:
+        with store.transaction():
+            store.conn.execute("DELETE FROM saved_views WHERE view_id = ? AND owner = ?", (view_id, identity.username))
+    finally:
+        store.close()
+    return RedirectResponse(url="/portfolio", status_code=303)
+
+
 @app.get("/entity/{entity_id}", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
-async def view_entity_profile(request: Request, entity_id: str) -> Response:
+async def view_entity_profile(request: Request, entity_id: str, run_id: str | None = None) -> Response:
     require_valid_entity_id(entity_id)
+    require_valid_run_id(run_id)
     identity = get_current_identity(request)
     if identity:
         require_cse_access(entity_id, identity)
     duckdb_store, sqlite_store = get_stores()
 
     cur = sqlite_store.conn.cursor()
-    cur.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1")
-    run_row = cur.fetchone()
+    try:
+        run_row = _selected_run(sqlite_store, run_id)
+    except HTTPException:
+        duckdb_store.close()
+        sqlite_store.close()
+        raise
     run_id = run_row["run_id"] if run_row else ""
 
     # Fetch entity info
@@ -1056,16 +1219,18 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
         "SELECT * FROM entity_scores WHERE entity_id = ? AND run_id = ?", (entity_id, run_id)
     )
     score_row = cur.fetchone()
+    # No score in this run is "not assessed", never a reassuring "Low" (brief B01).
     score_dict = (
         dict(score_row)
         if score_row
-        else {"risk_index": 0.0, "risk_band": "Low", "distinct_rules_triggered": 0}
+        else {"risk_index": None, "risk_band": "Not assessed in this run", "distinct_rules_triggered": 0,
+              "classification_status": None, "coverage": None}
     )
 
     # Fetch findings
     cur.execute(
         """
-        SELECT finding_id, rule_id, domain, severity, score, title, rationale
+        SELECT finding_id, rule_id, domain, severity, score, title, rationale, exception_id
         FROM findings
         WHERE entity_id = ? AND run_id = ?
         ORDER BY score DESC
@@ -1094,8 +1259,9 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
     radar_entity_vals = [
         "-" if d in dom_scores and dom_scores[d] is None else dom_scores.get(d, 0.0) for d in radar_domains
     ]
+    cohort = sqlite_store.get_peer_comparison(run_id, entity_id) if run_id else None
     radar_peer_vals, peer_label = _peer_median_domain_scores(
-        duckdb_store, cur, entity_id, run_id, radar_domains
+        duckdb_store, cur, entity_id, run_id, radar_domains, cohort
     )
     kpi_comparison = _kpi_reconciliation(duckdb_store, entity_id)
     # The stored band can be higher than the index alone gives (band_floors in scoring.yaml).
@@ -1111,6 +1277,12 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
         _load_rules_config()["rules"].get("EG10", {}).get("params", {}).get("mttr_gap_ratio_threshold", 0.60)
     )
     anomaly_leads = _display_signals(sqlite_store.get_anomaly_signals(run_id, entity_id))
+    from satsa.context import build_contexts, entity_context_records
+
+    entity_ctx = build_contexts([Entity(**entity_dict)], duckdb_store)[entity_id]
+    context_records = entity_context_records(sqlite_store, entity_id)
+    rule_ids = [r.id for r in RuleRegistry().get_all_rules()]
+    excepted = {f["finding_id"] for f in findings if f.get("exception_id")}
 
     duckdb_store.close()
     sqlite_store.close()
@@ -1131,6 +1303,13 @@ async def view_entity_profile(request: Request, entity_id: str) -> Response:
             "kpi_comparison": kpi_comparison,
             "kpi_gap_threshold": kpi_gap_threshold,
             "anomaly_leads": anomaly_leads,
+            "run": dict(run_row) if run_row else None,
+            "cohort": cohort,
+            "entity_ctx": entity_ctx,
+            "context_records": context_records,
+            "rule_ids": rule_ids,
+            "excepted": excepted,
+            "viewer": identity,
         },
     )
 
@@ -1148,18 +1327,31 @@ MIN_PEERS_FOR_MEDIAN = 3
 
 
 def _peer_median_domain_scores(
-    duckdb_store: DuckDBStore, cur: Any, entity_id: str, run_id: str, domains: list[str]
+    duckdb_store: DuckDBStore,
+    cur: Any,
+    entity_id: str,
+    run_id: str,
+    domains: list[str],
+    cohort: dict[str, Any] | None = None,
 ) -> tuple[list[float | str] | None, str]:
-    """Median domain score of the entity's peer cohort in this run (same resolver as scoring).
+    """Median domain score of the entity's peer cohort in this run.
 
+    The cohort is the one the run recorded (peer_comparisons). Runs recorded before cohorts were
+    stored fall back to resolving it from today's entity table, and the label says so.
     Returns (None, reason) when the cohort is too small for a median that does not
     simply reveal one or two peers' scores.
     """
-    all_entities = [Entity(**row) for row in duckdb_store.query("SELECT * FROM entity").iter_rows(named=True)]
-    target = next((e for e in all_entities if e.entity_id == entity_id), None)
-    if target is None or not run_id:
+    if not run_id:
         return None, "no peer group"
-    peers, cohort_label, _is_weak = PeerResolver().resolve_peers(target, all_entities)
+    if cohort is not None:
+        peers, cohort_label = list(cohort["member_ids"]), f"{cohort['cohort_label']}, {cohort['strength']}"
+    else:
+        all_entities = [Entity(**row) for row in duckdb_store.query("SELECT * FROM entity").iter_rows(named=True)]
+        target = next((e for e in all_entities if e.entity_id == entity_id), None)
+        if target is None:
+            return None, "no peer group"
+        peers, label, _is_weak = PeerResolver().resolve_peers(target, all_entities)
+        cohort_label = f"{label}, re-derived from current data: not recorded for this run"
     if len(peers) < MIN_PEERS_FOR_MEDIAN:
         return None, f"fewer than {MIN_PEERS_FOR_MEDIAN} peers"
     placeholders = ",".join("?" for _ in peers)
@@ -1177,6 +1369,20 @@ def _peer_median_domain_scores(
         known = [v for p in peers if (v := by_domain.get(d, {}).get(p, 0.0)) is not None]
         medians.append(float(statistics.median(known)) if known else "-")
     return medians, f"{cohort_label} ({len(peers)} peers)"
+
+
+def _selected_run(sqlite_store: SQLiteStore, run_id: str | None) -> Any:
+    """The run a page or report shows: `run_id` if given (404 if unknown), else the latest."""
+    if run_id:
+        row = sqlite_store.conn.execute(
+            "SELECT run_id, period, config_hash, fingerprint, created_at FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Assessment run not found")
+        return row
+    return sqlite_store.conn.execute(
+        "SELECT run_id, period, config_hash, fingerprint, created_at FROM runs ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
 
 
 def _kpi_reconciliation(duckdb_store: DuckDBStore, entity_id: str) -> list[dict[str, Any]]:
@@ -1326,13 +1532,25 @@ async def view_finding_detail(request: Request, finding_id: str) -> Response:
     from satsa.cases.workflow import STATE_LABELS, case_for_lineage
 
     case = case_for_lineage(sqlite_store, card.entity_id, card.rule_id)
+    # What the rule had to work with, the cohort the run recorded, and any exception it was
+    # recorded under -- all as of this finding's run, never re-derived from today's data.
+    support = cur.execute(
+        "SELECT population, min_sample, state FROM rule_results WHERE run_id = ? AND entity_id = ? AND rule_id = ?",
+        (card.run_id, card.entity_id, card.rule_id),
+    ).fetchone()
+    cohort = sqlite_store.get_peer_comparison(card.run_id, card.entity_id)
+    exception = (
+        cur.execute("SELECT * FROM rule_exceptions WHERE exception_id = ?", (f_row["exception_id"],)).fetchone()
+        if f_row["exception_id"] else None
+    )
     sqlite_store.close()
 
     return templates.TemplateResponse(
         request=request,
         name="finding_detail.html",
         context={"active_tab": "portfolio", "card": card, "config": config_status, "case": case,
-                 "case_state_labels": STATE_LABELS},
+                 "case_state_labels": STATE_LABELS, "support": dict(support) if support else None,
+                 "cohort": cohort, "exception": dict(exception) if exception else None},
     )
 
 
@@ -1404,6 +1622,11 @@ async def view_review_queue(request: Request, status: str | None = None) -> Resp
             by_id[r["queue_id"]]["evidence_cards"].append(
                 {"finding_id": r["finding_id"], "rule_id": r["rule_id"], "title": r["title"]}
             )
+    # Each entity's evidence coverage in this run, so a record is read with its limits.
+    entity_evidence = {
+        r["entity_id"]: {"status": r["classification_status"], "text": coverage_sentence(dict(r))}
+        for r in cur.execute("SELECT * FROM entity_scores WHERE run_id = ?", (run_id,))
+    }
     sqlite_store.close()
 
     return templates.TemplateResponse(
@@ -1411,6 +1634,7 @@ async def view_review_queue(request: Request, status: str | None = None) -> Resp
         name="review_queue.html",
         context={
             "active_tab": "queue",
+            "entity_evidence": entity_evidence,
             "queue_items": queue_items,
             "status_filter": status_filter,
             "status_filters": QUEUE_STATUS_FILTERS,
@@ -1589,33 +1813,43 @@ async def api_list_runs() -> list[dict[str, Any]]:
 
 
 @app.get("/api/v1/entities", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
-async def api_list_entities() -> list[dict[str, Any]]:
+async def api_list_entities(run_id: str | None = None) -> list[dict[str, Any]]:
+    """Entity scores of one run (default: the latest), with each entity's evidence coverage."""
+    require_valid_run_id(run_id)
     duckdb_store, sqlite_store = get_stores()
-    df_ent = duckdb_store.query("SELECT entity_id, name, sector, size_band FROM entity")
-    ent_map = {row["entity_id"]: row for row in df_ent.iter_rows(named=True)}
-
-    cur = sqlite_store.conn.cursor()
-    cur.execute("""
-        SELECT entity_id, risk_index, risk_band, distinct_rules_triggered
-        FROM entity_scores
-        ORDER BY risk_index DESC
-    """)
-    rows = []
-    for r in cur.fetchall():
-        eid = r["entity_id"]
-        e_info = ent_map.get(eid, {"name": eid, "sector": "general", "size_band": "medium"})
-        rows.append(
-            {
-                "entity_id": eid,
-                "name": e_info["name"],
-                "sector": e_info["sector"],
-                "risk_index": r["risk_index"],
-                "risk_band": r["risk_band"],
-                "distinct_rules_triggered": r["distinct_rules_triggered"],
-            }
+    try:
+        run_row = _selected_run(sqlite_store, run_id)
+        df_ent = duckdb_store.query("SELECT entity_id, name, sector, size_band FROM entity")
+        ent_map = {row["entity_id"]: row for row in df_ent.iter_rows(named=True)}
+        cur = sqlite_store.conn.cursor()
+        cur.execute(
+            "SELECT * FROM entity_scores WHERE run_id = ? ORDER BY risk_index DESC, entity_id",
+            (run_row["run_id"] if run_row else "",),
         )
-    duckdb_store.close()
-    sqlite_store.close()
+        rows = []
+        for r in cur.fetchall():
+            eid = r["entity_id"]
+            e_info = ent_map.get(eid, {"name": eid, "sector": "general", "size_band": "medium"})
+            rows.append(
+                {
+                    "entity_id": eid,
+                    "run_id": r["run_id"],
+                    "name": e_info["name"],
+                    "sector": e_info["sector"],
+                    "risk_index": r["risk_index"],
+                    "risk_band": r["risk_band"],
+                    "distinct_rules_triggered": r["distinct_rules_triggered"],
+                    "classification_status": r["classification_status"],
+                    "coverage": r["coverage"],
+                    "rules_applicable": r["rules_applicable"],
+                    "rules_assessed": r["rules_assessed"],
+                    "missing_inputs": json.loads(r["missing_inputs_json"] or "[]"),
+                    "evidence": coverage_sentence(dict(r)),
+                }
+            )
+    finally:
+        duckdb_store.close()
+        sqlite_store.close()
     return rows
 
 
@@ -2846,85 +3080,83 @@ async def download_finding_pdf(request: Request, finding_id: str) -> FileRespons
     return _pdf_response(request, "finding_pdf", prepare)
 
 
+def _built_report(
+    request: Request,
+    report_kind: str,
+    run_id: str | None,
+    build: Callable[[ReportGenerator, Path, str], Path],
+    filename: Callable[[str], str],
+    media_type: str,
+    entity_id: str | None = None,
+) -> Response:
+    """Build an HTML or CSV report of one run (default: the latest) in a private temporary
+    directory and return its bytes: no shared fixed path, so concurrent downloads cannot
+    overwrite each other, and nothing is left behind."""
+    require_valid_run_id(run_id)
+    duckdb_store, sqlite_store = get_stores()
+    try:
+        rep = ReportGenerator(duckdb_store, sqlite_store)
+        try:
+            meta = rep.resolve_run(run_id)
+        except ReportNotFoundError:
+            raise HTTPException(status_code=404, detail="Assessment run not found") from None
+        with tempfile.TemporaryDirectory(prefix="satsa-report-") as tmp:
+            content = build(rep, Path(tmp) / "report", meta.run_id).read_bytes()
+        identity = get_current_identity(request)
+        actor = identity.username if identity else "operator"
+        role = identity.role if identity else "examiner"
+        for event in ("REPORT_GENERATED", "REPORT_DOWNLOADED"):
+            sqlite_store.record_live_event(
+                event, actor=actor, role=role, entity_id=entity_id,
+                details={"report": report_kind, "run_id": meta.run_id},
+            )
+    finally:
+        duckdb_store.close()
+        sqlite_store.close()
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename(meta.run_id)}"'},
+    )
+
+
 @app.get("/reports/entity/{entity_id}/html", dependencies=[Depends(require_authenticated)])
-async def download_entity_html(request: Request, entity_id: str) -> FileResponse:
+async def download_entity_html(request: Request, entity_id: str, run_id: str | None = None) -> Response:
     require_valid_entity_id(entity_id)
     identity = get_current_identity(request)
     if identity:
         require_cse_access(entity_id, identity)
-    duckdb_store, sqlite_store = get_stores()
-    rep = ReportGenerator(duckdb_store, sqlite_store)
-    html_path = Path(f"reports/{entity_id}_supervisory_report.html")
-    rep.generate_entity_html(entity_id, html_path)
-    actor = identity.username if identity else "operator"
-    role = identity.role if identity else "examiner"
-    sqlite_store.record_live_event("REPORT_GENERATED", actor=actor, role=role, entity_id=entity_id, details={"report": "entity_html"})
-    sqlite_store.record_live_event("REPORT_DOWNLOADED", actor=actor, role=role, entity_id=entity_id, details={"report": "entity_html"})
-    duckdb_store.close()
-    sqlite_store.close()
-
-    return FileResponse(
-        path=html_path,
-        filename=f"{entity_id}_Supervisory_Report.html",
-        media_type="text/html",
+    return _built_report(
+        request, "entity_html", run_id,
+        lambda rep, path, rid: rep.generate_entity_html(entity_id, path, rid),
+        lambda rid: f"{entity_id}_Supervisory_Report_{rid}.html", "text/html", entity_id=entity_id,
     )
 
 
 @app.get("/reports/portfolio/html", dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
-async def download_portfolio_html(request: Request) -> FileResponse:
-    duckdb_store, sqlite_store = get_stores()
-    rep = ReportGenerator(duckdb_store, sqlite_store)
-    p_path = Path("reports/portfolio_summary_report.html")
-    rep.generate_portfolio_html(p_path)
-    identity = get_current_identity(request)
-    actor = identity.username if identity else "operator"
-    role = identity.role if identity else "examiner"
-    sqlite_store.record_live_event("REPORT_GENERATED", actor=actor, role=role, details={"report": "portfolio_html"})
-    sqlite_store.record_live_event("REPORT_DOWNLOADED", actor=actor, role=role, details={"report": "portfolio_html"})
-    duckdb_store.close()
-    sqlite_store.close()
-
-    return FileResponse(
-        path=p_path,
-        filename="NCIIPC_Portfolio_Supervisory_Report.html",
-        media_type="text/html",
+async def download_portfolio_html(request: Request, run_id: str | None = None) -> Response:
+    return _built_report(
+        request, "portfolio_html", run_id,
+        lambda rep, path, rid: rep.generate_portfolio_html(path, rid),
+        lambda rid: f"NCIIPC_Portfolio_Supervisory_Report_{rid}.html", "text/html",
     )
 
 
 @app.get("/reports/export/findings-csv", dependencies=[Depends(require_role(*ANALYST_ROLES))])
-async def download_findings_csv(request: Request) -> FileResponse:
-    duckdb_store, sqlite_store = get_stores()
-    rep = ReportGenerator(duckdb_store, sqlite_store)
-    f_path = Path("reports/findings_export.csv")
-    rep.export_findings_csv(f_path)
-    identity = get_current_identity(request)
-    actor = identity.username if identity else "operator"
-    role = identity.role if identity else "examiner"
-    sqlite_store.record_live_event("REPORT_GENERATED", actor=actor, role=role, details={"report": "findings_csv"})
-    sqlite_store.record_live_event("REPORT_DOWNLOADED", actor=actor, role=role, details={"report": "findings_csv"})
-    duckdb_store.close()
-    sqlite_store.close()
-
-    return FileResponse(
-        path=f_path,
-        filename="SATSA_Findings_Export.csv",
-        media_type="text/csv",
+async def download_findings_csv(request: Request, run_id: str | None = None) -> Response:
+    return _built_report(
+        request, "findings_csv", run_id,
+        lambda rep, path, rid: rep.export_findings_csv(path, rid),
+        lambda rid: f"SATSA_Findings_Export_{rid}.csv", "text/csv",
     )
 
 
 @app.get("/reports/export/queue-csv", dependencies=[Depends(require_role(*ANALYST_ROLES))])
-async def download_queue_csv() -> FileResponse:
-    duckdb_store, sqlite_store = get_stores()
-    rep = ReportGenerator(duckdb_store, sqlite_store)
-    q_path = Path("reports/review_queue_export.csv")
-    rep.export_queue_csv(q_path)
-    duckdb_store.close()
-    sqlite_store.close()
-
-    return FileResponse(
-        path=q_path,
-        filename="SATSA_Review_Queue_Export.csv",
-        media_type="text/csv",
+async def download_queue_csv(request: Request, run_id: str | None = None) -> Response:
+    return _built_report(
+        request, "queue_csv", run_id,
+        lambda rep, path, rid: rep.export_queue_csv(path, rid),
+        lambda rid: f"SATSA_Review_Queue_Export_{rid}.csv", "text/csv",
     )
 
 
@@ -3145,3 +3377,8 @@ async def api_batch_submission(
 from satsa.api.case_routes import router as _case_router
 
 app.include_router(_case_router)
+
+# Entity context (maintenance windows, rule exceptions, applicability): satsa.api.context_routes.
+from satsa.api.context_routes import router as _context_router
+
+app.include_router(_context_router)

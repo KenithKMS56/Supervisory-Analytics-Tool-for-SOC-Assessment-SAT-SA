@@ -1,0 +1,165 @@
+{# Entity context (satsa.context): what the analytics take into account for this entity, and the
+   audited records that change an assessment. Expects entity, entity_ctx, context_records,
+   rule_ids, viewer. #}
+{% set can_record = viewer and (is_analyst(viewer.role) or is_examiner(viewer.role)) %}
+{% set can_decide = viewer and is_examiner(viewer.role) %}
+<div class="card" id="context">
+  <div class="card-title">
+    <span>Assessment context
+      <span class="tooltip-hint" tabindex="0">&#10067;<span class="tooltip-text">Hours are read in the entity's own time zone. Approved maintenance stops zero-event days in its scope and dates from counting as silence. A rule exception keeps the finding visible but leaves it out of the score and queue until it expires; a critical finding is never covered. A not-applicable decision removes a rule from this entity's coverage. Each applies from the next assessment run; recorded runs are not changed.</span></span>
+    </span>
+    <span style="font-size: 0.82rem; color: var(--text-secondary);">Applies from the next assessment run</span>
+  </div>
+
+  <div class="grid-3" style="margin-bottom: 1rem;">
+    <div>
+      <div class="stat-lbl">Time zone used</div>
+      <div><strong>{{ entity_ctx.timezone }}</strong>{% if entity_ctx.timezone_assumed %} <span class="badge badge-mod">&#9888; assumed</span>{% endif %}</div>
+      {% for note in entity_ctx.notes() %}<div style="font-size: 0.78rem; color: var(--text-secondary);">{{ note }}</div>{% endfor %}
+    </div>
+    <div>
+      <div class="stat-lbl">Operating schedule</div>
+      <div><strong>{{ entity_ctx.schedule | replace('_', ' ') }}</strong> <span style="font-size: 0.8rem; color: var(--text-secondary);">(declared {{ entity_ctx.shift_hours or 'none' }})</span></div>
+    </div>
+    <div>
+      <div class="stat-lbl">SOC model</div>
+      <div><strong>{{ entity_ctx.soc_model or 'not declared' }}</strong></div>
+    </div>
+  </div>
+
+  <h3 style="font-size: 1rem;">Maintenance windows</h3>
+  <div class="table-responsive">
+    <table id="maintenance-windows">
+      <thead><tr><th>Window</th><th>Scope</th><th>Dates</th><th>Reason and evidence</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for w in context_records.maintenance %}
+        <tr>
+          <td><code>{{ w.window_id }}</code></td>
+          <td>{{ w.asset_id or 'all assets' }}</td>
+          <td>{{ w.starts_on }} to {{ w.ends_on }}</td>
+          <td style="font-size: 0.82rem;">{{ w.reason }}<br><span style="color: var(--text-secondary);">Evidence: {{ w.evidence_ref }}</span></td>
+          <td style="font-size: 0.82rem;">{{ w.status }}<br><span style="color: var(--text-secondary);">requested by {{ w.requested_by }}{% if w.approved_by %}, approved by {{ w.approved_by }}{% endif %}{% if w.revoked_by %}, revoked by {{ w.revoked_by }}{% endif %}</span></td>
+          <td>
+            {% if can_decide and w.status == 'awaiting approval' and w.requested_by != viewer.username %}
+            <form method="post" action="/entity/{{ entity.entity_id }}/maintenance/{{ w.window_id }}/approve" style="margin: 0;">
+              <button type="submit" class="btn btn-secondary" style="font-size: 0.78rem; padding: 0.25rem 0.6rem;">Approve</button>
+            </form>
+            {% endif %}
+            {% if can_decide and w.status in ('awaiting approval', 'in force') %}
+            <form method="post" action="/entity/{{ entity.entity_id }}/maintenance/{{ w.window_id }}/revoke" style="margin: 0.3rem 0 0; display: flex; gap: 0.3rem; flex-wrap: wrap;">
+              <input type="text" name="reason" required class="form-control" aria-label="Reason for revoking {{ w.window_id }}" placeholder="Reason" style="font-size: 0.78rem; max-width: 10rem;">
+              <button type="submit" class="btn btn-secondary" style="font-size: 0.78rem; padding: 0.25rem 0.6rem;">Revoke</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" style="color: var(--text-muted);">No maintenance windows recorded.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if can_record %}
+  <details style="margin: 0.75rem 0 1.25rem;">
+    <summary style="cursor: pointer; font-size: 0.88rem;">Record a maintenance window</summary>
+    <form method="post" action="/entity/{{ entity.entity_id }}/maintenance" class="grid-3" style="gap: 0.75rem; margin-top: 0.75rem;">
+      <label style="font-size: 0.8rem;">First day <input type="date" name="starts_on" required class="form-control"></label>
+      <label style="font-size: 0.8rem;">Last day <input type="date" name="ends_on" required class="form-control"></label>
+      <label style="font-size: 0.8rem;">Asset (empty: all assets) <input type="text" name="asset_id" class="form-control" maxlength="128"></label>
+      <label style="font-size: 0.8rem;">Reason <input type="text" name="reason" required class="form-control" maxlength="2000"></label>
+      <label style="font-size: 0.8rem;">Evidence reference <input type="text" name="evidence_ref" required class="form-control" maxlength="2000" placeholder="e.g. change ticket CHG-1042"></label>
+      <div style="display: flex; align-items: flex-end;"><button type="submit" class="btn">Request (an examiner approves)</button></div>
+    </form>
+  </details>
+  {% endif %}
+
+  <h3 style="font-size: 1rem;">Rule exceptions</h3>
+  <div class="table-responsive">
+    <table id="rule-exceptions">
+      <thead><tr><th>Exception</th><th>Rule</th><th>Scope</th><th>Reason and evidence</th><th>Expires</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for x in context_records.exceptions %}
+        <tr>
+          <td><code>{{ x.exception_id }}</code></td>
+          <td><code>{{ x.rule_id }}</code></td>
+          <td style="font-size: 0.82rem;">{{ x.scope }}</td>
+          <td style="font-size: 0.82rem;">{{ x.reason }}<br><span style="color: var(--text-secondary);">Evidence: {{ x.evidence_ref }}</span></td>
+          <td>{{ x.expires_at[:10] }}</td>
+          <td style="font-size: 0.82rem;">{{ x.status }}<br><span style="color: var(--text-secondary);">requested by {{ x.requested_by }}{% if x.approved_by %}, approved by {{ x.approved_by }}{% endif %}{% if x.revoked_by %}, revoked by {{ x.revoked_by }}{% endif %}</span></td>
+          <td>
+            {% if can_decide and x.status == 'awaiting approval' and x.requested_by != viewer.username %}
+            <form method="post" action="/entity/{{ entity.entity_id }}/exceptions/{{ x.exception_id }}/approve" style="margin: 0;">
+              <button type="submit" class="btn btn-secondary" style="font-size: 0.78rem; padding: 0.25rem 0.6rem;">Approve</button>
+            </form>
+            {% endif %}
+            {% if can_decide and x.status in ('awaiting approval', 'in force') %}
+            <form method="post" action="/entity/{{ entity.entity_id }}/exceptions/{{ x.exception_id }}/revoke" style="margin: 0.3rem 0 0; display: flex; gap: 0.3rem; flex-wrap: wrap;">
+              <input type="text" name="reason" required class="form-control" aria-label="Reason for revoking {{ x.exception_id }}" placeholder="Reason" style="font-size: 0.78rem; max-width: 10rem;">
+              <button type="submit" class="btn btn-secondary" style="font-size: 0.78rem; padding: 0.25rem 0.6rem;">Revoke</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7" style="color: var(--text-muted);">No rule exceptions recorded.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if can_decide %}
+  <details style="margin: 0.75rem 0 1.25rem;">
+    <summary style="cursor: pointer; font-size: 0.88rem;">Request a rule exception</summary>
+    <form method="post" action="/entity/{{ entity.entity_id }}/exceptions" class="grid-3" style="gap: 0.75rem; margin-top: 0.75rem;">
+      <label style="font-size: 0.8rem;">Rule
+        <select name="rule_id" required class="form-control">{% for r in rule_ids %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select>
+      </label>
+      <label style="font-size: 0.8rem;">Scope <input type="text" name="scope" required class="form-control" maxlength="2000" placeholder="What is excepted"></label>
+      <label style="font-size: 0.8rem;">Expires on (within a year) <input type="date" name="expires_on" required class="form-control"></label>
+      <label style="font-size: 0.8rem;">Reason <input type="text" name="reason" required class="form-control" maxlength="2000"></label>
+      <label style="font-size: 0.8rem;">Evidence reference <input type="text" name="evidence_ref" required class="form-control" maxlength="2000"></label>
+      <div style="display: flex; align-items: flex-end;"><button type="submit" class="btn">Request (another examiner approves)</button></div>
+    </form>
+  </details>
+  {% endif %}
+
+  <h3 style="font-size: 1rem;">Rule applicability</h3>
+  <div class="table-responsive">
+    <table id="applicability-decisions">
+      <thead><tr><th>Decision</th><th>Rule</th><th>Reason</th><th>Decided</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for d in context_records.applicability %}
+        <tr>
+          <td><code>{{ d.decision_id }}</code></td>
+          <td><code>{{ d.rule_id }}</code> v{{ d.rule_version }}</td>
+          <td style="font-size: 0.82rem;">{{ d.reason }}</td>
+          <td style="font-size: 0.82rem;">{{ d.decided_by }}, {{ d.decided_at[:10] }}{% if d.expires_at %}; expires {{ d.expires_at[:10] }}{% endif %}</td>
+          <td style="font-size: 0.82rem;">{{ d.status }}{% if d.revoked_by %} by {{ d.revoked_by }}{% endif %}</td>
+          <td>
+            {% if can_decide and d.status == 'in force' %}
+            <form method="post" action="/entity/{{ entity.entity_id }}/applicability/{{ d.decision_id }}/revoke" style="margin: 0; display: flex; gap: 0.3rem; flex-wrap: wrap;">
+              <input type="text" name="reason" required class="form-control" aria-label="Reason for revoking {{ d.decision_id }}" placeholder="Reason" style="font-size: 0.78rem; max-width: 10rem;">
+              <button type="submit" class="btn btn-secondary" style="font-size: 0.78rem; padding: 0.25rem 0.6rem;">Revoke</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" style="color: var(--text-muted);">Every rule applies to this entity.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if can_decide %}
+  <details style="margin-top: 0.75rem;">
+    <summary style="cursor: pointer; font-size: 0.88rem;">Record that a rule does not apply</summary>
+    <form method="post" action="/entity/{{ entity.entity_id }}/applicability" class="grid-3" style="gap: 0.75rem; margin-top: 0.75rem;">
+      <label style="font-size: 0.8rem;">Rule
+        <select name="rule_id" required class="form-control">{% for r in rule_ids %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select>
+      </label>
+      <label style="font-size: 0.8rem;">Reason <input type="text" name="reason" required class="form-control" maxlength="2000"></label>
+      <label style="font-size: 0.8rem;">Expires on (optional) <input type="date" name="expires_on" class="form-control"></label>
+      <div style="display: flex; align-items: flex-end;"><button type="submit" class="btn">Record decision</button></div>
+    </form>
+  </details>
+  {% endif %}
+</div>

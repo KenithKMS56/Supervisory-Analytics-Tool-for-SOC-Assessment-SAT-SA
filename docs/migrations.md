@@ -148,6 +148,45 @@ recorded". They are never reclassified after the fact.
 - To undo: the previous release ignores the new tables. Cases and blind tasks recorded since
   then are not visible to it, but they remain in the database and in backups.
 
+### v8: maintenance windows, rule exceptions, peer comparisons, saved views (Phase 4)
+
+- New tables (docs/analytics_context.md):
+  - `maintenance_windows`: approved maintenance for an entity (all assets or one asset) over
+    inclusive dates, with requester, approver (a `CHECK` refuses self-approval) and revocation.
+  - `rule_exceptions`: a documented, time-limited exception for one entity and rule: scope,
+    reason, evidence reference, mandatory expiry, approver (`CHECK`: not the requester),
+    revocation.
+  - `peer_comparisons`: per run and entity, the cohort the run used: members, excluded entities
+    with their reason, fallback level, denominator, minimum support and strength.
+  - `saved_views`: a user's named portfolio filters.
+- New columns:
+  - `findings.exception_id` and `rule_results.exception_id`: the exception a finding was
+    recorded under.
+  - `systemic_findings.assessable_count`, `group_size`, `comparison_affected`,
+    `comparison_assessable`, `p_value`, `q_value`: the provider-level lead's figures.
+- Existing rows are untouched. Runs recorded before v8 have no `peer_comparisons` rows; the
+  entity and finding pages say "not recorded for this run" and label any peer median derived
+  from today's data as such. Their findings have no exception and their provider leads show
+  "not recorded" for the new figures.
+- Analytical tables (DuckDB, rebuilt in memory from the published Parquet files on every
+  start) gain the optional asset columns `in_service_from` and `in_service_to`. Files published
+  before this version have neither and load with both empty, which means "in service
+  throughout". No Parquet file is rewritten.
+- Behaviour changes:
+  - NS03 v1.1.0 reads hours in the entity's own time zone, NS01 v1.1.0 does not count approved
+    maintenance or out-of-service days as silence, and NS06 v1.1.0 does not count an asset
+    outside its in-service dates as a ghost. Rule versions changed, so case verification (which
+    compares the same rule version) does not treat a v1.0.0 result as comparable evidence for
+    a v1.1.0 result.
+  - Applicability decisions, maintenance windows and exceptions resolve "as of" the run's start
+    time, and a replay uses the recorded run's time, so revoking one later does not change
+    what a replay of an older run sees.
+  - The HTML reports and CSV exports take `run_id` (default: the latest run). The findings CSV
+    holds one run's findings, as the UI does; it used to hold every run's. `satsa export`
+    writes the latest run's.
+- To undo: the previous release ignores the new tables and columns. Context recorded since
+  then has no effect under it; it remains in the database and in backups.
+
 ## Publication catalog (`catalog.db`)
 
 ### v1: publication catalog

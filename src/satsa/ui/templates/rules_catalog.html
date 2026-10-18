@@ -101,16 +101,16 @@
         <circle cx="11" cy="11" r="8"></circle>
         <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
       </svg>
-      <input type="text" name="q" value="{{ q }}" placeholder="Search rules by ID, keyword, or indicator name..." class="form-control">
+      <input type="text" name="q" value="{{ q }}" placeholder="Search rules by ID, keyword, or indicator name..." class="form-control" aria-label="Search rules">
     </div>
 
-    <select name="category" class="form-control">
+    <select name="category" class="form-control" aria-label="Category">
       <option value="">All Categories (20)</option>
       <option value="Execution Gap" {% if category_filter == 'Execution Gap' %}selected{% endif %}>Category A: Execution Gaps (12)</option>
       <option value="Negative Space" {% if category_filter == 'Negative Space' %}selected{% endif %}>Category B: Negative Space (8)</option>
     </select>
 
-    <select name="domain" class="form-control">
+    <select name="domain" class="form-control" aria-label="Supervisory domain">
       <option value="">All Capability Domains</option>
       {% for d in all_domains %}
         <option value="{{ d }}" {% if domain_filter == d %}selected{% endif %}>{{ d }}</option>
