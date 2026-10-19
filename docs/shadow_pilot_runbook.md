@@ -128,3 +128,81 @@ described in `docs/validation.md` Section 0.1.
   rule, which is why entity count matters more than alert count.
 - A stand-in rehearsal of this pipeline on synthetic labels is in `docs/validation.md` Section 5A.
   Its perfect scores are circular and are not evidence.
+
+---
+
+# Part B: a prospective pilot with blinded reviewers
+
+Part A measures the rules against workpapers that already exist. Part B measures what the brief
+asks of a pilot (docs/product_brief.md section 14): whether examiners who follow the tool's
+ranking find more important concerns per fixed review effort than a random baseline, judged by
+reviewers who cannot see what the tool thinks. It uses blind review (Review Tools → Blind
+Review) and `satsa pilot` (`satsa.validate.pilot`, migration v9).
+
+**What it needs, and what cannot be simulated:** at least two qualified examiners who have not
+tuned the rules, a third for disagreements, authorised submissions from several distinct SOC
+environments, and enough entities: around 100 to 200 entity reviews is a starting point, to be
+agreed with the domain reviewers. On a demonstration deployment every figure is labelled a
+*synthetic implementation check*.
+
+## B1. Freeze the protocol before anyone judges anything
+
+```
+satsa pilot freeze --name pilot-2026-h1 --run <completed run> --actor <analyst> \
+    --seed <a number you write down> --calibration 0.3 --budget 10 --notes "..."
+```
+
+This records the run's configuration hash (thresholds frozen), a seeded split of the entities
+into **calibration** (may be looked at while setting up) and **held-out** (the headline
+figures), and the review budget: how many entities an examiner can review per arm. Protocols are
+never edited. Only runs with the frozen configuration hash are evaluated; a run under other
+thresholds is listed and left out.
+
+## B2. Draw blinded samples
+
+On the Blind Review page an analyst draws a sample from the run and assigns it to examiner A:
+the tool's highest-ranked entities (*flagged*, the tool arm), uniform random entities (*random*,
+the baseline) and low-band entities (*control*), shuffled with a recorded seed. The examiner
+judges each entity from raw signals; the system's view is hidden until they have submitted.
+
+Assign the same sample to examiner B with **Independent second review** (or
+`satsa pilot replicate --sample <id> --assignee B --actor <analyst>`). B gets the same entities
+in a different seeded order, so neither the order nor A's judgement leaks. The time from first
+opening a task to submitting it is recorded as the review time.
+
+## B3. Adjudicate disagreements
+
+`satsa pilot evaluate` lists entities where A and B disagree on whether there is an important
+concern (Elevated or Critical). A third examiner, who reviewed neither side, settles each:
+
+```
+satsa pilot adjudicate --protocol <id> --run <run> --entity <id> --label Elevated --rationale "..." --actor C
+```
+
+## B4. Evaluate
+
+```
+satsa pilot evaluate --protocol <id> --out pilot.md --json pilot.json
+```
+
+Per arm, for held-out and calibration entities separately:
+
+- important concerns found, overall and **within the fixed budget**: does the tool's ranking
+  beat the random baseline for the same review effort?
+- rates with **Wilson** intervals and an **entity-cluster bootstrap** interval (several periods
+  of one entity are correlated, so the entity is the unit that is resampled);
+- **false positives**: tool-arm entities both reviewers judged not an important concern;
+- **missed concerns**: random or control entities judged important that the system rated low;
+- **agreement**: observed agreement and Cohen's kappa (binary, and linearly weighted on the
+  four levels);
+- **reviewer time**: median and 90th percentile, overall and per reviewer.
+
+Unanswered tasks and unresolved disagreements are left out of every rate and counted on their
+own. They are never treated as negatives.
+
+## B5. What the figures will and will not mean
+
+The same cautions as Part A apply. Also: an examiner's concern level is a judgement, not ground
+truth; with tens of entities per arm the intervals are wide; and a difference between arms on
+one portfolio and period is not proof for other sectors. Usability errors are measured
+separately (`docs/usability_protocol.md`).

@@ -8,7 +8,7 @@ declared production-ready**: see "Gates still open" below and `docs/release_read
 1. Stop the web app, the Administration Portal and any worker or CLI job.
 2. Copy the whole data directory.
 3. Run `satsa migrate --data-dir data`. It backs up `satsa.db` before the first pending
-   migration and applies operational migrations v1–v9 and catalog migrations v1–v2.
+   migration and applies operational migrations v1–v10 and catalog migrations v1–v2.
 4. Run `satsa verify-data --data-dir data`.
 5. Start the three processes (`python entrypoint.py`, or the container).
 
@@ -25,6 +25,8 @@ legacy batches; none is rewritten.
   then the portals use neutral wording.
 - Imports and assessments run as jobs in a worker. The upload page sends you to the job's page.
 - An entity whose submission lets too few rules run is *Insufficient Evidence*, never *Low*.
+- In production, saving on Rule Tuning proposes a draft: another analyst or an examiner approves it
+  (Review Tools → Rule Changes), then an analyst puts it in force.
 - Review-queue labels are "Confirmed concern", "Marked as justified" and "More data needed";
   nothing is presented as a statutory notice.
 
@@ -92,7 +94,18 @@ layout (B08).
   - configuration YAML is parsed once per change;
   - free-text redaction hashes only the shingles it keeps and joins its results instead of
     copying every comment.
+  - assessment no longer quadratic in portfolio size: NS03 converts time zones once per run,
+    NS06 no longer multiplies alerts by log days, NS08 reads the portfolio's months once.
 - *Configurable branding*: `satsa deployment brand`, and an optional organisation at setup.
+- *Check only*: an upload (or `satsa ingest --check-only`) is validated and its full report shown,
+  including which rules the entity could be assessed on, with nothing published.
+- *Rule governance* (migration v10): a threshold change is a draft until someone other than its
+  author approves it; an analyst then puts it in force (`docs/rule_governance.md`). In production
+  *Save* on Rule Tuning no longer changes `config/rules.yaml` directly.
+- *Memory preflight* for imports and assessments; *connector conformance suite*; table
+  alternatives for every portfolio chart.
+- *Drills* executed and recorded: offline install into a clean environment, backup and restore
+  with replay, a worker killed mid-assessment (`docs/drills.md`).
 - *Manuals*: `docs/manuals/administrator.md`, `examiner.md`, `integration.md`. Also
   `docs/connector_compatibility.md`.
 
@@ -104,8 +117,13 @@ layout (B08).
 - **No connector is production-verified**; each is verified against fixtures only
   (`docs/connector_compatibility.md`).
 - **Benchmarks are from one development laptop**, not the declared 4-vCPU / 8-GiB reference
-  machine. With ten concurrent readers during an ingest, p95 page latency exceeded the proposed
-  2-second target in the measurements recorded in `docs/benchmarks.md`.
+  machine (`docs/benchmarks.md`). There, 100,000 alerts assess in 4.6–6.3 s and ten concurrent
+  readers see a p95 of 0.5–0.9 s (up to 1.5 s while another process ingests); single requests
+  reached 3.1 s at 100,000 and 4.5 s at 500,000 alerts during the reload after a publication.
+- **Large portfolios are slower than before the brief's changes**: at 5,000,000 alerts ingest
+  takes 97 s (47 s on 2026-10-02), assessment 354 s (124 s) and the first portfolio page after a
+  run 46 s (17 s). Assessment grows faster than the data. Nothing above 100,000 alerts is a
+  supported tier.
 - **One worker per deployment.** Several workers are safe by lease, but are not load-tested.
 - **Content-Security-Policy keeps `'unsafe-inline'`** for scripts and styles, because the
   templates still use inline scripts and handlers. The other directives confine every page to

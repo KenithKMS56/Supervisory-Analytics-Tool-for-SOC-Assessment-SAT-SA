@@ -31,8 +31,8 @@ def worker() -> subprocess.Popen:
                             env={**os.environ, "PYTHONIOENCODING": "utf-8"})
 
 
-from satsa.jobs.queue import JobQueue  # noqa: E402
-from satsa.store.sqlite import SQLiteStore  # noqa: E402
+from satsa.jobs.queue import JobQueue
+from satsa.store.sqlite import SQLiteStore
 
 store = SQLiteStore("data/satsa.db")
 job = JobQueue(store).enqueue("assessment", {"period": "2026-H1", "reason": "worker-kill drill"}, "drill")

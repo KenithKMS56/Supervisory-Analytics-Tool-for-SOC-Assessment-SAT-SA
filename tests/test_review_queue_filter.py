@@ -5,22 +5,25 @@ import io
 import re
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 
 from satsa.api.routes import QUEUE_STATUS_FILTERS, app
 
 client = TestClient(app)
 examiner = TestClient(app)
-for _c, _user, _pass in (
-    (client, "analyst", "ChangeMe-Analyst#2026"),
-    (examiner, "examiner", "ChangeMe-Examiner#2026"),
-):
-    assert (
-        _c.post(
-            "/login", data={"username": _user, "password": _pass}, follow_redirects=False
-        ).status_code
-        == 303
-    )
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _signed_in():
+    """Sign in when this module's tests start, not when the module is imported: a session opened
+    at collection can pass the idle timeout before a long suite reaches these tests."""
+    for c, user, password in (
+        (client, "analyst", "ChangeMe-Analyst#2026"),
+        (examiner, "examiner", "ChangeMe-Examiner#2026"),
+    ):
+        assert c.post("/login", data={"username": user, "password": password},
+                      follow_redirects=False).status_code == 303
 
 ROW = re.compile(r"<tr>(.*?)</tr>", re.DOTALL)
 QUEUE_ID = re.compile(r'name="queue_id" value="([^"]+)"')

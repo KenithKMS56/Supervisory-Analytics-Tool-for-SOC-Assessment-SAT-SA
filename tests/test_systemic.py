@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 
 from satsa.api.routes import app
@@ -11,7 +12,13 @@ from satsa.rules.systemic import SystemicCorrelationDetector
 from satsa.store.sqlite import SQLiteStore
 
 client = TestClient(app)
-client.post("/login", data={"username": "analyst", "password": "ChangeMe-Analyst#2026"})
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _signed_in():
+    """Sign in when this module's tests start (a session opened at import can time out first)."""
+    assert client.post("/login", data={"username": "analyst", "password": "ChangeMe-Analyst#2026"},
+                       follow_redirects=False).status_code == 303
 
 
 def _finding(entity_id: str, rule_id: str, severity: str = "high") -> Finding:
