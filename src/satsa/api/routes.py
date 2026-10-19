@@ -11,6 +11,7 @@ import re
 import shutil
 import statistics
 import tempfile
+import urllib.parse
 import zipfile
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
@@ -41,6 +42,7 @@ from satsa.auth.session import (
     require_role,
 )
 from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
+from satsa.cases.workflow import CaseError
 from satsa.config_cache import load_yaml
 from satsa.csv_safe import SafeWriter
 from satsa.explain.finding_card import WHY_IT_MATTERS, FindingCard
@@ -55,6 +57,7 @@ from satsa.peers.anomaly_scan import format_value as format_metric_value
 from satsa.peers.grouping import PeerResolver
 from satsa.report.generator import ReportGenerator, ReportNotFoundError, coverage_sentence
 from satsa.report.naming import entity_pdf_name, finding_pdf_name, portfolio_pdf_name
+from satsa.rules import lifecycle
 from satsa.rules.negative_space import REVIEW_PERIOD_MONTHS_RANGE
 from satsa.rules.registry import RuleRegistry
 from satsa.scoring.control_priorities import rank_controls, rank_processes
@@ -2509,8 +2512,8 @@ def handle_upload(
 
     sqlite_store = get_sqlite_store()
     try:
-        params = {"target_entity": target_clean, "period": period_clean, "files": names,
-                  "default_period": _latest_period(sqlite_store)}
+        params: dict[str, Any] = {"target_entity": target_clean, "period": period_clean, "files": names,
+                                  "default_period": _latest_period(sqlite_store)}
         if preview:
             params["preview"] = True
         job = JobQueue(sqlite_store).enqueue(
@@ -2734,8 +2737,8 @@ def _load_rules_config() -> dict[str, Any]:
     return load_yaml(RULES_CONFIG_PATH) or {"rules": {}}
 
 
-def _write_rules_config(cfg: dict[str, Any]) -> None:
-    """Write config/rules.yaml, preserving its leading comment header."""
+def _render_rules_config(cfg: dict[str, Any]) -> str:
+    """The text of config/rules.yaml for `cfg`, keeping the file's leading comment header."""
     header = ""
     if RULES_CONFIG_PATH.exists():
         lines = RULES_CONFIG_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -2743,9 +2746,7 @@ def _write_rules_config(cfg: dict[str, Any]) -> None:
             if not line.startswith("#"):
                 break
             header += line
-    RULES_CONFIG_PATH.write_text(
-        header + yaml.dump(cfg, sort_keys=False, width=100), encoding="utf-8"
-    )
+    return header + yaml.dump(cfg, sort_keys=False, width=100)
 
 
 def _tunable_param_rows(rules_cfg: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2759,12 +2760,34 @@ def _tunable_param_rows(rules_cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+@app.get("/rule-versions", response_class=HTMLResponse, dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
+async def view_rule_versions(request: Request, message: str = "") -> Response:
+    """Rule configuration versions, for examiners and analysts (approve / reject; analysts also
+    put approved versions in force)."""
+    sqlite_store = get_sqlite_store()
+    try:
+        rules_drift = lifecycle.drift(sqlite_store, RULES_CONFIG_PATH)
+        lifecycle.active(sqlite_store, RULES_CONFIG_PATH)
+        rule_versions = lifecycle.versions(sqlite_store)
+    finally:
+        sqlite_store.close()
+    return templates.TemplateResponse(request=request, name="rule_versions.html", context={
+        "active_tab": "tuning", "message": message, "rule_versions": rule_versions, "rules_drift": rules_drift,
+        "viewer": get_current_identity(request),
+    })
+
+
 @app.get("/tuning", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_tuning(request: Request, message: str = "") -> Response:
     rules_cfg = _load_rules_config()
     sqlite_store = get_sqlite_store()
-    selected_period = _latest_period(sqlite_store)
-    sqlite_store.close()
+    try:
+        selected_period = _latest_period(sqlite_store)
+        rules_drift = lifecycle.drift(sqlite_store, RULES_CONFIG_PATH)
+        lifecycle.active(sqlite_store, RULES_CONFIG_PATH)
+        rule_versions = lifecycle.versions(sqlite_store)
+    finally:
+        sqlite_store.close()
     config_hash = (
         hashlib.sha256(RULES_CONFIG_PATH.read_bytes()).hexdigest()[:16]
         if RULES_CONFIG_PATH.exists()
@@ -2782,6 +2805,9 @@ async def view_tuning(request: Request, message: str = "") -> Response:
             "config_hash": config_hash,
             "preview": None,
             "selected_period": selected_period,
+            "rule_versions": rule_versions,
+            "rules_drift": rules_drift,
+            "viewer": get_current_identity(request),
         },
     )
 
@@ -2801,15 +2827,32 @@ async def handle_tuning_save(
     form = await request.form()
     cfg, changes = _apply_tuning_form(form, _load_rules_config())
 
-    if changes:
-        _write_rules_config(cfg)
-
-    # Re-evaluate with the (possibly) updated thresholds, for the selected period, in the worker
+    # A change is a version (satsa.rules.lifecycle): a draft that another person approves before
+    # it is put in force. A demonstration deployment puts it in force at once, and says so.
+    demo = _deployment_settings().get("mode") == "demo"
     sqlite_store = get_sqlite_store()
     try:
         period = _selected_period(form, sqlite_store)
+        version = None
+        if changes:
+            try:
+                change_list = [{"field": field.replace("__", "."), "old": c["old"], "new": c["new"]}
+                               for field, c in changes.items()]
+                version = lifecycle.propose(sqlite_store, _render_rules_config(cfg), change_list,
+                                            identity.username, identity.role)
+                if demo:
+                    version = lifecycle.activate(sqlite_store, version["version_no"], identity.username,
+                                                 identity.role, RULES_CONFIG_PATH, demo=True)
+            except CaseError as exc:
+                raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     finally:
         sqlite_store.close()
+    if version is not None and version["state"] == "draft":
+        msg = (f"Draft version {version['version_no']} proposed ({len(changes)} change(s)). Another analyst or "
+               "an examiner must approve it, then an analyst puts it in force; nothing was re-assessed yet.")
+        return RedirectResponse(url=f"/tuning?message={urllib.parse.quote_plus(msg)}#versions", status_code=303)
+
+    # Re-evaluate with the (possibly) updated thresholds, for the selected period, in the worker
     job = enqueue_assessment(period, identity, "rule parameters saved")
     sqlite_store = get_sqlite_store()
     try:
@@ -2825,7 +2868,46 @@ async def handle_tuning_save(
         f"Parameters updated! Period: {period} | Re-assessment queued as job {job['job_id']} "
         "(see Jobs for its findings)"
     )
+    if version is not None:
+        msg += f" | Version {version['version_no']}: {lifecycle.DEMO_ACTIVATION_NOTE}"
     return RedirectResponse(url=f"/tuning?message={msg}", status_code=303)
+
+
+@app.post("/tuning/versions/{version_no}/{decision}")
+async def decide_rule_version(
+    version_no: int,
+    decision: str,
+    note: Annotated[str, Form()] = "",
+    period: Annotated[str, Form()] = "",
+    identity: Identity = Depends(require_role(*SUPERVISORY_READ_ROLES)),
+) -> Response:
+    """approve / reject (an analyst or examiner other than the author) or activate (an analyst;
+    queues a re-assessment of the latest period) one rule configuration version."""
+    if decision not in ("approve", "reject", "activate"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    sqlite_store = get_sqlite_store()
+    try:
+        if decision == "approve":
+            lifecycle.approve(sqlite_store, version_no, identity.username, identity.role, note)
+            msg = f"Version {version_no} approved. An analyst can now put it in force."
+        elif decision == "reject":
+            lifecycle.reject(sqlite_store, version_no, identity.username, identity.role, note)
+            msg = f"Version {version_no} rejected."
+        else:
+            # The period is checked before anything changes, so a bad one cannot leave a version
+            # in force with no re-assessment queued.
+            chosen = period.strip() or _latest_period(sqlite_store)
+            if period.strip() and not re.match(PERIOD_RE, chosen):
+                raise HTTPException(status_code=422, detail="period must look like 2026-Q1, 2026-H1 or 2026-03")
+            lifecycle.activate(sqlite_store, version_no, identity.username, identity.role, RULES_CONFIG_PATH)
+            job = enqueue_assessment(chosen, identity, f"rule version {version_no} put in force")
+            msg = f"Version {version_no} is in force. Re-assessment of {chosen} queued as job {job['job_id']}."
+    except CaseError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    finally:
+        sqlite_store.close()
+    page = "/tuning" if is_analyst(identity.role) else "/rule-versions"
+    return RedirectResponse(url=f"{page}?message={urllib.parse.quote_plus(msg)}#versions", status_code=303)
 
 
 @app.post("/tuning/preview", response_class=HTMLResponse)
@@ -2862,6 +2944,9 @@ async def handle_tuning_preview(
         before = {(r["entity_id"], r["rule_id"]) for r in cur.fetchall()}
         cur.execute("SELECT entity_id, risk_band FROM entity_scores WHERE run_id = ?", (baseline_run,))
         bands_before = {r["entity_id"]: r["risk_band"] for r in cur.fetchall()}
+        # Read-only: a preview records nothing, not even a configuration edited outside the lifecycle.
+        rule_versions = lifecycle.versions(sqlite_store)
+        rules_drift = lifecycle.drift(sqlite_store, RULES_CONFIG_PATH)
     finally:
         duckdb_store.close()
         sqlite_store.close()
@@ -2895,6 +2980,9 @@ async def handle_tuning_preview(
             else "N/A",
             "preview": preview,
             "selected_period": period,
+            "rule_versions": rule_versions,
+            "rules_drift": rules_drift,
+            "viewer": get_current_identity(request),
         },
     )
 
@@ -2985,13 +3073,18 @@ def handle_import_pack(
         tmp_path = Path(tmp.name)
 
     try:
+        lifecycle.active(sqlite_store, RULES_CONFIG_PATH)  # the configuration before the pack is on record
         res = signer.import_rule_pack(
             tmp_path,
             target_config_dir="config",
             sqlite_store=sqlite_store,
             actor=identity.username,
         )
+        recorded = lifecycle.record_signed_pack(sqlite_store, RULES_CONFIG_PATH, identity.username,
+                                                res.get("version"), res.get("signature", ""))
         msg = f"Rule pack verified and installed! Version: {res.get('version')} | Files: {res.get('files_imported')}"
+        if recorded is not None:
+            msg += f" | Rule configuration version {recorded['version_no']} (approved by the pack's signature)"
     except (ValueError, KeyError, OSError, RuntimeError) as e:
         msg = f"Failed to import rule pack: {e}"
     finally:

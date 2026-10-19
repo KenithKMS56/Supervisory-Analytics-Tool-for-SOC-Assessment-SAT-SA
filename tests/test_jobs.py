@@ -28,6 +28,14 @@ ENV = {**os.environ, "PYTHONIOENCODING": "utf-8"}
 def deployment(tmp_path, monkeypatch):
     root = copy_deployment(tmp_path / "deployment")
     monkeypatch.chdir(root)
+    # The copy starts with an empty queue: a job an earlier test left queued in the shared
+    # database belongs to that test, and would be claimed (or counted) here otherwise.
+    store = SQLiteStore("data/satsa.db")
+    try:
+        with store.transaction():
+            store.conn.execute("DELETE FROM jobs")
+    finally:
+        store.close()
     return root
 
 

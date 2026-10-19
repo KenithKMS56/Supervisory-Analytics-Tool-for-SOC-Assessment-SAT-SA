@@ -1672,8 +1672,8 @@ class IngestionPipeline:
         for ent_id in sorted(entities_present):
             alert_count, empty_fields = alert_profile[ent_id]
             # A preview reports what the entity could be assessed on if this were published.
-            tables = submitted.get(ent_id, set()) | (manifest_tables if state == "preview" else set())
-            coverage[ent_id] = rule_coverage(tables, empty_fields)
+            entity_tables = submitted.get(ent_id, set()) | (manifest_tables if state == "preview" else set())
+            coverage[ent_id] = rule_coverage(entity_tables, empty_fields)
             rules_by_column: dict[str, list[str]] = {}
             for rule_id, columns in coverage[ent_id]["degraded"].items():
                 for column in columns:

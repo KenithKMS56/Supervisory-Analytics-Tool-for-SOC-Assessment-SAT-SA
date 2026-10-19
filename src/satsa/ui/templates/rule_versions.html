@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block title %}Rule changes{% endblock %}
+{% block content %}
+<div class="page-header">
+  <h1>Rule changes</h1>
+  <p style="color: var(--text-secondary);">Proposed and past rule-threshold configurations. Approve or reject a change proposed by someone else; analysts put approved changes in force from Rule Tuning.</p>
+</div>
+{% if message %}<div class="notice-banner" role="status" style="margin-bottom: 1rem;">{{ message }}</div>{% endif %}
+{% set can_tune = is_analyst(viewer.role) if viewer else false %}
+{% include "_rule_versions.html" %}
+{% endblock %}

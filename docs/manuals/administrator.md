@@ -162,7 +162,14 @@ know, and the recovery path is written per version.
 - Support diagnostics: `satsa ops diagnostics --out diag.zip` writes a redacted package (no
   data, secrets or usernames) to review before sharing. Nothing is uploaded anywhere.
 
-## 9. When something is wrong
+## 9. Rule configuration
+
+`config/rules.yaml` changes through versions: proposed, approved by a different person, then put
+in force (`docs/rule_governance.md`). Do not edit it by hand: an edit is recorded as an
+`external_edit` version and flagged, because it skipped approval. Signed rule packs are imported
+on Rule Tuning and recorded with their signature as the approval.
+
+## 10. When something is wrong
 
 | Symptom | Look at |
 |---|---|

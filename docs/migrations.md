@@ -205,6 +205,20 @@ recorded". They are never reclassified after the fact.
 - To undo: the previous release ignores the new columns and tables; blind review works as
   before. Protocols and adjudications remain in the database and in backups.
 
+### v10: rule configuration lifecycle (Phase 5)
+
+- New table `rule_pack_versions` (docs/rule_governance.md): every proposed rule configuration
+  with its full text, SHA-256, base version, changes and state (draft, approved, active,
+  retired, rejected). A `CHECK` refuses an approver equal to the author; a partial unique index
+  allows one active version.
+- Existing rows are untouched. The configuration on disk is recorded as version 1 (`adopted`)
+  the first time Rule Tuning or Rule Changes is opened, or a pack is imported.
+- Behaviour change: in a production deployment *Save* on Rule Tuning proposes a draft instead
+  of writing `config/rules.yaml`. The change is in force only after someone else approves it
+  and an analyst activates it. Demonstration deployments still apply it at once (recorded).
+- To undo: the previous release ignores the table; `config/rules.yaml` is whatever was last put
+  in force.
+
 ## Publication catalog (`catalog.db`)
 
 ### v1: publication catalog

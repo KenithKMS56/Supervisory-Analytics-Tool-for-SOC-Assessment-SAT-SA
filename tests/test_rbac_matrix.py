@@ -36,6 +36,7 @@ ALL = frozenset({"examiner", "analyst"})
 SUP_READ = ALL
 ANALYST = frozenset({"analyst"})  # engine room: ingest, runs, tuning, raw telemetry, audit
 REVIEW = frozenset({"examiner"})  # review decisions (separation of duties)
+REVIEW_OR_ANALYST = ANALYST | REVIEW  # rule-change approval: any operator other than the author
 INGEST = ANALYST
 TUNING = ANALYST
 RULEPACK = ANALYST
@@ -67,6 +68,8 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("GET", "/blind-review"): (ALL, True),
     ("GET", "/rules"): (ANALYST, True),
     ("GET", "/tuning"): (ANALYST, True),
+    ("GET", "/rule-versions"): (REVIEW_OR_ANALYST, True),
+    ("POST", "/tuning/versions/{version_no}/{decision}"): (REVIEW_OR_ANALYST, False),
     ("GET", "/shadow-pilot"): (ANALYST, True),
     ("POST", "/shadow-pilot"): (ANALYST, False),
     ("GET", "/templates/{template_name}"): (ANALYST, False),
@@ -245,6 +248,8 @@ def _satsa_url(path: str, finding_id: str) -> str:
         .replace("{attachment_id}", "ATT-000000000000")
         .replace("{task_id}", "BLT-000000000000")
         .replace("{sample_id}", "BLS-000000000000")
+        .replace("{version_no}", "999999")
+        .replace("{decision}", "approve")
         .replace("{window_id}", "MW-000000000000")  # well-formed, none of these exist
         .replace("{exception_id}", "EXC-000000000000")
         .replace("{decision_id}", "APD-000000000000")

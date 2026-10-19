@@ -228,7 +228,8 @@ def import_files(ctx: JobContext) -> dict[str, Any]:
         "message": message,
     }
     if res.get("status") == "preview":
-        cov = (res.get("rule_coverage") or {}).get(target or "", None) or next(iter((res.get("rule_coverage") or {}).values()), {})
+        coverage_by_entity: dict[str, Any] = res.get("rule_coverage") or {}
+        cov: dict[str, Any] = coverage_by_entity.get(target or "") or next(iter(coverage_by_entity.values()), {})
         result["preview"] = {
             "files": res.get("file_coverage", []),
             "assessed": sorted(cov.get("assessed", {})),

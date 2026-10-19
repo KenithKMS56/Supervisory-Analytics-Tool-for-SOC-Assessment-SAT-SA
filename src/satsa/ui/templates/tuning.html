@@ -43,12 +43,16 @@
   </div>
 </div>
 
+{% set can_tune = true %}
+{% include "_rule_versions.html" %}
+
 <div class="grid-2-1">
   <!-- Left: Rule Parameter Tuning Form -->
   <div class="card">
     <h2>Supervisory Threshold Calibration</h2>
     <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1.5rem;">
-      Adjust heuristic cut-offs for the supervisory assessment engine. Changes are saved to <code>config/rules.yaml</code> and re-hashed:
+      Adjust heuristic cut-offs for the supervisory assessment engine. Saving proposes a new version (above); it changes
+      <code>config/rules.yaml</code> once it is approved and put in force{% if deployment().get("mode") == "demo" %} (in this demonstration deployment, at once){% endif %}:
     </p>
 
     {% if preview %}

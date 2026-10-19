@@ -602,6 +602,49 @@ def _m9_pilot_evaluation(conn: sqlite3.Connection) -> None:
     )
 
 
+def _m10_rule_pack_versions(conn: sqlite3.Connection) -> None:
+    """Rule-configuration lifecycle (satsa.rules.lifecycle, docs/rule_governance.md).
+
+    `rule_pack_versions`: every rule configuration that was proposed, with its full text and
+    SHA-256, the version it was based on, what changed, and its state: draft -> approved ->
+    active -> retired, or rejected. Approval is by someone other than the author (a CHECK, as
+    well as the code). At most one version is active (a partial unique index).
+
+    Nothing existing changes. The configuration in force when the lifecycle is first used is
+    recorded as version 1, "adopted"; every run keeps its own full configuration snapshot as
+    before (run_config_snapshots).
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rule_pack_versions (
+            version_no INTEGER PRIMARY KEY,
+            state TEXT NOT NULL CHECK (state IN ('draft', 'approved', 'active', 'retired', 'rejected')),
+            rules_yaml TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            base_version_no INTEGER REFERENCES rule_pack_versions (version_no),
+            changes_json TEXT NOT NULL DEFAULT '[]',
+            source TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            approved_by TEXT,
+            approved_at TEXT,
+            approval_note TEXT,
+            activated_by TEXT,
+            activated_at TEXT,
+            retired_at TEXT,
+            rejected_by TEXT,
+            rejected_at TEXT,
+            note TEXT,
+            CHECK (approved_by IS NULL OR approved_by <> created_by)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_rule_pack_one_active ON rule_pack_versions (state) "
+        "WHERE state = 'active'"
+    )
+
+
 OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(1, "evidence coverage and rule results", _m1_evidence_coverage),
     Migration(2, "run snapshots and analytical fingerprint", _m2_run_snapshots),
@@ -612,4 +655,5 @@ OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(7, "supervisory cases, case events, response packages, blind tasks", _m7_examiner_workflow),
     Migration(8, "maintenance windows, rule exceptions, peer comparisons, saved views", _m8_context_and_peers),
     Migration(9, "pilot evaluation: replicate reviews, review times, protocols, adjudications", _m9_pilot_evaluation),
+    Migration(10, "rule configuration lifecycle", _m10_rule_pack_versions),
 ]

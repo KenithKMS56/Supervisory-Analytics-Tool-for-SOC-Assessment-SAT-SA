@@ -228,4 +228,5 @@ class RulePackSigner:
             "version": manifest.get("pack_version"),
             "files_imported": len(planned),
             "verified": True,
+            "signature": recorded_sig,
         }

@@ -100,7 +100,14 @@ second review"; it is shown to them in a different order). The evaluation is fro
 computed with `satsa pilot` (`docs/shadow_pilot_runbook.md`, Part B). Disagreements are
 adjudicated by a third examiner.
 
-## 7. Reports and exports
+## 7. Approving rule changes
+
+Thresholds change only through a reviewed version (`docs/rule_governance.md`). Review Tools →
+**Rule Changes** lists proposed drafts with what each changes. Approve a change you did not
+propose (with a note), or reject it with a reason. An analyst then puts approved changes in
+force, which re-assesses the latest period. You cannot approve your own proposal.
+
+## 8. Reports and exports
 
 - CSE report: HTML or PDF, from the entity page. Portfolio report: PDF.
 - CSV exports of findings and of the review queue (analysts). A cell that starts like a
@@ -109,7 +116,7 @@ adjudicated by a third examiner.
 Each report states its run, period and configuration, and says that its findings are
 indicators for review.
 
-## 8. Words used on the screens
+## 9. Words used on the screens
 
 | Term | Meaning |
 |---|---|
