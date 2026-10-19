@@ -32,8 +32,10 @@ checks. A new mapping must pass them before it is used:
 3. Every timestamp is stored in UTC (naive datetimes, as the store holds them), whatever the
    source's offset or zone.
 4. No personal identifier from the export (analyst names, e-mail addresses) is stored.
-5. Every source row is accounted for: stored, or reported as rejected with a reason.
-6. The ingest report states which rules the export lets SAT-SA assess and which it does not.
+5. Every source row is accounted for, per file and per table it feeds: stored, filtered by the
+   mapping's conditions, or rejected with a reason.
+6. The ingest report puts every rule in one state: assessed, not assessed (naming the tables it
+   lacks) or degraded (naming the empty columns it needs).
 
 ## Reporting a new product
 
