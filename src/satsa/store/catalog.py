@@ -775,6 +775,24 @@ class Catalog:
         return problems
 
 
+def published_rows(data_dir: Path | str) -> int:
+    """Rows in every published batch table (an upper bound on what an assessment loads: an
+    older version of a record counts too). 0 when there is no catalog yet."""
+    path = Path(data_dir) / CATALOG_FILE
+    if not path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+        try:
+            row = conn.execute("SELECT coalesce(sum(bt.rows), 0) FROM batch_tables bt JOIN batches b USING (batch_id) "
+                               "WHERE b.state = 'published'").fetchone()
+            return int(row[0])
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0
+
+
 def published_sequence(data_dir: Path | str) -> int:
     """The latest publication sequence of a data directory (0 if it has no catalog), read-only."""
     path = Path(data_dir) / CATALOG_FILE

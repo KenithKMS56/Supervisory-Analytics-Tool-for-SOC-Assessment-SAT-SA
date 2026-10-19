@@ -35,12 +35,53 @@ logger = logging.getLogger(__name__)
 
 MIN_FREE_DISK_BYTES = int(os.environ.get("SATSA_MIN_FREE_DISK_MB", "512")) * 1024 * 1024
 
+# Memory a job is expected to need, from the peaks measured in docs/benchmarks.md: an
+# assessment held about 180 bytes per stored row on top of ~130 MiB (0.5 to 21 million rows), an
+# import 3 to 4 times its input. The estimates round both up; SATSA_MEMORY_PREFLIGHT=off skips
+# the check (for a host whose free-memory figure is misleading, e.g. a container without limits).
+MEMORY_BASE_BYTES = 256 * 1024 * 1024
+ASSESS_BYTES_PER_ROW = 200
+IMPORT_BYTES_PER_INPUT_BYTE = 4
+
+
+def available_memory_bytes() -> int | None:
+    """Physical memory available to new allocations now, or None where it cannot be read."""
+    if os.name == "nt":
+        import ctypes
+
+        class Status(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong)] + [
+                (name, ctypes.c_ulonglong)
+                for name in ("ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile",
+                             "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")
+            ]
+
+        status = Status()
+        status.dwLength = ctypes.sizeof(Status)
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+            return None
+        return int(status.ullAvailPhys)
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    try:
+        return int(os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE"))  # type: ignore[attr-defined,unused-ignore]
+    except (ValueError, OSError, AttributeError):
+        return None
+
 
 class JobCancelled(Exception):
     pass
 
 
 class InsufficientDisk(JobFailed):
+    pass
+
+
+class InsufficientMemory(JobFailed):
     pass
 
 
@@ -62,6 +103,20 @@ class JobContext:
         if self.worker.queue.heartbeat(self.job["job_id"], self.worker.worker_id, stage=name,
                                        lease_seconds=self.worker.lease_seconds):
             raise JobCancelled(f"cancelled before stage '{name}'")
+
+    def preflight_memory(self, needed: int, what: str) -> None:
+        """Refuse to start a job the host cannot hold in memory now (estimate: see above), rather
+        than let it fail part-way or push the web portals into swapping."""
+        if os.environ.get("SATSA_MEMORY_PREFLIGHT", "on").strip().lower() in ("off", "0", "false", "no"):
+            return
+        available = available_memory_bytes()
+        if available is None or available >= needed:
+            return
+        raise InsufficientMemory(
+            f"only {available // (1024 * 1024)} MiB of memory is free; {what} needs about "
+            f"{needed // (1024 * 1024)} MiB. Free memory (or add it) and retry; the job was not started",
+            available_bytes=available, needed_bytes=needed,
+        )
 
     def preflight_disk(self, input_bytes: int) -> None:
         """Refuse to start when the data volume could fill up (needs 3x the input plus a margin)."""

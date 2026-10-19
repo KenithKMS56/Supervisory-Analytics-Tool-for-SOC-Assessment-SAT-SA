@@ -42,10 +42,15 @@ def run_id_for(job_id: str) -> str:
 
 
 def _assess(ctx: JobContext, period: str | None, entity_label: str) -> dict[str, Any]:
+    from satsa.jobs.worker import ASSESS_BYTES_PER_ROW, MEMORY_BASE_BYTES
     from satsa.scoring.runner import AssessmentRunner
+    from satsa.store.catalog import published_rows
     from satsa.store.duckdb import DuckDBStore
 
     actor, role = ctx.job["created_by"], ctx.job["params"].get("role", "")
+    rows = published_rows(ctx.data_dir)
+    ctx.preflight_memory(MEMORY_BASE_BYTES + ASSESS_BYTES_PER_ROW * rows,
+                         f"an assessment of {rows:,} stored rows")
     ctx.stage("assessing")
     ctx.store.record_live_event(
         "ASSESSMENT_STARTED", actor=actor, role=role, entity_id=entity_label,
@@ -162,7 +167,12 @@ def import_files(ctx: JobContext) -> dict[str, Any]:
     else:
         if not source.is_dir():
             raise JobFailed("the uploaded files are no longer on disk (data/jobs/<job>/input was removed)")
-        ctx.preflight_disk(sum(f.stat().st_size for f in source.rglob("*") if f.is_file()))
+        from satsa.jobs.worker import IMPORT_BYTES_PER_INPUT_BYTE, MEMORY_BASE_BYTES
+
+        input_bytes = sum(f.stat().st_size for f in source.rglob("*") if f.is_file())
+        ctx.preflight_disk(input_bytes)
+        ctx.preflight_memory(MEMORY_BASE_BYTES + IMPORT_BYTES_PER_INPUT_BYTE * input_bytes,
+                             f"an import of {input_bytes // (1024 * 1024)} MiB")
         ctx.stage("reading and validating files")
         with tempfile.TemporaryDirectory(dir=job_dir(ctx.data_dir, ctx.job["job_id"])) as tmp:
             work = Path(tmp)
