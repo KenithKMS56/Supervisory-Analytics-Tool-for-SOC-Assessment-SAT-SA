@@ -78,3 +78,16 @@ def safe_join(base: Path | str, rel: str | PurePosixPath) -> Path:
     if target != base_resolved and base_resolved not in target.parents:
         raise ValueError(f"Path {rel!s} escapes base directory {base_resolved}")
     return target
+
+
+def safe_local_path(target: str, default: str = "/portfolio") -> str:
+    r"""`target` if it is a path on this site, else `default` (open-redirect guard for `next=`).
+
+    Browsers read `//host`, `/\host` and `\\host` as another site, and ignore tabs and newlines
+    inside a URL, so a target must start with a single `/` followed by something other than `/` or
+    `\`, and may not contain a backslash or a control character anywhere."""
+    if not isinstance(target, str) or not target.startswith("/") or target[1:2] in ("/", "\\"):
+        return default
+    if "\\" in target or any(ord(c) < 0x20 or ord(c) == 0x7F for c in target):
+        return default
+    return target

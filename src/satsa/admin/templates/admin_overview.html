@@ -230,7 +230,7 @@
             <span style="font-size: 0.68rem; font-weight: 600; color: #4ade80; background: rgba(34, 197, 94, 0.1); padding: 2px 7px; border-radius: 9999px; border: 1px solid rgba(34, 197, 94, 0.25);">
               ● ONLINE
             </span>
-            <form method="post" action="/users/{{ op.username }}/block" style="margin: 0; display: inline;" onsubmit="return confirm('Immediately revoke session and block {{ op.username }}?');">
+            <form method="post" action="/users/{{ op.username }}/block" style="margin: 0; display: inline;" data-confirm="Immediately revoke session and block {{ op.username }}?" onsubmit="return confirm(this.dataset.confirm);">
               <button type="submit" class="btn-admin-pill" style="font-size: 0.68rem; padding: 2px 8px; border-color: rgba(239, 68, 68, 0.4); color: #ef4444; background: transparent;" title="Revoke Session &amp; Block">
                 Revoke
               </button>
@@ -342,59 +342,67 @@
     var statusBadge = document.getElementById('activityFeedStatusBadge');
     var streamDot = document.getElementById('liveStreamDot');
 
+    // Every value below comes from an event or a session record (an uploaded file's name, a
+    // finding id from a URL ...), so it is HTML-escaped before it is put into the page.
+    function esc(value) {
+      return String(value === undefined || value === null ? '' : value)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     function renderEventHTML(ev) {
       var badgeClass = 'badge-role';
       var textSummary = '';
       if (ev.event_type === 'USER_LOGIN') {
         badgeClass = 'badge-event-login';
-        textSummary = 'logged in' + (ev.role ? ' as <span style="color: var(--accent-blue);">' + ev.role + '</span>' : '');
+        textSummary = 'logged in' + (ev.role ? ' as <span style="color: var(--accent-blue);">' + esc(ev.role) + '</span>' : '');
       } else if (ev.event_type === 'USER_LOGOUT') {
         badgeClass = 'badge-event-logout';
         textSummary = 'logged out of session';
       } else if (ev.event_type === 'ASSESSMENT_UPLOAD') {
         badgeClass = 'badge-event-upload';
-        textSummary = 'uploaded assessment batch' + (ev.entity_id ? ' for ' + ev.entity_id : '');
+        textSummary = 'uploaded assessment batch' + (ev.entity_id ? ' for ' + esc(ev.entity_id) : '');
       } else if (ev.event_type === 'ASSESSMENT_STARTED') {
         badgeClass = 'badge-event-assess';
         textSummary = 'started supervisory assessment execution';
       } else if (ev.event_type === 'ASSESSMENT_COMPLETED') {
         badgeClass = 'badge-event-assess';
         var findings = ev.details && ev.details.findings_count !== undefined ? ev.details.findings_count : '0';
-        textSummary = 'completed assessment run (' + findings + ' findings)';
+        textSummary = 'completed assessment run (' + esc(findings) + ' findings)';
       } else if (ev.event_type === 'FINDING_VIEWED') {
         badgeClass = 'badge-event-finding';
         var rule = (ev.details && (ev.details.rule_id || ev.details.finding_id)) || 'Finding';
-        textSummary = 'inspected finding <span style="font-family: \'JetBrains Mono\', monospace; color: #c084fc;">' + rule + '</span>';
+        textSummary = 'inspected finding <span style="font-family: \'JetBrains Mono\', monospace; color: #c084fc;">' + esc(rule) + '</span>';
       } else if (ev.event_type === 'REPORT_GENERATED') {
         badgeClass = 'badge-event-report';
         var rep = (ev.details && ev.details.report) || 'audit';
-        textSummary = 'generated supervisory ' + rep + ' report';
+        textSummary = 'generated supervisory ' + esc(rep) + ' report';
       } else if (ev.event_type === 'REPORT_DOWNLOADED') {
         badgeClass = 'badge-event-report';
         var rep = (ev.details && ev.details.report) || 'artifact';
-        textSummary = 'downloaded ' + rep;
+        textSummary = 'downloaded ' + esc(rep);
       } else if (ev.event_type === 'ACCOUNT_BLOCKED') {
         badgeClass = 'badge-event-blocked';
         textSummary = '<span style="color: #f87171; font-weight: 600;">account blocked &amp; sessions revoked</span>';
       } else if (ev.event_type === 'ROLE_CHANGED') {
         badgeClass = 'badge-role';
-        textSummary = 'role updated to ' + (ev.details ? ev.details.new_role : '');
+        textSummary = 'role updated to ' + esc(ev.details ? ev.details.new_role : '');
       } else if (ev.event_type === 'CSE_CHANGED') {
         badgeClass = 'badge-role';
-        textSummary = 'reassigned to CSE ' + (ev.details ? ev.details.new_cse : '');
+        textSummary = 'reassigned to CSE ' + esc(ev.details ? ev.details.new_cse : '');
       } else {
-        textSummary = ev.event_type.replace(/_/g, ' ').toLowerCase();
+        textSummary = esc(String(ev.event_type).replace(/_/g, ' ').toLowerCase());
       }
 
-      var timeStr = ev.ts ? ev.ts.substr(11, 8) : '';
+      var timeStr = ev.ts ? esc(String(ev.ts).substr(11, 8)) : '';
       var entityBadge = (ev.entity_id && ev.event_type !== 'USER_LOGIN' && ev.event_type !== 'ACCOUNT_BLOCKED')
-        ? '<span style="font-size: 0.66rem; padding: 1px 5px; border-radius: 4px; background: rgba(59, 130, 246, 0.12); color: var(--accent-blue); font-family: \'JetBrains Mono\', monospace;">' + ev.entity_id + '</span>'
+        ? '<span style="font-size: 0.66rem; padding: 1px 5px; border-radius: 4px; background: rgba(59, 130, 246, 0.12); color: var(--accent-blue); font-family: \'JetBrains Mono\', monospace;">' + esc(ev.entity_id) + '</span>'
         : '';
 
-      return '<div class="live-event-item" data-event-id="' + ev.event_id + '">' +
+      return '<div class="live-event-item" data-event-id="' + esc(ev.event_id) + '">' +
         '<div class="live-event-left">' +
-          '<span class="badge ' + badgeClass + '" style="font-size: 0.68rem; font-weight: 700;">' + ev.event_type + '</span>' +
-          '<span class="live-event-actor">' + ev.actor + '</span>' +
+          '<span class="badge ' + badgeClass + '" style="font-size: 0.68rem; font-weight: 700;">' + esc(ev.event_type) + '</span>' +
+          '<span class="live-event-actor">' + esc(ev.actor) + '</span>' +
           '<span class="live-event-summary">' + textSummary + '</span>' +
           entityBadge +
         '</div>' +
@@ -415,23 +423,23 @@
         var isBlocked = op.status === 'BLOCKED' || op.is_blocked;
         var dotClass = isBlocked ? 'blocked' : '';
         var scopeText = op.cse_id 
-          ? 'Scoped: <span style="color: var(--accent-blue); font-weight: 600;">' + op.cse_id + '</span>'
-          : (op.org_id ? 'Org: <span style="color: var(--admin-text-primary);">' + (op.org_name || op.org_id) + '</span>' : 'Global Oversight');
+          ? 'Scoped: <span style="color: var(--accent-blue); font-weight: 600;">' + esc(op.cse_id) + '</span>'
+          : (op.org_id ? 'Org: <span style="color: var(--admin-text-primary);">' + esc(op.org_name || op.org_id) + '</span>' : 'Global Oversight');
 
-        html += '<div class="online-operator-card" id="operatorCard-' + op.username + '">' +
+        html += '<div class="online-operator-card" id="operatorCard-' + esc(op.username) + '">' +
           '<div class="online-operator-info">' +
             '<span class="status-indicator-dot ' + dotClass + '"></span>' +
             '<div>' +
               '<div style="display: flex; align-items: center; gap: 0.45rem;">' +
-                '<strong style="font-size: 0.86rem; color: var(--admin-text-primary);">' + op.username + '</strong>' +
-                '<span class="badge badge-role" style="font-size: 0.65rem; padding: 1px 6px;">' + op.role + '</span>' +
+                '<strong style="font-size: 0.86rem; color: var(--admin-text-primary);">' + esc(op.username) + '</strong>' +
+                '<span class="badge badge-role" style="font-size: 0.65rem; padding: 1px 6px;">' + esc(op.role) + '</span>' +
               '</div>' +
               '<div style="font-size: 0.74rem; color: var(--admin-text-secondary); margin-top: 2px;">' + scopeText + '</div>' +
             '</div>' +
           '</div>' +
           '<div style="display: flex; align-items: center; gap: 0.4rem;">' +
             '<span style="font-size: 0.68rem; font-weight: 600; color: #4ade80; background: rgba(34, 197, 94, 0.1); padding: 2px 7px; border-radius: 9999px; border: 1px solid rgba(34, 197, 94, 0.25);">● ONLINE</span>' +
-            '<form method="post" action="/users/' + op.username + '/block" style="margin: 0; display: inline;" onsubmit="return confirm(\'Immediately revoke session and block ' + op.username + '?\');">' +
+            '<form method="post" action="/users/' + encodeURIComponent(op.username) + '/block" style="margin: 0; display: inline;" data-confirm="Immediately revoke session and block ' + esc(op.username) + '?" onsubmit="return confirm(this.dataset.confirm);">' +
               '<button type="submit" class="btn-admin-pill" style="font-size: 0.68rem; padding: 2px 8px; border-color: rgba(239, 68, 68, 0.4); color: #ef4444; background: transparent;" title="Revoke Session &amp; Block">Revoke</button>' +
             '</form>' +
           '</div>' +

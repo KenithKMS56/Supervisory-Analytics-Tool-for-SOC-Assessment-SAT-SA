@@ -143,7 +143,7 @@
 
             <!-- Block / Unblock Toggle -->
             {% if u.status == 'ACTIVE' %}
-            <form method="post" action="/users/{{ u.username }}/block" style="display:inline; margin:0;" onsubmit="return confirm('Block user {{ u.username }} from accessing SAT-SA and Admin Portal?');">
+            <form method="post" action="/users/{{ u.username }}/block" style="display:inline; margin:0;" data-confirm="Block user {{ u.username }} from accessing SAT-SA and Admin Portal?" onsubmit="return confirm(this.dataset.confirm);">
               <button type="submit" class="btn-admin btn-admin-danger btn-admin-sm" title="Block Account">
                 Block
               </button>

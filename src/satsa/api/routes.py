@@ -65,11 +65,12 @@ from satsa.security import (
     is_valid_finding_id,
     is_valid_run_id,
     safe_join,
+    safe_local_path,
 )
 from satsa.store.catalog import PublicationError
 from satsa.store.duckdb import DuckDBStore, analytics_cache
 from satsa.store.sqlite import SQLiteStore, utc_now_iso
-from satsa.web_security import CROSS_SITE_REFUSED, cross_site_reason
+from satsa.web_security import CROSS_SITE_REFUSED, SecurityMiddleware, cross_site_reason
 
 # Roles permitted for each protected action category, matching
 # docs/functional_design.md Section 2 (User Personas & Permissions). SAT-SA has
@@ -400,6 +401,25 @@ async def refuse_cross_site_requests(request: Request, call_next):
     return await call_next(request)
 
 
+# Characters an uploaded file's stored name may not contain.
+UNSAFE_FILE_CHARS = re.compile(r"[^A-Za-z0-9._ -]")
+WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                          *(f"LPT{i}" for i in range(1, 10))}
+
+# Multipart framing around the uploaded files of one /upload request.
+UPLOAD_FORM_SLACK_BYTES = 1024 * 1024
+
+
+def _request_body_limit(path: str) -> int:
+    """The most bytes a request to `path` may send: the upload limit for file uploads, the API
+    body limit for everything else (read at request time, so the environment settings apply)."""
+    return MAX_UPLOAD_BYTES + UPLOAD_FORM_SLACK_BYTES if path == "/upload" else MAX_API_BODY_BYTES
+
+
+# Outermost: security headers on every response, and request bodies capped as they arrive.
+app.add_middleware(SecurityMiddleware, limit_for=lambda path: _request_body_limit(path))
+
+
 def require_valid_entity_id(entity_id: str) -> str:
     """Reject an externally supplied entity_id that fails satsa.security.ENTITY_ID_RE (HTTP 400)."""
     if not is_valid_entity_id(entity_id):
@@ -600,7 +620,7 @@ async def handle_login(
     from satsa.auth.identities import LOGIN_LOCKOUT_MINUTES, LOGIN_MAX_FAILURES, verify_passphrase
 
     uname = username.strip()
-    safe_next = next if (next.startswith("/") and not next.startswith("//")) else "/portfolio"
+    safe_next = safe_local_path(next)
     # One generic message for unknown user, wrong passphrase AND lockout, so the
     # response never reveals whether a username exists or is locked.
     generic_error = RedirectResponse(
@@ -2449,8 +2469,11 @@ def handle_upload(
         budget = MAX_UPLOAD_BYTES
         for uf in files:
             # Only the base name of the client-supplied filename is used, so a
-            # name like "../../x.csv" cannot write outside the job's directory.
-            safe_name = Path((uf.filename or "").replace("\\", "/")).name or "upload.csv"
+            # name like "../../x.csv" cannot write outside the job's directory, and characters
+            # outside a portable set (Windows refuses <>:"|?* in a file name) become "_".
+            safe_name = UNSAFE_FILE_CHARS.sub("_", Path((uf.filename or "").replace("\\", "/")).name).strip(" .")
+            if not safe_name or safe_name.split(".")[0].upper() in WINDOWS_RESERVED_NAMES:
+                safe_name = f"upload-{safe_name}" if safe_name else "upload.csv"
             if safe_name in names:
                 safe_name = f"{len(names)}-{safe_name}"
             names.append(safe_name)

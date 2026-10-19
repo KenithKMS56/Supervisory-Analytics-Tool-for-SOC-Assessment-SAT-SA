@@ -186,7 +186,7 @@
       </span>
     </span>
     <span style="font-size: 0.82rem; color: var(--text-secondary);">
-      {% if trend_periods %}{{ trend_periods | join(' &bull; ') | safe }}{% else %}No historical runs recorded yet{% endif %}
+      {% if trend_periods %}{% for p in trend_periods %}{{ p }}{% if not loop.last %} &bull; {% endif %}{% endfor %}{% else %}No historical runs recorded yet{% endif %}
     </span>
   </div>
   {% if not trend_has_data %}

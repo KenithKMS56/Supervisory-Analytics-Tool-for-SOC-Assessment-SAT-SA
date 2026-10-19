@@ -234,7 +234,7 @@
 <script>
 var allCSEs = [
   {% for cse in cses %}
-  { cse_id: "{{ cse.cse_id }}", org_id: "{{ cse.org_id }}", sector: "{{ cse.sector }}" },
+  { cse_id: {{ cse.cse_id | tojson }}, org_id: {{ cse.org_id | tojson }}, sector: {{ cse.sector | tojson }} },
   {% endfor %}
 ];
 

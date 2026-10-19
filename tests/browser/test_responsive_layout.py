@@ -7,6 +7,8 @@ network unavailable, signed in as the role that uses it.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from satsa.store.sqlite import SQLiteStore
@@ -159,6 +161,16 @@ _SCROLLBARS_JS = """
 """
 
 
+def _wait_until(page, expression: str, timeout: float = 5.0) -> None:
+    """Poll `expression` with page.evaluate until it is true. (page.wait_for_function compiles its
+    predicate with eval, which the portal's Content-Security-Policy rightly forbids.)"""
+    deadline = time.monotonic() + timeout
+    while not page.evaluate(expression):
+        if time.monotonic() > deadline:
+            raise AssertionError(f"never became true: {expression}")
+        page.wait_for_timeout(50)
+
+
 @pytest.mark.parametrize("width", (1440, 390))
 def test_a_wide_table_scrolls_from_one_sticky_bar_above_it_and_the_keyboard(
     chromium, live_server: LiveServer, width: int
@@ -181,16 +193,16 @@ def test_a_wide_table_scrolls_from_one_sticky_bar_above_it_and_the_keyboard(
         wrap = "document.querySelector('main .table-responsive.has-hdock')"
         # Dragging the bar moves the table.
         page.evaluate(f"{wrap}.previousElementSibling.scrollLeft = 150")
-        page.wait_for_function(f"Math.abs({wrap}.scrollLeft - 150) <= 1")
+        _wait_until(page, f"Math.abs({wrap}.scrollLeft - 150) <= 1")
         # Scrolling the table itself (a trackpad swipe) moves the bar back.
         page.evaluate(f"{wrap}.scrollLeft = 0")
-        page.wait_for_function(f"{wrap}.previousElementSibling.scrollLeft <= 1")
+        _wait_until(page, f"{wrap}.previousElementSibling.scrollLeft <= 1")
 
         # Arrow keys scroll the focused table.
         page.focus("main .table-responsive.has-hdock")
         page.keyboard.press("ArrowRight")
         page.keyboard.press("ArrowRight")
-        page.wait_for_function(f"{wrap}.scrollLeft > 0 && {wrap}.previousElementSibling.scrollLeft > 0")
+        _wait_until(page, f"{wrap}.scrollLeft > 0 && {wrap}.previousElementSibling.scrollLeft > 0")
 
         # Halfway down the table the top bar is pinned to the top of the window, just under the
         # demonstration banner if there is one, and nothing covers it.

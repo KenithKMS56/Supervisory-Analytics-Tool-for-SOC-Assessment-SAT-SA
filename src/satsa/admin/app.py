@@ -24,7 +24,7 @@ from satsa.admin.routes import (
 from satsa.admin.routes import router as admin_router
 from satsa.netguard import install_egress_guard, uninstall_egress_guard
 from satsa.store.sqlite import SQLiteStore
-from satsa.web_security import CROSS_SITE_REFUSED, cross_site_reason
+from satsa.web_security import CROSS_SITE_REFUSED, SecurityMiddleware, cross_site_reason
 
 _ADMIN_DIR = Path(__file__).resolve().parent
 _STATIC_DIR = _ADMIN_DIR / "static"
@@ -74,6 +74,13 @@ async def refuse_cross_site_requests(request: Request, call_next: Any) -> Respon
         return JSONResponse({"detail": CROSS_SITE_REFUSED}, status_code=403)
     response: Response = await call_next(request)
     return response
+
+
+# The Admin Portal takes forms only; no upload is larger than a few kilobytes.
+ADMIN_MAX_BODY_BYTES = 1024 * 1024
+
+# Outermost: security headers on every response, and request bodies capped as they arrive.
+app.add_middleware(SecurityMiddleware, limit_for=lambda _path: ADMIN_MAX_BODY_BYTES)
 
 
 @app.exception_handler(AdminAuthRequired)

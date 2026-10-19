@@ -219,7 +219,7 @@
   </form>
 
   <form method="post" action="/users/{{ user.username }}/mfa-reset" class="form-body"
-        onsubmit="return confirm('Remove the second factor of {{ user.username }}? They must enrol a new one at their next sign-in.');">
+        data-confirm="Remove the second factor of {{ user.username }}? They must enrol a new one at their next sign-in." onsubmit="return confirm(this.dataset.confirm);">
     <div class="form-section">
       <div class="form-section-header">Second factor</div>
       <p style="font-size: 0.85rem;">If this administrator lost their authenticator device and recovery codes, remove the
@@ -232,7 +232,7 @@
 <script>
 var allCSEs = [
   {% for cse in cses %}
-  { cse_id: "{{ cse.cse_id }}", org_id: "{{ cse.org_id }}", sector: "{{ cse.sector }}" },
+  { cse_id: {{ cse.cse_id | tojson }}, org_id: {{ cse.org_id | tojson }}, sector: {{ cse.sector | tojson }} },
   {% endfor %}
 ];
 
@@ -240,7 +240,7 @@ function handleOrgChange() {
   var orgSelect = document.getElementById("org_id");
   var selectedOrg = orgSelect.value;
   var cseSelect = document.getElementById("cse_id");
-  var currentCSE = "{{ user.cse_id or '' }}";
+  var currentCSE = {{ (user.cse_id or '') | tojson }};
 
   cseSelect.innerHTML = '<option value="">-- Multi-Entity / Supervisory Oversight --</option>';
 
