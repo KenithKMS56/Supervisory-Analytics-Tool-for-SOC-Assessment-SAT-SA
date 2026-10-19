@@ -85,6 +85,7 @@ class DuckDBStore:
         self._catalog: Catalog | None = None
         self._active_batch: BatchWriter | None = None
         self._defer_reload = False
+        self._memo: dict[Any, Any] = {}
         # Publication sequence the loaded tables reflect (the source snapshot); None until loaded.
         self.source_snapshot: int | None = None
         self.conn = duckdb.connect(":memory:")
@@ -316,6 +317,16 @@ class DuckDBStore:
             finally:
                 self._active_batch = None
 
+    def memo(self, key: Any, compute: Any) -> Any:
+        """`compute()`, computed once per key while the loaded tables stay as they are.
+
+        For results every entity of an assessment asks for in the same form (a portfolio-wide
+        aggregate): the first rule evaluation computes it, the others reuse it. Loading,
+        writing or executing anything on this store forgets every memo."""
+        if key not in self._memo:
+            self._memo[key] = compute()
+        return self._memo[key]
+
     def write_partitioned_parquet(self, table_name: str, df: pl.DataFrame) -> None:
         """Store rows of a canonical table as a new, immutable batch file per entity.
 
@@ -324,6 +335,7 @@ class DuckDBStore:
         `deferred_reload`). Existing files are never rewritten: an updated record is a new
         version, and the loader selects the latest one (see `load_table_from_parquet`).
         """
+        self._memo.clear()
         if df.is_empty():
             return
         if self._active_batch is not None:
@@ -360,6 +372,7 @@ class DuckDBStore:
         text_timestamp_sql, which applies a UTC offset instead of dropping it. A published file
         that is missing or unreadable is skipped with a warning, never silently.
         """
+        self._memo.clear()
         catalog = self.catalog
         catalog.adopt_legacy_files(table_name)
         snapshot = catalog.max_pub_seq() if max_pub_seq is None else max_pub_seq
@@ -495,6 +508,7 @@ class DuckDBStore:
 
     def execute(self, sql: str, params: list[Any] | None = None) -> None:
         """Execute raw DDL or modification statement."""
+        self._memo.clear()
         if params:
             self.conn.execute(sql, params)
         else:
@@ -525,6 +539,7 @@ class SharedDuckDBView(DuckDBStore):
         self._catalog = None
         self._active_batch = None
         self._defer_reload = False
+        self._memo = {}
         self.source_snapshot = shared.source_snapshot
         self.conn = shared.conn.cursor()
 
