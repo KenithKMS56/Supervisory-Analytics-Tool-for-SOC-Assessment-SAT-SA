@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from satsa import deployment
-from satsa.store.sqlite import SQLiteStore
+from satsa.store.sqlite import SQLiteStore, forget_schema_checks
 
 
 @pytest.fixture
@@ -228,6 +228,7 @@ def test_a_database_from_before_modes_is_recorded_as_production_and_already_set_
     with store.transaction():
         store.conn.execute("DELETE FROM deployment_settings")  # as written by a release without modes
     store.close()
+    forget_schema_checks()  # the file now stands for one an older release wrote
     reopened = SQLiteStore(db)
     try:
         values = deployment.settings(reopened)

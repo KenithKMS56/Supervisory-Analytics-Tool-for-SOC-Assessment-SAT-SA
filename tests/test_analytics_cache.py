@@ -74,6 +74,7 @@ def test_changed_data_retires_the_cache_even_without_a_run(tmp_path):
     """An ingest by another process (CLI, Admin Portal) must not leave the web app on old data."""
     _seed_alerts(tmp_path, "E1", 5)
     cache = AnalyticsCache()
+    cache.FINGERPRINT_SECONDS = 0  # look at the files on every request (the throttle: next test)
     assert _count(cache.view(tmp_path, None)) == 5
     before = parquet_fingerprint(tmp_path / "parquet")
 
@@ -86,6 +87,27 @@ def test_changed_data_retires_the_cache_even_without_a_run(tmp_path):
         f.unlink()  # and is deleted again (the loader skips the missing published file, with a warning)
     assert _count(cache.view(tmp_path, None)) == 5
     assert cache.loads == 3
+
+
+def test_a_publication_is_seen_at_once_and_a_file_removed_outside_the_catalog_soon_after(tmp_path, monkeypatch):
+    """Every ingest path publishes through the catalog, whose sequence is read on every request,
+    so new data is seen at once. The Parquet walk, which catches a file changed outside the
+    catalog, is taken at most every FINGERPRINT_SECONDS: such a change is seen on the first
+    request after that, never left in place indefinitely."""
+    clock = [1000.0]
+    monkeypatch.setattr("satsa.store.duckdb.time.monotonic", lambda: clock[0])
+    _seed_alerts(tmp_path, "E1", 5)
+    cache = AnalyticsCache()
+    assert _count(cache.view(tmp_path, None)) == 5
+    _seed_alerts(tmp_path, "E2", 3)  # published through the catalog (a direct batch)
+    assert _count(cache.view(tmp_path, None)) == 8 and cache.loads == 2  # no time has passed
+
+    for f in (tmp_path / "parquet" / "alert" / "entity_id=E2").glob("*.parquet"):
+        f.unlink()  # removed behind the catalog's back
+    clock[0] += cache.FINGERPRINT_SECONDS / 2
+    assert _count(cache.view(tmp_path, None)) == 8 and cache.loads == 2  # within the interval
+    clock[0] += cache.FINGERPRINT_SECONDS
+    assert _count(cache.view(tmp_path, None)) == 5 and cache.loads == 3
 
 
 def test_each_data_directory_has_its_own_cache(tmp_path):

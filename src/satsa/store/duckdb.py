@@ -3,6 +3,7 @@
 import logging
 import os
 import threading
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -571,14 +572,31 @@ class AnalyticsCache:
     that only declares tables empty and so adds no file.
     """
 
+    # The Parquet fingerprint walks every file; it is taken at most this often per data directory.
+    # Publication through the catalog changes the publication sequence, which is read on every
+    # request, so this delay applies only to files changed outside the catalog.
+    FINGERPRINT_SECONDS = 2.0
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._stores: dict[Path, tuple[tuple[Any, ...], DuckDBStore]] = {}
+        self._fingerprints: dict[Path, tuple[float, int, tuple[int, int, int]]] = {}
         self.loads = 0  # how many times the tables were (re)loaded; read by tests and benchmarks
+
+    def _fingerprint(self, root: Path, sequence: int) -> tuple[int, int, int]:
+        """The Parquet fingerprint, taken again when the interval has passed or anything was
+        published since (so a fingerprint is never paired with a newer publication)."""
+        now = time.monotonic()
+        taken = self._fingerprints.get(root)
+        if taken is None or taken[1] != sequence or now - taken[0] >= self.FINGERPRINT_SECONDS:
+            taken = (now, sequence, parquet_fingerprint(root / "parquet"))
+            self._fingerprints[root] = taken
+        return taken[2]
 
     def view(self, data_dir: Path | str, run_marker: str | None) -> SharedDuckDBView:
         root = Path(data_dir).resolve()
-        key = (run_marker, published_sequence(root), *parquet_fingerprint(root / "parquet"))
+        sequence = published_sequence(root)
+        key = (run_marker, sequence, *self._fingerprint(root, sequence))
         with self._lock:
             cached = self._stores.get(root)
             if cached is None or cached[0] != key:
@@ -593,6 +611,7 @@ class AnalyticsCache:
     def clear(self) -> None:
         with self._lock:
             self._stores.clear()
+            self._fingerprints.clear()
 
 
 analytics_cache = AnalyticsCache()

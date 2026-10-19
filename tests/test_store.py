@@ -6,7 +6,7 @@ from pathlib import Path
 import polars as pl
 
 from satsa.store.duckdb import DuckDBStore
-from satsa.store.sqlite import SQLiteStore
+from satsa.store.sqlite import SQLiteStore, forget_schema_checks
 
 
 def test_duckdb_store_initialization():
@@ -107,6 +107,7 @@ def _legacy_db(tmp_path, supervisor_passphrase):
     store.upsert_identity("portal_sup", "NCIIPC Supervisor", "Passphrase#12345")
     store.append_audit("login", "supervisor", {"role": "supervisor"})
     store.close()
+    forget_schema_checks()  # the file now stands for one an older release wrote
     return db
 
 

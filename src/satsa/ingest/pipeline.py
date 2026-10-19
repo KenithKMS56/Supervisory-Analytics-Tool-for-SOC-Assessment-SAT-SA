@@ -735,8 +735,9 @@ class IngestionPipeline:
                     redacted = self.redactor.redact_text(str(raw_c))
                     r["comment_norm_hash"] = self.redactor.compute_norm_hash(redacted)
                     r["comment_len"] = len(redacted)
-                    shingles = self.redactor.hash_shingles(self.redactor.generate_shingles(redacted))
-                    r["comment_shingles"] = ",".join(shingles[:10])
+                    # Only the first ten shingles are stored, so only they are hashed.
+                    shingles = self.redactor.hash_shingles(self.redactor.generate_shingles(redacted)[:10])
+                    r["comment_shingles"] = ",".join(shingles)
 
     def ingest_directory(
         self,

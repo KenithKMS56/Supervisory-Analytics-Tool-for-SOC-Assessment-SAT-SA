@@ -22,8 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from satsa.config_cache import load_yaml
 from satsa.context import schedule_class
 from satsa.models.canonical import Entity
 
@@ -96,8 +95,7 @@ class PeerResolver:
     def _load_config(self) -> dict[str, Any]:
         if not self.config_path.exists():
             return {}
-        with open(self.config_path, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+        return load_yaml(self.config_path) or {}
 
     def _levels(self, raw: Any) -> list[dict[str, Any]]:
         levels = []

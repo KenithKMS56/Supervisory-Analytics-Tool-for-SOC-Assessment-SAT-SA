@@ -122,6 +122,30 @@ def session_idle_minutes() -> int:
         return 30
 
 
+# Databases this process has already brought to the current schema, by resolved path, with the
+# file identity (device, inode) they had then. Opening one again skips the schema checks, which
+# otherwise run DDL in a write transaction on every open (several per web request, and each one
+# queues behind any writer). A replaced file (a restore, a test's fresh database) has another
+# identity and is checked again; so is one whose recorded migration version is not the latest.
+_SCHEMA_READY: dict[str, tuple[int, int]] = {}
+_LATEST_VERSION = OPERATIONAL_MIGRATIONS[-1].version
+
+
+def forget_schema_checks() -> None:
+    """Check every database's schema again on its next open. For a process that rewrites a
+    database in place to stand in for another release (tests do), which a running deployment
+    never does."""
+    _SCHEMA_READY.clear()
+
+
+def _file_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino) if st.st_ino else None
+
+
 class SQLiteStore:
     """Manages SQLite tables for runs, findings, review queue, feedback, and audit logs."""
 
@@ -145,6 +169,12 @@ class SQLiteStore:
             self.conn.execute("PRAGMA journal_mode=WAL;")
             self.conn.execute("PRAGMA busy_timeout=30000;")
             self.conn.execute("PRAGMA synchronous=NORMAL;")
+
+        ready_key = str(self.db_path.resolve())
+        identity = None if fresh else _file_identity(self.db_path)
+        if identity is not None and _SCHEMA_READY.get(ready_key) == identity and self._at_latest_version():
+            self.schema_versions_applied: list[int] = []
+            return
 
         # Fast schema check: only run DDL migrations/seeding if schema is missing or incomplete
         cur = self.conn.cursor()
@@ -171,6 +201,16 @@ class SQLiteStore:
 
         if settle_mode(self, fresh=fresh) == DEMO and needs_init:
             self.seed_default_identities()
+        identity = _file_identity(self.db_path)
+        if identity is not None:
+            _SCHEMA_READY[ready_key] = identity
+
+    def _at_latest_version(self) -> bool:
+        try:
+            row = self.conn.execute("SELECT max(version) FROM schema_migrations").fetchone()
+        except sqlite3.Error:
+            return False
+        return row is not None and row[0] == _LATEST_VERSION
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Cursor]:

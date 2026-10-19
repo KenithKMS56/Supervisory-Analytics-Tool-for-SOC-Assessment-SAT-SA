@@ -126,9 +126,16 @@ class EntityContext:
         }
 
 
+_ZONES: frozenset[str] | None = None
+
+
 def known_timezones(duck: Any) -> set[str]:
-    """IANA zone names the analytics engine (DuckDB with ICU, bundled, offline) can convert to."""
-    return {r[0] for r in duck.conn.execute("SELECT name FROM pg_timezone_names()").fetchall()}
+    """IANA zone names the analytics engine (DuckDB with ICU, bundled, offline) can convert to.
+    Read once per process: the list belongs to the DuckDB build (pinned in uv.lock)."""
+    global _ZONES
+    if _ZONES is None:
+        _ZONES = frozenset(r[0] for r in duck.conn.execute("SELECT name FROM pg_timezone_names()").fetchall())
+    return set(_ZONES)
 
 
 def build_contexts(

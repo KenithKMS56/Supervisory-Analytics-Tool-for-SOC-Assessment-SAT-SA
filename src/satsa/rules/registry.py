@@ -5,6 +5,7 @@ from typing import Any
 
 import yaml
 
+from satsa.config_cache import load_yaml
 from satsa.rules.base import BaseRule
 from satsa.rules.execution_gaps import (
     EG01FastClosure,
@@ -153,8 +154,7 @@ class RuleRegistry:
     def _load_config(self) -> dict[str, Any]:
         if not self.config_path.exists():
             return {}
-        with open(self.config_path, encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+        return load_yaml(self.config_path) or {}
 
     def _instantiate_rules(self) -> None:
         rule_configs = self.config.get("rules", {})
