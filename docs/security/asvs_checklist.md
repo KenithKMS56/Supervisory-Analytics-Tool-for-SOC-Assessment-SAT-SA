@@ -1,4 +1,4 @@
-# Security verification checklist (version 1, Phase 2)
+# Security verification checklist (version 2, Phase 5)
 
 This checklist uses OWASP ASVS 4.0.3 requirements at Level 2, for the areas that apply to an
 offline web application. It records **our own verification**. It is not a certification, and it
@@ -28,9 +28,10 @@ Statuses:
 | V4.2.1 | IDOR: data scoped to the principal | partial | A service credential's entity scope is verified. Operators are portfolio-wide by design (docs/security/permission_matrix.md) |
 | V4.3.1 | Admin interfaces need appropriate authentication | verified | Separate portal and roles; MFA required in production (`tests/test_admin_mfa.py`) |
 | V5.1.3 / V5.1.4 | Input validation by allow-list | verified | Entity, run, job and batch id patterns; `tests/test_injection.py` |
-| V5.2.2 / V5.3.3 | Output encoding / XSS | verified | Jinja autoescape; `tests/test_injection.py` |
-| V5.3.4 | Parameterised queries | verified | DuckDB and SQLite parameters; `tests/test_injection.py` |
-| V5.3.9 | Path traversal / local file inclusion | verified | `safe_join`, `safe_archive_member`; zip-slip test |
+| V5.2.2 / V5.3.3 | Output encoding / XSS | verified | Jinja autoescape, no `\| safe` in any template, values in inline scripts via `tojson` or escaped data attributes, every value the Admin Portal's live feed puts into the page escaped; `tests/test_security_suite.py` (stored, reflected and DOM cases), `tests/test_injection.py` |
+| V5.3.4 | Parameterised queries | verified | DuckDB and SQLite parameters; `tests/test_injection.py`; `tests/test_security_suite.py::test_list_filters_bind_hostile_values_as_data` (every list filter, no database error leaks) |
+| V5.1.5 | Redirects only to allow-listed destinations | verified | `satsa.security.safe_local_path` (no `//`, `/\`, backslash or control characters); `tests/test_security_suite.py::test_a_sign_in_never_redirects_off_the_portal` |
+| V5.3.9 | Path traversal / local file inclusion | verified | `safe_join`, `safe_archive_member`; zip-slip test; encoded traversal through every file-serving route (`tests/test_security_suite.py::test_file_routes_do_not_leave_their_directory`) |
 | V5.3.x (CSV) | Formula injection in exports | verified | `satsa.csv_safe`; `tests/test_access_controls.py` |
 | V6.2.1 | Approved cryptography | verified | HMAC-SHA256, SHA-256 and SHA3-256 (stdlib); `cryptography` for signing |
 | V6.4.1 / V6.4.2 | Key management, keys not in code | partial | Keys live in `data/secrets/`, are versioned and audited (`tests/test_keys.py`). There is no HSM or KMS (offline); host custody applies |
@@ -39,12 +40,15 @@ Statuses:
 | V7.3.1 / V7.3.3 | Log integrity | verified | Hash-chained audit log; `tests/test_audit_tamper*.py` |
 | V8.3.4 | Sensitive data identified and protected | verified | Pseudonymisation and redaction on every ingestion transport; `tests/test_brief_defects.py::test_b02_*` |
 | V9.1.1 | TLS for all client connections | partial | Optional TLS; loopback by default; a warning when the deployment is exposed without TLS |
-| V10.3.2 | Integrity of updates | partial | Signed rule packs; the offline release bundle is not signed yet (Phase 2/5) |
-| V12.1.1 | Upload size limits | verified | Upload byte budget, zip limits, API body cap |
-| V12.1.2 | Decompression bombs | verified | Ratio and expanded-size limits before extraction |
+| V10.3.2 | Integrity of updates | verified | Signed rule packs; the offline release bundle is signed (Ed25519) and verified with a separately obtained key (`satsa release verify`, `tests/test_release_bundle.py`) |
+| V12.1.1 | Upload size limits | verified | Every request body is capped on the bytes received, with or without Content-Length (`satsa.web_security.SecurityMiddleware`); upload byte budget; zip limits; `tests/test_security_suite.py` |
+| V12.1.2 | Decompression bombs | verified | Ratio, member-count and expanded-size limits before extraction; a forged size header cannot expand past its declared size (`tests/test_security_suite.py`) |
 | V12.4.1 | Uploads stored outside the web root | verified | `data/jobs/<id>/input`, never served |
 | V13.1.3 | API URLs do not expose sensitive information | verified | Service tokens travel in a header, never in a URL |
 | V13.2.1 | Methods restricted | verified | Route matrix |
 | V14.2.1 | Dependencies up to date / audited | **not implemented** | No `pip-audit` run in this phase (Phase 5) |
 | V14.3.2 | No debug modes in production | verified | `/docs` needs a session; no debug server |
 | V14.5.3 | Origin header validated | verified | `satsa.web_security` |
+| V14.4.3 | Content-Security-Policy | partial | Sent on every response of both portals: `default-src`, `connect-src`, `form-action` and `base-uri` limited to the portal, `object-src 'none'`, `frame-ancestors 'none'`. **Gap:** `script-src` and `style-src` keep `'unsafe-inline'` until the inline scripts and handlers move into files |
+| V14.4.4 | `X-Content-Type-Options: nosniff` | verified | Every response; `tests/test_security_suite.py::test_every_response_carries_the_security_headers` |
+| V14.4.7 | Not framed by other sites | verified | `X-Frame-Options: DENY` and `frame-ancestors 'none'` |
