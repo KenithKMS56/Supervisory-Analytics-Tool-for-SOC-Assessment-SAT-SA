@@ -43,12 +43,18 @@
     <div class="card-title"><span>Samples you drew</span></div>
     {% if not samples %}<p style="color: var(--text-secondary);">None yet.</p>{% else %}
     <div class="table-responsive"><table>
-      <thead><tr><th>Sample</th><th>Run</th><th>Examiner</th><th>Seed</th><th>Drawn (flagged / control / random)</th><th>Submitted</th><th>Revealed</th><th>Mean agreement (revealed)</th></tr></thead>
+      <thead><tr><th>Sample</th><th>Run</th><th>Examiner</th><th>Seed</th><th>Drawn (flagged / control / random)</th><th>Submitted</th><th>Revealed</th><th>Mean agreement (revealed)</th><th>Independent second review</th></tr></thead>
       <tbody>{% for s in samples %}
         <tr><td><code>{{ s.sample_id }}</code></td><td><code>{{ s.run_id }}</code></td><td>{{ s.assigned_to }}</td><td>{{ s.seed }}</td>
             <td>{{ s.method.drawn.flagged }} / {{ s.method.drawn.control }} / {{ s.method.drawn.random }}</td>
             <td>{{ s.submitted or 0 }} of {{ s.tasks }}</td><td>{{ s.revealed or 0 }}</td>
-            <td>{% if s.mean_concordance is not none %}{{ s.mean_concordance|round(1) }}%{% else %}&mdash;{% endif %}</td></tr>
+            <td>{% if s.mean_concordance is not none %}{{ s.mean_concordance|round(1) }}%{% else %}&mdash;{% endif %}</td>
+            <td>{% if s.replica_of %}repeats <code>{{ s.replica_of }}</code>
+              {% else %}{% set others = examiners | reject('equalto', s.assigned_to) | list %}{% if others %}
+              <form method="post" action="/blind-review/samples/{{ s.sample_id }}/replicate" style="display: flex; gap: 0.35rem; margin: 0;">
+                <select name="assignee" aria-label="Second examiner for {{ s.sample_id }}" class="form-control" style="min-width: 8rem;">{% for e in others %}<option value="{{ e }}">{{ e }}</option>{% endfor %}</select>
+                <button type="submit" class="btn btn-secondary">Assign</button>
+              </form>{% else %}&mdash;{% endif %}{% endif %}</td></tr>
       {% endfor %}</tbody>
     </table></div>
     {% endif %}

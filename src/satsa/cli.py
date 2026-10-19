@@ -1867,5 +1867,120 @@ def release_verify(
         console.print("[yellow]Signature not checked: pass --public-key[/yellow]")
 
 
+pilot_app = typer.Typer(help="Independent pilot evaluation from blinded reviews (docs/shadow_pilot_runbook.md, Part B)")
+app.add_typer(pilot_app, name="pilot")
+
+
+def _pilot_account(store: Any, username: str) -> str:
+    """The role of an active SAT-SA account: pilot actions are made in a named person's name."""
+    row = store.conn.execute("SELECT role, status FROM identities WHERE username = ?", (username,)).fetchone()
+    if row is None or (row["status"] or "ACTIVE").upper() != "ACTIVE":
+        console.print(f"[bold red][!] {username!r} is not an active account[/bold red]")
+        raise typer.Exit(code=1)
+    return str(row["role"])
+
+
+def _pilot_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    from satsa.cases.workflow import CaseError
+
+    try:
+        return fn(*args, **kwargs)
+    except CaseError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+
+
+@pilot_app.command("freeze")
+def pilot_freeze(
+    name: str = typer.Option(..., "--name", help="A name for the protocol (never reused)"),
+    run_id: str = typer.Option(..., "--run", help="Completed run whose configuration is frozen"),
+    actor: str = typer.Option(..., "--actor", help="The analyst freezing it"),
+    seed: int | None = typer.Option(None, "--seed", help="Seed of the calibration / held-out split (random if omitted)"),
+    calibration: float = typer.Option(0.3, "--calibration", help="Share of entities kept for calibration"),
+    budget: int = typer.Option(10, "--budget", help="Entities per arm an examiner can review (fixed budget)"),
+    notes: str = typer.Option("", "--notes"),
+) -> None:
+    """Freeze thresholds and the entity split before any judgement is looked at."""
+    from satsa.store.sqlite import SQLiteStore
+    from satsa.validate import pilot
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        res = _pilot_call(pilot.freeze_protocol, store, name, run_id, actor, _pilot_account(store, actor), seed=seed,
+                          calibration_fraction=calibration, budget=budget, notes=notes)
+    finally:
+        store.close()
+    console.print(f"[green]Protocol {res['protocol_id']} frozen at configuration {res['config_hash']} (seed {res['seed']})[/green]")
+    console.print(f"  calibration: {', '.join(res['calibration']) or 'none'}")
+    console.print(f"  held out:    {', '.join(res['held_out'])}")
+
+
+@pilot_app.command("replicate")
+def pilot_replicate(
+    sample_id: str = typer.Option(..., "--sample", help="Blind sample to repeat"),
+    assignee: str = typer.Option(..., "--assignee", help="The second, independent examiner"),
+    actor: str = typer.Option(..., "--actor", help="The analyst assigning it"),
+) -> None:
+    """Assign a blind sample's entities to a second examiner, in a new order."""
+    from satsa.store.sqlite import SQLiteStore
+    from satsa.validate import pilot
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        res = _pilot_call(pilot.replicate_sample, store, sample_id, assignee, actor, _pilot_account(store, actor))
+    finally:
+        store.close()
+    console.print(f"[green]Sample {res['sample_id']} ({res['tasks']} tasks) assigned to {assignee}[/green]")
+
+
+@pilot_app.command("adjudicate")
+def pilot_adjudicate(
+    protocol_id: str = typer.Option(..., "--protocol"),
+    run_id: str = typer.Option(..., "--run"),
+    entity_id: str = typer.Option(..., "--entity"),
+    label: str = typer.Option(..., "--label", help="Low, Moderate, Elevated or Critical"),
+    rationale: str = typer.Option(..., "--rationale"),
+    actor: str = typer.Option(..., "--actor", help="An examiner who reviewed neither side"),
+) -> None:
+    """Settle a disagreement between the two reviewers of an entity."""
+    from satsa.store.sqlite import SQLiteStore
+    from satsa.validate import pilot
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        res = _pilot_call(pilot.adjudicate, store, protocol_id, run_id, entity_id, label, actor,
+                          _pilot_account(store, actor), rationale)
+    finally:
+        store.close()
+    console.print(f"[green]Recorded {res['adjudication_id']}[/green]")
+
+
+@pilot_app.command("evaluate")
+def pilot_evaluate(
+    protocol_id: str = typer.Option(..., "--protocol"),
+    out: str | None = typer.Option(None, "--out", help="Write the Markdown report here"),
+    json_out: str | None = typer.Option(None, "--json", help="Write the raw figures here"),
+) -> None:
+    """The pilot's figures under a frozen protocol; nothing unanswered is counted as negative."""
+    import json as _json
+
+    from satsa.store.sqlite import SQLiteStore
+    from satsa.validate import pilot
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        res = _pilot_call(pilot.evaluate, store, protocol_id)
+    finally:
+        store.close()
+    report = pilot.evaluation_markdown(res)
+    if out:
+        Path(out).write_text(report, encoding="utf-8")
+        console.print(f"[green]Wrote {out}[/green]")
+    else:
+        console.print(report)
+    if json_out:
+        Path(json_out).write_text(_json.dumps(res, indent=1), encoding="utf-8")
+
+
 if __name__ == "__main__":
     app()

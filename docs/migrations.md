@@ -187,6 +187,24 @@ recorded". They are never reclassified after the fact.
 - To undo: the previous release ignores the new tables and columns. Context recorded since
   then has no effect under it; it remains in the database and in backups.
 
+### v9: pilot evaluation (Phase 5)
+
+- New columns:
+  - `blind_samples.replica_of`: the sample this one repeats for a second, independent
+    examiner (same entities, kinds and provenance; its own seeded order).
+  - `blind_tasks.opened_at`: when the task's examiner first opened it; with `submitted_at` it
+    is the reviewer's time.
+- New tables (satsa.validate.pilot, docs/shadow_pilot_runbook.md Part B):
+  - `pilot_protocols`: a frozen evaluation protocol: the run and configuration hash the
+    thresholds were frozen at, the seeded calibration / held-out split of entities, the review
+    budget. Never edited; a new protocol has a new name.
+  - `pilot_adjudications`: a third examiner's label for an entity two reviewers disagreed on
+    (one per protocol, run and entity).
+- Existing rows are untouched. Samples drawn before v9 have no replica; tasks opened before v9
+  have no opening time, so the evaluation counts their review time as "not recorded".
+- To undo: the previous release ignores the new columns and tables; blind review works as
+  before. Protocols and adjudications remain in the database and in backups.
+
 ## Publication catalog (`catalog.db`)
 
 ### v1: publication catalog

@@ -552,6 +552,56 @@ def _m8_context_and_peers(conn: sqlite3.Connection) -> None:
     _add_column(conn, "rule_results", "exception_id", "TEXT")
 
 
+def _m9_pilot_evaluation(conn: sqlite3.Connection) -> None:
+    """Independent validation tooling (satsa.validate.pilot, docs/shadow_pilot_runbook.md).
+
+    - `blind_samples.replica_of`: a sample that repeats another one's entities for a second,
+      independent examiner (in its own order), so two blinded labels exist per entity.
+    - `blind_tasks.opened_at`: when the examiner first opened the task; with `submitted_at` it
+      gives the reviewer's time.
+    - `pilot_protocols`: a frozen evaluation protocol: the configuration hash the thresholds were
+      frozen at, the seeded calibration / held-out split of entities and the review budget.
+    - `pilot_adjudications`: a third examiner's label for an entity two reviewers disagreed on.
+
+    Nothing existing changes: earlier samples have no replica, earlier tasks no opening time
+    (their review time is "not recorded").
+    """
+    _add_column(conn, "blind_samples", "replica_of", "TEXT REFERENCES blind_samples (sample_id)")
+    _add_column(conn, "blind_tasks", "opened_at", "TEXT")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pilot_protocols (
+            protocol_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            frozen_run_id TEXT NOT NULL REFERENCES runs (run_id),
+            frozen_config_hash TEXT NOT NULL,
+            seed INTEGER NOT NULL,
+            calibration_fraction REAL NOT NULL CHECK (calibration_fraction >= 0 AND calibration_fraction < 1),
+            budget INTEGER NOT NULL CHECK (budget > 0),
+            split_json TEXT NOT NULL,
+            notes TEXT,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pilot_adjudications (
+            adjudication_id TEXT PRIMARY KEY,
+            protocol_id TEXT NOT NULL REFERENCES pilot_protocols (protocol_id),
+            run_id TEXT NOT NULL REFERENCES runs (run_id),
+            entity_id TEXT NOT NULL,
+            label TEXT NOT NULL CHECK (label IN ('Low', 'Moderate', 'Elevated', 'Critical')),
+            rationale TEXT NOT NULL,
+            adjudicated_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (protocol_id, run_id, entity_id)
+        )
+        """
+    )
+
+
 OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(1, "evidence coverage and rule results", _m1_evidence_coverage),
     Migration(2, "run snapshots and analytical fingerprint", _m2_run_snapshots),
@@ -561,4 +611,5 @@ OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(6, "administrator MFA", _m6_admin_mfa),
     Migration(7, "supervisory cases, case events, response packages, blind tasks", _m7_examiner_workflow),
     Migration(8, "maintenance windows, rule exceptions, peer comparisons, saved views", _m8_context_and_peers),
+    Migration(9, "pilot evaluation: replicate reviews, review times, protocols, adjudications", _m9_pilot_evaluation),
 ]
