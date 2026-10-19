@@ -39,7 +39,7 @@
   <div class="stat-card">
     <div class="stat-label">Rule Pack Version</div>
     <div class="stat-value" style="color: var(--accent-indigo);">v1.0.0 (HMAC Signed)</div>
-    <div class="stat-desc">Signed with NCIIPC cryptographic key</div>
+    <div class="stat-desc">Signed with the deployment's rule-pack key</div>
   </div>
 </div>
 
@@ -113,7 +113,7 @@
     <div class="card">
       <h3>Import Signed Rule Pack</h3>
       <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1rem;">
-        Deploy an updated, cryptographically signed rule archive from NCIIPC headquarters. The HMAC signature and all SHA-256 checksums are verified before applying.
+        Deploy an updated, cryptographically signed rule archive from {{ brand().authority }}. The HMAC signature and all SHA-256 checksums are verified before applying.
       </p>
       <form method="post" action="/tuning/import-pack" enctype="multipart/form-data">
         <div style="margin-bottom: 1rem;">

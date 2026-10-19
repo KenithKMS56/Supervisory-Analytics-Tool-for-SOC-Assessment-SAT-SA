@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 app = FastAPI(
-    title="NCIIPC Administration Portal",
+    title="SAT-SA Administration Portal",
     description="National Critical Information Infrastructure Protection Centre — Administrative & Supervisory Control Portal",
     version="2.1.0",
     docs_url=None,  # Air-gapped / hardened security perimeter
@@ -127,7 +127,7 @@ async def not_found_handler(request: Request, exc: Exception) -> HTMLResponse:
         content="""<!DOCTYPE html>
 <html>
 <head>
-    <title>404 Not Found | NCIIPC Administration Portal</title>
+    <title>404 Not Found | Administration Portal</title>
     <link rel="stylesheet" href="/static/admin.css">
 </head>
 <body>

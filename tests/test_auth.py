@@ -215,7 +215,7 @@ def test_analyst_cannot_make_review_decisions():
     assert resp.status_code == 403
     queue = analyst_client.get("/queue").text
     assert 'action="/api/v1/feedback"' not in queue
-    assert "Decision reserved for the NCIIPC Examiner" in queue
+    assert "Decision reserved for an examiner" in queue
     assert 'href="/upload"' in analyst_client.get("/portfolio").text
 
 

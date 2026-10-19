@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NCIIPC Administration Login</title>
+  <title>{{ brand().prefix }}Administration Login</title>
   <!-- No web fonts: air-gapped. Typography falls back to locally installed/system fonts. -->
   <script>
     (function () {
@@ -108,8 +108,8 @@
         <a href="/splash" class="login-logo-wrap" title="Return to Welcome Screen">
           <img src="/static/0xzenith-logo.png" alt="0xZ Logo" class="login-logo-img">
         </a>
-        <h1>NCIIPC Control Portal</h1>
-        <p>National Critical Information Infrastructure Protection Centre</p>
+        <h1>{{ brand().prefix }}Control Portal</h1>
+        <p>{% if brand().org %}{{ brand().org }}{% else %}Supervisory Analytics Tool for SOC Assessment{% endif %}</p>
       </div>
 
       {% if error %}

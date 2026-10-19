@@ -1,12 +1,12 @@
 {% extends "admin_base.html" %}
 
-{% block title %}NCIIPC Control Portal | Welcome{% endblock %}
+{% block title %}{{ brand().prefix }}Control Portal | Welcome{% endblock %}
 
 {% set hide_nav = true %}
 
 {% block content %}
 <!-- 0xZenith NCIIPC Splash / Landing Screen -->
-<div id="adminLanding" class="satsa-landing-screen" role="region" aria-label="Welcome to NCIIPC Control Portal">
+<div id="adminLanding" class="satsa-landing-screen" role="region" aria-label="Welcome to {{ brand().prefix }}Control Portal">
   <div class="landing-theme-switcher" id="landingThemeSwitcher">
     <div class="theme-switcher-segmented" role="radiogroup" aria-label="Theme Selection">
       <button type="button" class="theme-btn theme-btn-light" onclick="nciipcSetTheme('light')" role="radio" aria-checked="false" aria-label="Light Theme" title="Light Theme">
@@ -48,7 +48,7 @@
       <h1 class="satsa-landing-title">
         National Cyber Resilience Oversight<br>Administrative &amp; Supervisory Control
       </h1>
-      <div class="satsa-landing-id">NCIIPC CONTROL PORTAL</div>
+      <div class="satsa-landing-id">{{ (brand().prefix ~ "Control Portal") | upper }}</div>
     </div>
 
     <!-- 3. PRIMARY ACTION: LOGIN -->

@@ -105,10 +105,10 @@
             Platform Role <span class="req">*</span>
           </label>
           <select id="role" name="role" class="form-select" required>
-            <optgroup label="NCIIPC Supervisory Authorities">
-              <option value="NCIIPC Super Administrator" {% if user.role == 'NCIIPC Super Administrator' or user.role == 'admin' %}selected{% endif %}>NCIIPC Super Administrator</option>
-              <option value="NCIIPC Analyst" {% if user.role in ('NCIIPC Analyst', 'analyst', 'NCIIPC Supervisor', 'supervisor') %}selected{% endif %}>NCIIPC Analyst</option>
-              <option value="NCIIPC Examiner" {% if user.role == 'NCIIPC Examiner' or user.role == 'examiner' %}selected{% endif %}>NCIIPC Examiner</option>
+            <optgroup label="Supervisory roles">
+              <option value="NCIIPC Super Administrator" {% if user.role == 'NCIIPC Super Administrator' or user.role == 'admin' %}selected{% endif %}>{{ brand().prefix }}Super Administrator</option>
+              <option value="NCIIPC Analyst" {% if user.role in ('NCIIPC Analyst', 'analyst', 'NCIIPC Supervisor', 'supervisor') %}selected{% endif %}>{{ brand().prefix }}Analyst</option>
+              <option value="NCIIPC Examiner" {% if user.role == 'NCIIPC Examiner' or user.role == 'examiner' %}selected{% endif %}>{{ brand().prefix }}Examiner</option>
             </optgroup>
             <optgroup label="Critical Sector Entity Scopes">
               <option value="CSE Administrator" {% if user.role == 'CSE Administrator' %}selected{% endif %}>CSE Administrator</option>
@@ -123,7 +123,7 @@
         <!-- Admin Portal Access (derived from role; no separate grant) -->
         <div class="form-group">
           <label class="form-label">Control Portal Authorization</label>
-          <span class="form-helper">NCIIPC Control Portal access (:8000) is granted only by the NCIIPC Super Administrator role. It cannot be granted separately to other roles.</span>
+          <span class="form-helper">Administration Portal access (:8000) is granted only by the Super Administrator role. It cannot be granted separately to other roles.</span>
         </div>
       </div>
     </div>
@@ -147,7 +147,7 @@
         <div class="form-group">
           <label class="form-label" for="org_id">Organisation Scope</label>
           <select id="org_id" name="org_id" class="form-select" onchange="handleOrgChange()">
-            <option value="" {% if not user.org_id %}selected{% endif %}>-- National Oversight / Unscoped (NCIIPC) --</option>
+            <option value="" {% if not user.org_id %}selected{% endif %}>-- National oversight / unscoped --</option>
             {% for org in organisations %}
             <option value="{{ org.org_id }}" {% if user.org_id == org.org_id %}selected{% endif %}>
               {{ org.name }} ({{ org.org_id }}) &mdash; {{ org.sector }}

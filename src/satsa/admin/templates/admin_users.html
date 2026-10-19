@@ -72,7 +72,7 @@
         <td style="font-weight: 600; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem;">
           {{ u.username }}
           {% if u.role in ('admin', 'NCIIPC Super Administrator', 'NCIIPC_SUPER_ADMINISTRATOR') %}
-            <span title="NCIIPC Control Portal Access" style="font-size: 0.7rem; color: var(--accent-primary); margin-left: 4px;">★</span>
+            <span title="Administration Portal access" style="font-size: 0.7rem; color: var(--accent-primary); margin-left: 4px;">★</span>
           {% endif %}
         </td>
 
@@ -81,7 +81,7 @@
           {% if u.org_id %}
             <span title="{{ u.org_name or u.org_id }}">{{ u.org_id }}</span>
           {% else %}
-            <span style="color: var(--admin-text-muted);">National (NCIIPC)</span>
+            <span style="color: var(--admin-text-muted);">National</span>
           {% endif %}
         </td>
 

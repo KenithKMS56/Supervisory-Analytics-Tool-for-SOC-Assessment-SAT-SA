@@ -146,6 +146,46 @@ def issue_setup_token(store: SQLiteStore, data_dir: Path | str) -> tuple[str, Pa
     return token, path
 
 
+ORGANISATION_NAME_MAX = 80
+MARKUP_CHARACTERS = ("<", ">", "{", "}", chr(92))  # chr(92): the backslash
+
+
+def _organisation_name(value: str | None) -> str:
+    """The name with its spacing normalised; SetupError if too long or holding markup characters."""
+    name = " ".join((value or "").split())
+    if len(name) > ORGANISATION_NAME_MAX or any(c in name for c in MARKUP_CHARACTERS):
+        raise SetupError(f"The organisation name must be at most {ORGANISATION_NAME_MAX} characters, "
+                         f"without any of {' '.join(MARKUP_CHARACTERS)}.")
+    return name
+
+
+def branding(store: SQLiteStore | None = None, values: dict[str, str] | None = None) -> dict[str, str]:
+    """How the product names the organisation that runs it, for page chrome and reports.
+
+    Nothing is hard-coded: with no `organisation_name` setting the wording is neutral ("the
+    supervisory authority", "Administration Portal"), so a deployment never implies an
+    endorsement it has not configured. Set it at first-run setup or with `satsa deployment
+    brand`."""
+    current = values if values is not None else (settings(store) if store is not None else {})
+    org = (current.get("organisation_name") or "").strip()
+    return {
+        "org": org,
+        "prefix": f"{org} " if org else "",
+        "authority": org or "the supervisory authority",
+        "admin_portal": f"{org} Administration Portal" if org else "Administration Portal",
+        "deployment_name": (current.get("deployment_name") or "").strip(),
+    }
+
+
+def set_branding(store: SQLiteStore, organisation_name: str, actor: str) -> dict[str, str]:
+    """Record (or clear, with an empty name) the organisation name shown in the product."""
+    name = _organisation_name(organisation_name)
+    before = settings(store).get("organisation_name", "")
+    set_settings(store, {"organisation_name": name}, actor=actor)
+    store.append_audit(action="branding_changed", actor=actor, details={"before": before, "after": name})
+    return branding(store)
+
+
 def complete_setup(
     store: SQLiteStore,
     data_dir: Path | str,
@@ -160,6 +200,7 @@ def complete_setup(
     backups_keep: int = DEFAULT_RETENTION_DAYS["backups_keep"],
     actor: str = "setup",
     require_token: bool = True,
+    organisation_name: str = "",
 ) -> None:
     """Create the first administrator and record the deployment settings; consume the token.
 
@@ -192,11 +233,13 @@ def complete_setup(
         raise SetupError(f"Unknown time zone {timezone!r}; use an IANA name such as Asia/Kolkata.") from exc
     if not 1 <= int(job_inputs_days) <= 3650 or not 1 <= int(backups_keep) <= 1000:
         raise SetupError("Retention must be 1-3650 days for job inputs and keep 1-1000 backups.")
+    organisation = _organisation_name(organisation_name)
 
     store.seed_default_organisations_and_cses()
     store.create_user(username, SETUP_ADMIN_ROLE, passphrase, org_id="ORG-NCIIPC", is_admin_user=1)
     set_settings(store, {
         "deployment_name": name,
+        "organisation_name": organisation,
         "timezone": timezone.strip(),
         "retention_job_inputs_days": int(job_inputs_days),
         "retention_backups_keep": int(backups_keep),

@@ -41,6 +41,7 @@ from satsa.auth.session import (
     require_role,
 )
 from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
+from satsa.config_cache import load_yaml
 from satsa.csv_safe import SafeWriter
 from satsa.explain.finding_card import WHY_IT_MATTERS, FindingCard
 from satsa.ingest.pipeline import IngestionPipeline
@@ -111,7 +112,7 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="SAT-SA Supervisory API",
-    description="Supervisory Analytics Tool for SOC Assessment (NCIIPC)",
+    description="Supervisory Analytics Tool for SOC Assessment",
     version="0.1.0",
     # /docs is served below from local Swagger UI assets (B07): FastAPI's default page loads them
     # from a CDN, which leaves it blank on an air-gapped network.
@@ -152,6 +153,16 @@ def _deployment_settings(_request: Request | None = None) -> dict[str, str]:
 templates.env.globals["deployment"] = _deployment_settings
 
 
+def _brand() -> dict[str, str]:
+    """The configured organisation wording for page chrome (satsa.deployment.branding)."""
+    from satsa.deployment import branding
+
+    return branding(values=_deployment_settings())
+
+
+templates.env.globals["brand"] = _brand
+
+
 # Paths anyone may reach without a session. Everything else requires one; the
 # route's own dependency then enforces the specific role (see the RBAC table
 # in tests/test_rbac_matrix.py, which must list every route).
@@ -165,7 +176,7 @@ PUBLIC_PREFIXES = ("/static/",)
 NON_PAGE_PREFIXES = ("/api/", "/reports/", "/templates/", "/tuning/export-pack", "/openapi.json")
 NOT_SATSA_OPERATOR = (
     "This account is not a SAT-SA operator account (analyst or examiner). "
-    "NCIIPC administrators use the Admin Portal at :8000."
+    "Administrators use the Admin Portal at :8000."
 )
 
 
@@ -657,7 +668,7 @@ async def handle_login(
         )
         sqlite_store.close()
         err_msg = urllib.parse.quote_plus(
-            "Access Denied: This account has been blocked. Please contact an NCIIPC administrator."
+            "Access Denied: This account has been blocked. Please contact your deployment administrator."
         )
         return RedirectResponse(
             url=f"/login?error={err_msg}&blocked=1&next={safe_next}", status_code=303
@@ -2711,7 +2722,7 @@ MAPPINGS_DIR = Path("config/mappings")
 def _load_rules_config() -> dict[str, Any]:
     if not RULES_CONFIG_PATH.exists():
         return {"rules": {}}
-    return yaml.safe_load(RULES_CONFIG_PATH.read_text(encoding="utf-8")) or {"rules": {}}
+    return load_yaml(RULES_CONFIG_PATH) or {"rules": {}}
 
 
 def _write_rules_config(cfg: dict[str, Any]) -> None:
@@ -3161,7 +3172,7 @@ async def download_portfolio_html(request: Request, run_id: str | None = None) -
     return _built_report(
         request, "portfolio_html", run_id,
         lambda rep, path, rid: rep.generate_portfolio_html(path, rid),
-        lambda rid: f"NCIIPC_Portfolio_Supervisory_Report_{rid}.html", "text/html",
+        lambda rid: f"Portfolio_Supervisory_Report_{rid}.html", "text/html",
     )
 
 

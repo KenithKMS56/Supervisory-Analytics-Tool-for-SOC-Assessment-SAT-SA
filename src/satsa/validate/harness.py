@@ -1160,7 +1160,7 @@ class ValidationHarness:
   </div>
 
   <div class="footer">
-    <div>National Critical Information Infrastructure Protection Centre (NCIIPC)</div>
+    <div>Supervisory Analytics Tool for SOC Assessment (SAT-SA)</div>
     <div>Fully Offline & Deterministic Supervisory Analytics Engine</div>
   </div>
 </body>

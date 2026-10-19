@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{% block title %}Overview{% endblock %} | NCIIPC Administration Portal</title>
+  <title>{% block title %}Overview{% endblock %} | {{ brand().admin_portal }}</title>
   <!-- No web fonts: air-gapped. Typography falls back to locally installed/system fonts. -->
   <script>
     (function () {
@@ -31,11 +31,11 @@
 
   <!-- iOS 26 Inspired Floating Fixed Bottom Navigation Bar (Matching SAT-SA) -->
   {% if operator and not hide_nav %}
-  <nav class="floating-bottom-nav" id="floatingAdminNav" aria-label="NCIIPC Administration Navigation">
+  <nav class="floating-bottom-nav" id="floatingAdminNav" aria-label="{{ brand().admin_portal }} navigation">
     <div class="floating-nav-pill">
       
       <!-- 0. Brand / 0xZ Logo -->
-      <a href="/" class="floating-nav-brand" title="0xZenith NCIIPC Control Console">
+      <a href="/" class="floating-nav-brand" title="{{ brand().prefix }}Control Console">
         <img src="/static/0xzenith-logo.png" alt="0xZ" class="floating-nav-brand-logo">
       </a>
       <div class="floating-nav-divider"></div>

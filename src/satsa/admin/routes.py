@@ -28,6 +28,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from jinja2 import pass_context
 
 from satsa.admin.rbac import can_access_admin_portal
 from satsa.auth import mfa
@@ -58,6 +59,19 @@ def _deployment(request: Request) -> dict[str, str]:
 
 
 templates.env.globals["deployment"] = _deployment
+
+
+@pass_context
+def _brand(context: Any) -> dict[str, str]:
+    """The configured organisation wording for page chrome (satsa.deployment.branding)."""
+    from satsa.deployment import branding
+
+    request = context.get("request")
+    store = getattr(request.app.state, "store", None) if request is not None else None
+    return branding(store) if store is not None else branding(values={})
+
+
+templates.env.globals["brand"] = _brand
 
 ADMIN_COOKIE_NAME = "nciipc_admin_session"
 
@@ -147,7 +161,7 @@ def require_admin_operator(request: Request) -> dict[str, Any]:
     if not can_access_admin_portal(user.get("role", "")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="The NCIIPC Administration Portal requires an administrator role.",
+            detail="The Administration Portal requires an administrator role.",
         )
     if user.get("force_password_change"):
         if mfa.enrolled(get_store(request), user["username"]) and not user.get("_mfa_verified"):
@@ -166,7 +180,7 @@ def require_admin_session(request: Request) -> dict[str, Any]:
     if not can_access_admin_portal(user.get("role", "")):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="The NCIIPC Administration Portal requires an administrator role.",
+            detail="The Administration Portal requires an administrator role.",
         )
     _mfa_gate(request, user, allow_enrolment=True)
     return user
@@ -243,6 +257,7 @@ async def admin_setup_post(
     password: str = Form(""),
     confirm_password: str = Form(""),
     deployment_name: str = Form(""),
+    organisation_name: str = Form(""),
     timezone: str = Form(""),
     job_inputs_days: int = Form(30),
     backups_keep: int = Form(7),
@@ -251,7 +266,8 @@ async def admin_setup_post(
     store = get_store(request)
     if not setup_pending(store):
         raise HTTPException(status_code=404, detail="Not Found")
-    values = {"username": username, "deployment_name": deployment_name, "timezone": timezone,
+    values = {"username": username, "deployment_name": deployment_name, "organisation_name": organisation_name,
+              "timezone": timezone,
               "job_inputs_days": job_inputs_days, "backups_keep": backups_keep}
     failures = store.count_recent_login_failures(
         SETUP_TARGET, LOGIN_LOCKOUT_MINUTES, table="admin_audit_log",
@@ -263,7 +279,8 @@ async def admin_setup_post(
     try:
         complete_setup(store, "data", token=token, admin_username=username, passphrase=password,
                        confirm=confirm_password, deployment_name=deployment_name, timezone=timezone,
-                       job_inputs_days=job_inputs_days, backups_keep=backups_keep, actor=username.strip())
+                       job_inputs_days=job_inputs_days, backups_keep=backups_keep, actor=username.strip(),
+                       organisation_name=organisation_name)
     except SetupError as exc:
         store.append_admin_audit("SETUP_FAILED", SETUP_TARGET, target=SETUP_TARGET, details={"reason": str(exc)})
         return _setup_page(request, str(exc), values, status_code=400)

@@ -188,7 +188,7 @@
       {% if current_identity %}
         <div class="floating-nav-identity" title="Logged in as {{ current_identity.username }} ({{ current_identity.role }}){% if current_identity.cse_id %} | Scoped: {{ current_identity.cse_id }}{% endif %}{% if current_identity.org_id %} | Org: {{ current_identity.org_name or current_identity.org_id }}{% endif %}">
           <span class="floating-nav-user-chip">{{ current_identity.username }}</span>
-          <span class="floating-nav-role" style="font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: rgba(59, 130, 246, 0.12); color: var(--accent-blue); font-weight: 600;">{% if nav_is_analyst %}NCIIPC Analyst{% elif is_examiner(current_identity.role) %}NCIIPC Examiner{% else %}{{ current_identity.role }}{% endif %}</span>
+          <span class="floating-nav-role" style="font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: rgba(59, 130, 246, 0.12); color: var(--accent-blue); font-weight: 600;">{% if nav_is_analyst %}{{ brand().prefix }}Analyst{% elif is_examiner(current_identity.role) %}{{ brand().prefix }}Examiner{% else %}{{ current_identity.role }}{% endif %}</span>
           {% if current_identity.cse_id %}
             <span class="floating-nav-scope" style="font-size: 0.65rem; padding: 2px 5px; border-radius: 4px; background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); font-family: 'JetBrains Mono', monospace; font-weight: 600;" title="Scoped CSE: {{ current_identity.cse_id }}">{{ current_identity.cse_id }}</span>
           {% endif %}
@@ -301,13 +301,13 @@
         ACCESS REVOKED
       </h2>
       <p style="font-size: 0.9rem; line-height: 1.5; color: #94a3b8; margin: 0 0 1.25rem;">
-        Your active supervisory session for <strong style="color: #f1f5f9;">{{ current_identity.username }}</strong> has been terminated or administratively blocked by NCIIPC Super Administrator.
+        Your active supervisory session for <strong style="color: #f1f5f9;">{{ current_identity.username }}</strong> has been terminated or administratively blocked by a deployment administrator.
       </p>
       <div style="background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.2); border-radius: 10px; padding: 0.75rem 1rem; margin-bottom: 1.5rem; font-size: 0.8rem; color: #fca5a5; text-align: left; font-family: 'JetBrains Mono', monospace;">
-        <div>&bull; Code: NCIIPC_SESSION_REVOKED</div>
-        <div>&bull; Perimeter Authority: NCIIPC Control Console (:8000)</div>
+        <div>&bull; Code: SESSION_REVOKED</div>
+        <div>&bull; Perimeter Authority: {{ brand().admin_portal }} (:8000)</div>
       </div>
-      <a href="/login?error=Access+Revoked:+Session+terminated+by+NCIIPC+Administrator" style="display: block; width: 100%; padding: 0.85rem 1.2rem; background: #ef4444; color: #fff; font-weight: 600; font-size: 0.92rem; border-radius: 9999px; text-decoration: none; box-shadow: 0 4px 14px rgba(239, 68, 68, 0.4); transition: background 0.2s;" onmouseover="this.style.background='#dc2626'" onmouseout="this.style.background='#ef4444'">
+      <a href="/login?error=Access+Revoked:+Session+terminated+by+an+administrator" style="display: block; width: 100%; padding: 0.85rem 1.2rem; background: #ef4444; color: #fff; font-weight: 600; font-size: 0.92rem; border-radius: 9999px; text-decoration: none; box-shadow: 0 4px 14px rgba(239, 68, 68, 0.4); transition: background 0.2s;" onmouseover="this.style.background='#dc2626'" onmouseout="this.style.background='#ef4444'">
         Return to Secure Login &rarr;
       </a>
     </div>

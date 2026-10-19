@@ -10,7 +10,7 @@ from satsa.serving import ServingConfig
 
 app = typer.Typer(
     name="satsa",
-    help="Supervisory Analytics Tool for SOC Assessment (NCIIPC)",
+    help="Supervisory Analytics Tool for SOC Assessment",
     add_completion=False,
 )
 console = Console()
@@ -569,14 +569,14 @@ def admin_cmd(
     host: str = typer.Option(
         None, "--host", "-h", help="Bind address (default: SATSA_HOST, else loopback 127.0.0.1)"
     ),
-    port: int = typer.Option(8000, "--port", "-p", help="NCIIPC Administration Portal port (default 8000)"),
+    port: int = typer.Option(8000, "--port", "-p", help="Administration Portal port (default 8000)"),
     ssl_certfile: str = typer.Option(None, "--ssl-certfile", help="TLS certificate (default: SATSA_TLS_CERT)"),
     ssl_keyfile: str = typer.Option(None, "--ssl-keyfile", help="TLS private key (default: SATSA_TLS_KEY)"),
 ) -> None:
-    """Launch NCIIPC Administration Portal control plane."""
+    """Launch the Administration Portal."""
     config = _serving_config_or_exit(host, ssl_certfile, ssl_keyfile)
     console.print(
-        f"[bold green][+] Launching NCIIPC Administration Portal at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
+        f"[bold green][+] Launching the Administration Portal at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
     )
     console.print("[dim]Administrative identity and control console. Press Ctrl+C to exit.[/dim]")
     _run_uvicorn_guarded("satsa.admin.app:app", config, port)
@@ -1569,6 +1569,8 @@ def setup_cmd(
     job_inputs_days: int = typer.Option(30, "--keep-job-inputs-days"),
     backups_keep: int = typer.Option(7, "--keep-backups"),
     data_dir: str = typer.Option("data", "--data-dir"),
+    organisation_name: str = typer.Option("", "--organisation-name",
+                                          help="Organisation shown in the product (none: neutral wording)"),
 ) -> None:
     """First-run setup from the shell, instead of the Admin Portal's /setup page.
 
@@ -1588,7 +1590,7 @@ def setup_cmd(
         complete_setup(store, data_dir, token=None, admin_username=admin_username, passphrase=passphrase,
                        confirm=passphrase, deployment_name=deployment_name, timezone=timezone,
                        job_inputs_days=job_inputs_days, backups_keep=backups_keep,
-                       actor=f"cli:{admin_username}", require_token=False)
+                       actor=f"cli:{admin_username}", require_token=False, organisation_name=organisation_name)
     except SetupError as exc:
         console.print(f"[bold red][!] {exc}[/bold red]")
         raise typer.Exit(code=1) from exc
@@ -1599,6 +1601,27 @@ def setup_cmd(
 
 deployment_app = typer.Typer(help="Deployment mode and settings (docs/first_run_setup.md)")
 app.add_typer(deployment_app, name="deployment")
+
+
+@deployment_app.command("brand")
+def deployment_brand(
+    organisation: str = typer.Option(..., "--organisation", help="Organisation name to show; '' for neutral wording"),
+    actor: str = typer.Option(..., "--actor", help="Who is making the change (recorded in the audit log)"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+) -> None:
+    """Set the organisation name the portals and reports show (audited)."""
+    from satsa.deployment import SetupError, set_branding
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(Path(data_dir) / "satsa.db")
+    try:
+        brand = set_branding(store, organisation, actor=f"cli:{actor}")
+    except SetupError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    finally:
+        store.close()
+    console.print(f"[green]Portals now show: {brand['admin_portal']}; authority: {brand['authority']}[/green]")
 
 
 @deployment_app.command("show")
