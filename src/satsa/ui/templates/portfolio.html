@@ -195,7 +195,18 @@
     Trigger the demo re-seed or run <code>satsa run --period &lt;label&gt;</code> across multiple periods to build up genuine trend history.
   </div>
   {% else %}
-  <div id="trajectoryChart" style="width: 100%; height: 300px;"></div>
+  <div id="trajectoryChart" role="img" aria-label="Risk index of each entity across assessment runs; the same figures are in the table below the chart." style="width: 100%; height: 300px;"></div>
+  <details class="chart-table">
+    <summary>Show the trend as a table</summary>
+    <div class="table-responsive"><table>
+      <caption class="visually-hidden">Risk index by entity and period</caption>
+      <thead><tr><th scope="col">Entity</th>{% for p in trend_periods %}<th scope="col">{{ p }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for s in trend_series if not s.insufficient_history %}
+        <tr><th scope="row">{{ s.name }}</th>{% for v in s.data %}<td>{% if v is not none %}{{ v | round(1) }}{% else %}&mdash;{% endif %}</td>{% endfor %}</tr>
+      {% endfor %}</tbody>
+    </table></div>
+    <p style="font-size: 0.8rem; color: var(--text-secondary);">&mdash;: no run of that period scored the entity. Entities with fewer than two runs are left out.</p>
+  </details>
   {% endif %}
   {% if trend_warnings %}
   <ul class="trend-warnings" style="margin: 0.75rem 0 0; padding-left: 1.25rem; font-size: 0.82rem; color: var(--text-secondary);">
@@ -215,7 +226,17 @@
     </span>
     <span style="font-size: 0.82rem; color: var(--text-secondary);">Sequential risk scale: 0 (No Risk) &bull; Low &bull; Medium &bull; Elevated &bull; High &bull; Critical</span>
   </div>
-  <div id="portfolioHeatmap" style="width: 100%; height: 350px;"></div>
+  <div id="portfolioHeatmap" role="img" aria-label="Domain scores of each entity, 0 to 100; the same figures are in the table below the chart." style="width: 100%; height: 350px;"></div>
+  <details class="chart-table">
+    <summary>Show the domain scores as a table</summary>
+    <div class="table-responsive"><table>
+      <caption class="visually-hidden">Domain score by entity (0 to 100, higher means more supervisory concern)</caption>
+      <thead><tr><th scope="col">Entity</th>{% for d in heatmap_domains %}<th scope="col">{{ d }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for row in heatmap_table %}
+        <tr><th scope="row"><a href="/entity/{{ row.entity_id }}">{{ row.entity_id }}</a></th>{% for v in row.scores %}<td>{% if v is not none %}{{ v }}{% else %}<span title="No rule could assess this domain">not assessed</span>{% endif %}</td>{% endfor %}</tr>
+      {% endfor %}</tbody>
+    </table></div>
+  </details>
 </div>
 
 <!-- Ranked Entities Table -->

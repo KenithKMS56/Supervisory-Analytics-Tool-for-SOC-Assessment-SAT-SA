@@ -80,6 +80,10 @@ choosing the **target entity** and the **period**. The upload is an import job:
 - one with rejected rows, unreadable files or unreadable values is **held**. The analyst sees
   why, and publishes it as is (the rejected rows stay out) or discards it.
 
+Tick **Check only** to see what a submission would give before sending it for real (per file:
+rows that would be stored, filtered or rejected; the data-quality issues; which rules the
+entity could be assessed on). Nothing is published. From the shell: `satsa ingest --check-only`.
+
 Limits: 1024 MiB in total; at most 2000 ZIP members; 4096 MiB expanded; no member compressed
 more than 200× (if over 1 MiB). A member path that leaves the archive is refused before
 anything is extracted. Stored file names keep only portable characters.

@@ -951,6 +951,10 @@ async def view_portfolio(
             y_idx = heatmap_entities.index(r["entity_id"])
             x_idx = domains.index(r["domain"])
             heatmap_data.append([x_idx, y_idx, round(r["score"], 1)])
+    # The same scores as a table, for screen readers and anyone who cannot read the colours.
+    cells = {(x, y): v for x, y, v in heatmap_data}
+    heatmap_table = [{"entity_id": eid, "scores": [cells.get((x, y)) for x in range(len(domains))]}
+                     for y, eid in enumerate(heatmap_entities)]
 
     # Execution Gaps vs Negative Space breakdown
     cur.execute(
@@ -1082,6 +1086,7 @@ async def view_portfolio(
             "heatmap_entities": heatmap_entities,
             "heatmap_domains": domains,
             "heatmap_data": heatmap_data,
+            "heatmap_table": heatmap_table,
             "systemic_findings": systemic_findings,
             "priority_controls": priority_controls,
             "priority_processes": priority_processes,
@@ -2450,9 +2455,11 @@ def handle_upload(
     files: list[UploadFile] = File(...),
     target_entity: Annotated[str, Form()] = "",
     period: Annotated[str, Form()] = "",
+    preview: Annotated[bool, Form()] = False,
     identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
 ) -> Response:
-    """Receive a file submission and queue it as an import job (satsa.jobs).
+    """Receive a file submission and queue it as an import job (satsa.jobs). With `preview`
+    ("Check only") the job reads, maps and validates the files and reports, publishing nothing.
 
     The request only checks the form, the upload size and archive limits, and saves the files
     under data/jobs/<job>/input. The worker then validates and ingests them through the
@@ -2504,6 +2511,8 @@ def handle_upload(
     try:
         params = {"target_entity": target_clean, "period": period_clean, "files": names,
                   "default_period": _latest_period(sqlite_store)}
+        if preview:
+            params["preview"] = True
         job = JobQueue(sqlite_store).enqueue(
             "import", {**params, "role": identity.role}, identity.username,
             input_fingerprint=fingerprint("import", params, extra=digest.hexdigest()), job_id=job_id,

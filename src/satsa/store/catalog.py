@@ -395,6 +395,14 @@ class BatchWriter:
         self.catalog._set_state(self.batch_id, "held", reason)
         self.held = True
 
+    def discard_preview(self) -> None:
+        """A checked-only submission (ingestion policy `preview`): its staged files are removed
+        and the batch is recorded as discarded. Nothing was ever visible to readers."""
+        if not self.published and not self.held:
+            self.catalog._discard_staging(self.batch_id)
+            self.catalog._set_state(self.batch_id, "discarded", "preview only: checked, never published")
+            self.held = True  # closing the block must not mark it failed
+
     def abort(self, reason: str) -> None:
         if not self.published and not self.held:
             self.catalog._discard_staging(self.batch_id)

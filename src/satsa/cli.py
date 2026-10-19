@@ -136,6 +136,9 @@ def ingest_cmd(
         "-p",
         help="Review period the submission covers (2026-Q1, 2026-H1, 2026-03); recorded on the batch",
     ),
+    check_only: bool = typer.Option(
+        False, "--check-only", help="Read, map and validate, and report what would be stored; publish nothing"
+    ),
 ) -> None:
     """Ingest datasets, execute DQ checks, pseudonymise actors, redact PII, and store partitioned Parquet.
 
@@ -204,7 +207,8 @@ def ingest_cmd(
 
     try:
         result = pipeline.ingest_directory(
-            Path(data_dir), default_entity_id=entity, mapping=mapping, period=period, transport="cli"
+            Path(data_dir), default_entity_id=entity, mapping=mapping, period=period, transport="cli",
+            policy="preview" if check_only else "auto",
         )
     finally:
         duckdb_store.close()
@@ -219,6 +223,14 @@ def ingest_cmd(
             "fix the data and re-ingest before running an assessment."
         )
         raise typer.Exit(code=1)
+    if result.get("status") == "preview":
+        console.print("[bold yellow][=] Checked only: nothing was published or recorded.[/bold yellow]")
+        for f in result.get("file_coverage", []):
+            console.print(f"  * {f['summary']}")
+        for issue in result.get("dq_issue_list", [])[:20]:
+            console.print(f"  * [yellow]{issue['check_name']}[/yellow] ({issue['entity_id']}): {issue['details']}")
+        _print_ingest_coverage(result)
+        return
     if result.get("status") == "success":
         console.print("[bold green][+] Ingestion completed successfully:[/bold green]")
         console.print(f"  * Batch ID: [cyan]{result.get('batch_id')}[/cyan]")

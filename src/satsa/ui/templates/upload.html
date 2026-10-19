@@ -186,6 +186,12 @@
 
       <div id="file-list" style="margin-top: 1rem; color: var(--text-secondary); font-size: 0.85rem;"></div>
 
+      <label style="display: flex; gap: 0.5rem; align-items: flex-start; margin-top: 1rem; font-size: 0.88rem;">
+        <input type="checkbox" name="preview" value="1" aria-describedby="preview-help">
+        <span><strong>Check only</strong> &mdash; read, map and validate the files and show what they would give, without publishing anything.
+          <span id="preview-help" style="display: block; color: var(--text-muted); font-size: 0.8rem;">The result lists, per file, the rows that would be stored, filtered or rejected, the data-quality issues, and which rules the entity could then be assessed on.</span></span>
+      </label>
+
       <button type="submit" class="btn" style="width: 100%; justify-content: center; margin-top: 1.25rem;">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M5 12h14M12 5l7 7-7 7"/>

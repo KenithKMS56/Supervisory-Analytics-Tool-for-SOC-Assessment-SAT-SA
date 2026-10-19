@@ -89,6 +89,14 @@ def describe_ingestion(res: dict[str, Any], target_entity: str | None) -> str:
     status = res.get("status")
     if status == "empty":
         return "Warning: No supported CSV, TSV, Excel (.xlsx) or JSON files could be parsed from upload."
+    if status == "preview":
+        rows = sum(res.get("row_counts", {}).values())
+        return (
+            f"Checked only: nothing was published or recorded. {rows} row(s) would be stored; "
+            f"{len(res.get('dq_issue_list') or [])} data-quality issue(s). The tables below say what each file "
+            "would give and which rules the entity could then be assessed on. Upload again without "
+            "\"Check only\" to submit it."
+        )
     if status == "held":
         held_why = "; ".join(
             f["summary"] for f in res.get("file_coverage") or [] if f["status"] not in ("ingested", "empty")
@@ -140,6 +148,8 @@ def _earlier_attempt_batch(ctx: JobContext) -> dict[str, Any] | None:
     catalog = Catalog(ctx.data_dir)
     try:
         for attempt in range(1, int(ctx.job["attempts"])):
+            if ctx.job["params"].get("preview"):
+                break  # a check-only import publishes nothing; it simply runs again
             batch = catalog.batch(f"BATCH-{ctx.job['job_id']}-a{attempt}")
             if batch is not None and batch["state"] in ("published", "held"):
                 return batch
@@ -159,6 +169,7 @@ def import_files(ctx: JobContext) -> dict[str, Any]:
     period = params.get("period")
     source = job_dir(ctx.data_dir, ctx.job["job_id"]) / IMPORT_INPUT
 
+    preview = bool(params.get("preview"))
     earlier = _earlier_attempt_batch(ctx)
     if earlier is not None:
         ctx.stage(f"continuing from batch {earlier['batch_id']} of an earlier attempt")
@@ -200,8 +211,8 @@ def import_files(ctx: JobContext) -> dict[str, Any]:
                     period=period,
                     transport="upload",
                     submitted_by=ctx.job["created_by"],
-                    policy="if_clean",
-                    batch_id=f"BATCH-{ctx.job['job_id']}-a{ctx.job['attempts']}",
+                    policy="preview" if preview else "if_clean",
+                    batch_id=f"BATCH-{ctx.job['job_id']}-{'p' if preview else 'a'}{ctx.job['attempts']}",
                 )
             finally:
                 duck.close()
@@ -216,7 +227,19 @@ def import_files(ctx: JobContext) -> dict[str, Any]:
         "entities": res.get("entities", []),
         "message": message,
     }
-    if res.get("status") == "success" and params.get("assess", True):
+    if res.get("status") == "preview":
+        cov = (res.get("rule_coverage") or {}).get(target or "", None) or next(iter((res.get("rule_coverage") or {}).values()), {})
+        result["preview"] = {
+            "files": res.get("file_coverage", []),
+            "assessed": sorted(cov.get("assessed", {})),
+            "not_assessed": cov.get("not_assessed", {}),
+            "degraded": cov.get("degraded", {}),
+            "issues": (res.get("dq_issue_list") or [])[:50],
+            "issue_count": len(res.get("dq_issue_list") or []),
+            "unmapped_files": res.get("unmapped_files", []),
+            "invalid_timestamps": res.get("invalid_timestamps", {}),
+        }
+    elif res.get("status") == "success" and params.get("assess", True):
         assessed = _assess(ctx, period or params.get("default_period"), target or "PORTFOLIO")
         result.update(assessed)
         result["message"] = f"{message} | Assessment {assessed['run_id']}: {assessed['findings_count']} findings flagged."

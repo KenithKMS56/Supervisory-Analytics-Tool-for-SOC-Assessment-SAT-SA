@@ -33,6 +33,7 @@ There is no second write path.
 | `auto` | Rows that pass are published. The rest are reported as DQ issues. |
 | `strict` | Nothing is stored. The response is HTTP 422 with `errors`, one entry per problem: `table`, `field`, `row` (1-based record number in that table's section), `value` and `reason`, plus an exact `error_count`. |
 | `if_clean` | The batch is staged but held unpublished. An analyst then chooses **Publish as is** (rejected rows stay out) or **Discard** under *Upload → Held submissions*. Both decisions are audited. |
+| `preview` | **Check only** (upload page checkbox, `satsa ingest --check-only`). Everything is read, mapped and validated and the full report returned: per file, rows that would be stored, filtered or rejected; the data-quality issues; which rules the entity could be assessed on. Nothing is published, recorded as submitted or saved as a DQ issue; the staged files are removed and the batch is recorded as `discarded`. |
 
 A held batch is invisible to every assessment until it is published.
 

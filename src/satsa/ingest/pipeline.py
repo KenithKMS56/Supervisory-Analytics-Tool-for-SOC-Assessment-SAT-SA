@@ -73,7 +73,9 @@ ENTITY_REASONS = (NO_ENTITY, BAD_ENTITY, OTHER_ENTITY)
 #   nothing is stored; the response lists every error (JSON API).
 # - if_clean: a clean submission is published; one with problems is held unpublished until an
 #   analyst publishes or discards it (web upload).
-POLICIES = ("auto", "strict", "if_clean")
+# - preview: everything is read, mapped and validated and the report is returned, but nothing is
+#   published or recorded as submitted; the staged files are removed (upload "check only").
+POLICIES = ("auto", "strict", "if_clean", "preview")
 
 # Largest number of error entries a rejected submission reports (the count is always exact).
 MAX_ERRORS = 200
@@ -1616,7 +1618,10 @@ class IngestionPipeline:
                     empty_for = [e for e in sorted(entities_present) if e not in rows_by_table.get(target, set())]
                     if empty_for:
                         writer.declare(target, empty_for, DECLARED_EMPTY)
-                if policy == "if_clean" and (problems or failures):
+                if policy == "preview":
+                    writer.discard_preview()
+                    state = "preview"
+                elif policy == "if_clean" and (problems or failures):
                     writer.hold("held for review: the submission has rejected rows, unreadable files or values")
                     state = "held"
                 else:
@@ -1666,7 +1671,9 @@ class IngestionPipeline:
         coverage: dict[str, dict[str, dict[str, list[str]]]] = {}
         for ent_id in sorted(entities_present):
             alert_count, empty_fields = alert_profile[ent_id]
-            coverage[ent_id] = rule_coverage(submitted.get(ent_id, set()), empty_fields)
+            # A preview reports what the entity could be assessed on if this were published.
+            tables = submitted.get(ent_id, set()) | (manifest_tables if state == "preview" else set())
+            coverage[ent_id] = rule_coverage(tables, empty_fields)
             rules_by_column: dict[str, list[str]] = {}
             for rule_id, columns in coverage[ent_id]["degraded"].items():
                 for column in columns:
@@ -1688,12 +1695,13 @@ class IngestionPipeline:
                     )
                 )
 
-        # Save DQ issues to SQLite
-        for dq in all_dq_issues:
-            self.sqlite_store.save_dq_issue(dq)
+        # Save DQ issues to SQLite (a preview only reports them).
+        if state != "preview":
+            for dq in all_dq_issues:
+                self.sqlite_store.save_dq_issue(dq)
 
         self.sqlite_store.append_audit(
-            action="ingest",
+            action="ingest_preview" if state == "preview" else "ingest",
             actor="pipeline",
             details={
                 "batch_id": batch_id,
@@ -1710,7 +1718,7 @@ class IngestionPipeline:
             },
         )
 
-        status = "held" if state == "held" else "error" if state == "failed" else (
+        status = "held" if state == "held" else "preview" if state == "preview" else "error" if state == "failed" else (
             "partial" if failed_tables else "success"
         )
         return {
@@ -1735,4 +1743,10 @@ class IngestionPipeline:
             "unrecognised_files": sorted(unrecognised_files),
             "unused_source_columns": unused_source_columns,
             "file_coverage": file_coverage,
+            # A preview stores no DQ issue, so it returns them.
+            "dq_issue_list": [
+                {"entity_id": d.entity_id, "check_name": d.check_name, "severity": d.severity, "count": d.count,
+                 "details": d.details}
+                for d in all_dq_issues
+            ] if state == "preview" else [],
         }

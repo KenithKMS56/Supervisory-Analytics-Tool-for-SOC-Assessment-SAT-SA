@@ -46,9 +46,34 @@
   <p id="jobMessage">{{ job.result.message }}</p>
   <ul>
     {% if job.result.run_id %}<li>Assessment run: <code>{{ job.result.run_id }}</code> &mdash; <a href="/portfolio">open the portfolio</a></li>{% endif %}
-    {% if job.result.batch_id %}<li>Batch: <code>{{ job.result.batch_id }}</code>{% if job.result.ingestion_status == "held" %} &mdash; held: <a href="/upload">publish or discard it on the upload page</a>{% endif %}</li>{% endif %}
+    {% if job.result.batch_id and job.result.ingestion_status != "preview" %}<li>Batch: <code>{{ job.result.batch_id }}</code>{% if job.result.ingestion_status == "held" %} &mdash; held: <a href="/upload">publish or discard it on the upload page</a>{% endif %}</li>{% endif %}
   </ul>
 </div>
+{% set pv = job.result.preview %}
+{% if pv %}
+<div class="card" style="margin-bottom: 1.5rem;" id="preview">
+  <div class="card-title"><span>What these files would give (not published)</span></div>
+  <div class="table-responsive"><table>
+    <thead><tr><th scope="col">File</th><th scope="col">Rows read</th><th scope="col">Would be stored</th><th scope="col">Filtered by the mapping</th><th scope="col">Rejected</th></tr></thead>
+    <tbody>{% for f in pv.files %}
+      <tr><th scope="row">{{ f.file }}</th><td>{{ f.rows_read }}</td>
+        <td>{% for t, n in f.stored.items() %}{{ n }} into {{ t }}{% if not loop.last %}; {% endif %}{% else %}&mdash;{% endfor %}</td>
+        <td>{% for t, n in f.filtered.items() %}{{ n }} ({{ t }}){% if not loop.last %}; {% endif %}{% else %}&mdash;{% endfor %}</td>
+        <td>{% for reason, d in f.rejected.items() %}{{ d.count }}: {{ reason }}{% if d.rows %} (rows {{ d.rows }}){% endif %}{% if not loop.last %}; {% endif %}{% else %}&mdash;{% endfor %}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% if pv.unmapped_files %}<p><strong>Not read</strong> (the mapping does not describe them): {{ pv.unmapped_files | join(", ") }}</p>{% endif %}
+  {% if pv.invalid_timestamps %}<p><strong>Unreadable timestamps:</strong> {% for k, n in pv.invalid_timestamps.items() %}{{ k }}: {{ n }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
+  <h3 style="font-size: 0.95rem; margin-top: 1rem;">Rules the entity could be assessed on</h3>
+  <p>{% if pv.assessed %}{{ pv.assessed | join(", ") }}{% else %}none{% endif %}</p>
+  {% if pv.not_assessed %}<p><strong>Not assessed</strong> (tables missing):</p>
+  <ul>{% for rule, tables in pv.not_assessed.items() %}<li>{{ rule }}: needs {{ tables | join(", ") }}</li>{% endfor %}</ul>{% endif %}
+  {% if pv.degraded %}<p><strong>Would run but cannot fire</strong> (columns with no usable value):</p>
+  <ul>{% for rule, cols in pv.degraded.items() %}<li>{{ rule }}: {{ cols | join(", ") }}</li>{% endfor %}</ul>{% endif %}
+  <h3 style="font-size: 0.95rem; margin-top: 1rem;">Data-quality issues ({{ pv.issue_count }})</h3>
+  {% if pv.issues %}<ul>{% for i in pv.issues %}<li><strong>{{ i.check_name }}</strong> ({{ i.severity }}, {{ i.entity_id }}): {{ i.details }}</li>{% endfor %}</ul>{% else %}<p>None.</p>{% endif %}
+</div>
+{% endif %}
 {% endif %}
 
 {% if job.error %}

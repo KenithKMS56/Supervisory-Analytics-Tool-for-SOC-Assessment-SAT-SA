@@ -2074,3 +2074,18 @@ form select.form-control, form input.form-control {
 .filter-row label > .form-control {
   min-height: 40px;
 }
+
+/* Text for screen readers only (a table caption the chart above already shows visually). */
+.visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+
+/* A chart's figures as a table, folded under the chart. */
+.chart-table { margin-top: 0.75rem; font-size: 0.85rem; }
+.chart-table > summary { cursor: pointer; color: var(--accent-blue); font-weight: 600; }
+.chart-table > summary:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
+.chart-table table { margin-top: 0.5rem; }
