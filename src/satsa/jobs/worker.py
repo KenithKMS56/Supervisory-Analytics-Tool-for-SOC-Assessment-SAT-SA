@@ -36,11 +36,12 @@ logger = logging.getLogger(__name__)
 MIN_FREE_DISK_BYTES = int(os.environ.get("SATSA_MIN_FREE_DISK_MB", "512")) * 1024 * 1024
 
 # Memory a job is expected to need, from the peaks measured in docs/benchmarks.md: an
-# assessment held about 180 bytes per stored row on top of ~130 MiB (0.5 to 21 million rows), an
-# import 3 to 4 times its input. The estimates round both up; SATSA_MEMORY_PREFLIGHT=off skips
-# the check (for a host whose free-memory figure is misleading, e.g. a container without limits).
+# assessment held up to about 208 bytes per stored row above 256 MiB (4,487 MiB for 21.4 million
+# rows, 2026-10-20; tables are now held in entity order), an import 3 to 4 times its input. The
+# estimates round both up; SATSA_MEMORY_PREFLIGHT=off skips the check (for a host whose
+# free-memory figure is misleading, e.g. a container without limits).
 MEMORY_BASE_BYTES = 256 * 1024 * 1024
-ASSESS_BYTES_PER_ROW = 200
+ASSESS_BYTES_PER_ROW = 240
 IMPORT_BYTES_PER_INPUT_BYTE = 4
 
 

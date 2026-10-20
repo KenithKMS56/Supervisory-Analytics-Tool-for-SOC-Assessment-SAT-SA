@@ -1725,12 +1725,18 @@ class IngestionPipeline:
             written = []
             state = "failed"
         if state == "published":
+            # Each published file must read back. The tables themselves are reloaded only when this
+            # store is next read (DuckDBStore.mark_stale): most callers never read it again.
             for table_name, height, entity_rows in written:
+                files = [f.path for f in catalog.published_files(_store_table(table_name)) if f.batch_id == batch_id]
                 try:
-                    self.duckdb_store.load_table_from_parquet(_store_table(table_name))
+                    if files:
+                        listed = ", ".join("'" + p.as_posix().replace("'", "''") + "'" for p in files)
+                        self.duckdb_store.conn.execute(f"SELECT count(*) FROM read_parquet([{listed}])").fetchone()
                 except Exception as exc:
                     logger.exception("Failed to store table %r (%d rows)", table_name, height)
                     failures[table_name] = (height, entity_rows, type(exc).__name__)
+            self.duckdb_store.mark_stale(_store_table(t) for t, _h, _e in written)
         failed_tables: list[str] = [t for t in table_order if t in failures]
         for table_name in failed_tables:
             height, entity_rows, error = failures[table_name]

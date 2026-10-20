@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
@@ -97,6 +98,30 @@ class BaseRule(ABC):
         """The date this assessment is "as of": the runner's reference date, else the latest
         timestamp in the submitted data. None only when the store holds no dated record."""
         return self.reference_date or data_reference_date(store)
+
+    @staticmethod
+    def peers_among(entity_id: str, peer_ids: list[str], present: Iterable[str]) -> list[str]:
+        """The entities of `present` that `peer_filter` selects, sorted.
+
+        For rules that read a portfolio-wide figure per entity once per assessment
+        (`DuckDBStore.memo`) and pick the cohort's figures from it, instead of scanning every
+        peer's rows again for each entity: the same cohort, so the same result."""
+        if peer_ids:
+            wanted = set(peer_ids)
+            return sorted(e for e in present if e in wanted)
+        return sorted(e for e in present if e != entity_id)
+
+    @staticmethod
+    def alert_entities(store: DuckDBStore) -> frozenset[str]:
+        """Entities with at least one alert (`SELECT DISTINCT entity_id FROM alert`), once per assessment."""
+        return store.memo(
+            ("alert", "entities"),
+            lambda: frozenset(
+                str(e) for e in store.query("SELECT DISTINCT entity_id FROM alert WHERE entity_id IS NOT NULL")[
+                    "entity_id"
+                ].to_list()
+            ),
+        )
 
     @staticmethod
     def population(store: DuckDBStore, sql: str, params: list[Any]) -> int:

@@ -5,7 +5,7 @@ import os
 import threading
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -86,6 +86,8 @@ class DuckDBStore:
         self._active_batch: BatchWriter | None = None
         self._defer_reload = False
         self._memo: dict[Any, Any] = {}
+        # Tables published since they were loaded, reloaded before anything next reads (mark_stale).
+        self._stale: set[str] = set()
         # Publication sequence the loaded tables reflect (the source snapshot); None until loaded.
         self.source_snapshot: int | None = None
         self.conn = duckdb.connect(":memory:")
@@ -280,6 +282,38 @@ class DuckDBStore:
         for stmt in ddl_statements:
             self.conn.execute(stmt)
 
+    @property
+    def conn(self) -> duckdb.DuckDBPyConnection:
+        """The DuckDB connection; tables marked stale are reloaded first, so every read sees them."""
+        if self._stale:
+            self._reload_stale()
+        return self._conn
+
+    @conn.setter
+    def conn(self, value: duckdb.DuckDBPyConnection) -> None:
+        self._conn = value
+
+    def mark_stale(self, tables: Iterable[str]) -> None:
+        """Reload `tables` before the next read instead of now.
+
+        An ingest publishes and then usually ends: the CLI and the import job each use their own
+        store, and an assessment reloads every table itself. Reloading at publication (version
+        selection over every published file) was most of an ingest's time at scale and was then
+        thrown away; a caller that does read the store afterwards still sees the published rows.
+        """
+        self._memo.clear()
+        self._stale.update(tables)
+
+    def _reload_stale(self) -> None:
+        pending = sorted(self._stale)
+        self._stale.clear()
+        for done, table in enumerate(pending):
+            try:
+                self.load_table_from_parquet(table)
+            except BaseException:
+                self._stale.update(pending[done:])
+                raise
+
     @contextmanager
     def deferred_reload(self) -> Iterator[None]:
         """Within the block, write_partitioned_parquet does not reload the table into DuckDB.
@@ -373,6 +407,7 @@ class DuckDBStore:
         that is missing or unreadable is skipped with a warning, never silently.
         """
         self._memo.clear()
+        self._stale.discard(table_name)
         catalog = self.catalog
         catalog.adopt_legacy_files(table_name)
         snapshot = catalog.max_pub_seq() if max_pub_seq is None else max_pub_seq
@@ -462,7 +497,12 @@ class DuckDBStore:
                     )
                 else:
                     current = rows  # no business key: a row's full content is its identity
-                sql = f"INSERT INTO {escaped} BY NAME SELECT DISTINCT {out} FROM ({current})"
+                # Stored in entity order. Version selection and DISTINCT return rows in hash order;
+                # stored that way, every per-entity query (each rule, for each entity) scans the
+                # whole table, because no row group's min/max of entity_id excludes the entity. In
+                # entity order DuckDB skips the row groups of other entities. Which rows are
+                # stored is unchanged.
+                sql = f"INSERT INTO {escaped} BY NAME SELECT DISTINCT {out} FROM ({current}) ORDER BY entity_id"
             self.conn.execute(sql)
         finally:
             self.conn.unregister(view)
@@ -492,6 +532,7 @@ class DuckDBStore:
 
     def load_all_tables(self, max_pub_seq: int | None = None) -> None:
         """Reload every canonical table from the published batches, as of one source snapshot."""
+        self._stale.clear()
         catalog = self.catalog
         catalog.adopt_legacy_files()
         snapshot = catalog.max_pub_seq() if max_pub_seq is None else max_pub_seq
@@ -515,8 +556,9 @@ class DuckDBStore:
             self.conn.execute(sql)
 
     def close(self) -> None:
-        """Close the DuckDB connection and the catalog."""
-        self.conn.close()
+        """Close the DuckDB connection and the catalog (stale tables are not reloaded first)."""
+        self._stale.clear()
+        self._conn.close()
         if self._catalog is not None:
             self._catalog.close()
             self._catalog = None
@@ -540,6 +582,7 @@ class SharedDuckDBView(DuckDBStore):
         self._active_batch = None
         self._defer_reload = False
         self._memo = {}
+        self._stale = set()
         self.source_snapshot = shared.source_snapshot
         self.conn = shared.conn.cursor()
 
@@ -553,7 +596,7 @@ class SharedDuckDBView(DuckDBStore):
         raise ReadOnlyStoreError("load_all_tables on a shared read view")
 
     def close(self) -> None:
-        self.conn.close()
+        self._conn.close()
 
 
 def parquet_fingerprint(parquet_dir: Path) -> tuple[int, int, int]:

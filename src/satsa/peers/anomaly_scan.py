@@ -34,7 +34,7 @@ from typing import Any
 
 import yaml
 
-from satsa.context import ENTITY_TZ_CTE
+from satsa.context import entity_local_counts, local_time_counts
 from satsa.models.canonical import Entity
 from satsa.peers.grouping import PeerResolver
 from satsa.peers.robust_stats import RobustStats
@@ -129,16 +129,14 @@ _SEV_RANK = (
 )
 _HC = "lower(a.severity_final) IN ('high', 'critical')"
 _SECS = "epoch(a.closed_at) - epoch(a.created_at)"
-# Hours and weekdays are read in the entity's own time zone (satsa.context); a query using _LOCAL
-# starts with `WITH {ENTITY_TZ_CTE}` and joins _satsa_tz on the entity.
-_LOCAL = "timezone(coalesce(_satsa_tz.tz, 'UTC'), a.created_at AT TIME ZONE 'UTC')"
-_TZ_JOIN = "LEFT JOIN _satsa_tz ON _satsa_tz.entity_id = a.entity_id"
+# Night-time and weekend shares are read in the entity's own time zone, from the assessment's one
+# conversion of every alert to local time (satsa.context.local_time_counts), which NS03 reads too:
+# each query converting every alert again was the largest single cost of an assessment at scale.
 
 # One query per source; each returns entity_id plus metric columns and their populations
 # (column "<metric>" and "<metric>__n").
 _QUERIES: list[str] = [
     f"""
-    WITH {ENTITY_TZ_CTE}
     SELECT a.entity_id,
         avg(CASE WHEN a.disposition = 'true_positive' THEN 1.0 ELSE 0.0 END) AS tp_share,
         count(*) AS tp_share__n,
@@ -156,11 +154,6 @@ _QUERIES: list[str] = [
         count(*) FILTER (WHERE a.closed_at IS NOT NULL) AS unacknowledged_closed_share__n,
         avg(CASE WHEN a.closed_at IS NULL OR a.status = 'open' THEN 1.0 ELSE 0.0 END) AS open_share,
         count(*) AS open_share__n,
-        avg(CASE WHEN extract(hour FROM {_LOCAL}) >= 20 OR extract(hour FROM {_LOCAL}) < 8
-                 THEN 1.0 ELSE 0.0 END) AS night_share,
-        count(*) AS night_share__n,
-        avg(CASE WHEN dayofweek({_LOCAL}) IN (0, 6) THEN 1.0 ELSE 0.0 END) AS weekend_share,
-        count(*) AS weekend_share__n,
         avg(CASE WHEN a.playbook_id IS NOT NULL AND a.playbook_id <> '' THEN 1.0 ELSE 0.0 END) AS playbook_share,
         count(*) AS playbook_share__n,
         quantile_cont(epoch(a.acknowledged_at) - epoch(a.created_at), 0.5)
@@ -173,7 +166,7 @@ _QUERIES: list[str] = [
             FILTER (WHERE NOT {_HC} AND a.closed_by_type = 'human' AND a.closed_at >= a.created_at) AS close_median_lm,
         count(*) FILTER (WHERE NOT {_HC} AND a.closed_by_type = 'human' AND a.closed_at >= a.created_at)
             AS close_median_lm__n
-    FROM alert a {_TZ_JOIN}
+    FROM alert a
     GROUP BY a.entity_id
     """,
     f"""
@@ -332,19 +325,16 @@ SELECT entity_id, category, count(*) AS n FROM alert WHERE category IS NOT NULL 
 """
 
 _MONTHLY_SQL = f"""
-WITH {ENTITY_TZ_CTE}
 SELECT a.entity_id,
     strftime(a.created_at, '%Y-%m') AS month,
     count(*) AS n,
     avg(CASE WHEN a.disposition = 'true_positive' THEN 1.0 ELSE 0.0 END) AS tp_share,
     avg(CASE WHEN a.closed_by_type = 'automation' THEN 1.0 ELSE 0.0 END) AS automation_share,
-    avg(CASE WHEN extract(hour FROM {_LOCAL}) >= 20 OR extract(hour FROM {_LOCAL}) < 8
-             THEN 1.0 ELSE 0.0 END) AS night_share,
     quantile_cont({_SECS}, 0.5)
         FILTER (WHERE {_HC} AND a.closed_by_type = 'human' AND a.closed_at >= a.created_at) AS close_median_hc,
     count(*) FILTER (WHERE {_HC} AND a.closed_by_type = 'human' AND a.closed_at >= a.created_at)
         AS close_median_hc__n
-FROM alert a {_TZ_JOIN}
+FROM alert a
 WHERE a.created_at IS NOT NULL
 GROUP BY a.entity_id, month
 """
@@ -477,6 +467,13 @@ class AnomalyScanner:
                         continue
                     values.setdefault(ent, {})[col] = (float(val), n)
 
+        # Night-time and weekend shares, in local time: counts from the assessment's one conversion
+        # of every alert (the same figures as avg(CASE ... THEN 1.0 ELSE 0.0 END) over its alerts).
+        for ent, (n_alerts, night, weekend, _tz) in entity_local_counts(store).items():
+            if n_alerts:
+                values.setdefault(ent, {})["night_share"] = (night / n_alerts, n_alerts)
+                values[ent]["weekend_share"] = (weekend / n_alerts, n_alerts)
+
         # Category mix: a category any entity reports is a share (possibly 0) for every entity.
         cat_df = store.query(_CATEGORY_SQL)
         totals: dict[str, int] = {}
@@ -512,6 +509,7 @@ class AnomalyScanner:
                 spans[row["entity_id"]] = (first.date(), last.date())
 
         series: dict[str, dict[str, list[tuple[str, float, int]]]] = {}
+        local = local_time_counts(store)
         df = store.query(_MONTHLY_SQL)
         for row in sorted(df.iter_rows(named=True), key=lambda r: (r["entity_id"], r["month"])):
             ent, month, n = row["entity_id"], row["month"], int(row["n"])
@@ -525,9 +523,12 @@ class AnomalyScanner:
                 if days > 0:
                     out.setdefault("alerts_per_day", []).append((month, n / days, n))
             if n >= self.min_month_population:
-                for key in ("tp_share", "automation_share", "night_share"):
+                for key in ("tp_share", "automation_share"):
                     if row[key] is not None:
                         out.setdefault(key, []).append((month, float(row[key]), n))
+                # The month's alerts as counted in local time (satsa.context.local_time_counts).
+                night = local[(ent, month)][1]
+                out.setdefault("night_share", []).append((month, night / n, n))
             n_close = int(row.get("close_median_hc__n") or 0)
             if row["close_median_hc"] is not None and n_close >= self.min_month_population:
                 out.setdefault("close_median_hc", []).append((month, float(row["close_median_hc"]), n_close))

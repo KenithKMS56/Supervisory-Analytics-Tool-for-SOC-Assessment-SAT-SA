@@ -3,7 +3,7 @@
 import math
 from typing import Any
 
-from satsa.context import ENTITY_TZ_CTE, local_hour
+from satsa.context import ENTITY_TZ_CTE, entity_local_counts, local_hour
 from satsa.models.outputs import Finding, FindingEvidence
 from satsa.rules.base import BaseRule
 from satsa.store.duckdb import DuckDBStore
@@ -158,30 +158,21 @@ class NS02MissingAlertCategories(BaseRule):
         # Tunable: a category counts as "standard" when at least this share of the peer
         # cohort (the entity's resolved peers, or every other entity) reports it.
         min_peer_share = float(self.params.get("min_peer_share", 0.6))
-        peer_clause, peer_params = self.peer_filter(entity_id, peer_ids)
-        df_n = store.query(f"SELECT count(DISTINCT entity_id) as n FROM alert WHERE {peer_clause}", peer_params)
-        n_peers = int(df_n["n"][0]) if not df_n.is_empty() else 0
+        # Every entity's categories, read once per assessment; the cohort's counts are taken from
+        # them (scanning every peer's alerts again for each entity made the rule quadratic).
+        categories = _entity_categories(store)
+        peers = self.peers_among(entity_id, peer_ids, categories)
+        n_peers = len(peers)
         if n_peers == 0:
             return [], []
-        sql_peers = f"""
-        SELECT category, count(DISTINCT entity_id) as ent_count
-        FROM alert
-        WHERE category IS NOT NULL AND category != '' AND {peer_clause}
-        GROUP BY category
-        HAVING count(DISTINCT entity_id) >= ?
-        """
         required = max(1, math.ceil(min_peer_share * n_peers - 1e-9))
-        df_peers = store.query(sql_peers, [*peer_params, required])
-        peer_common_cats = (
-            {c for c in df_peers["category"].to_list() if c} if not df_peers.is_empty() else set()
-        )
+        reporting: dict[str, int] = {}
+        for peer in peers:
+            for cat in categories[peer]:
+                reporting[cat] = reporting.get(cat, 0) + 1
+        peer_common_cats = {c for c, n in reporting.items() if n >= required}
 
-        # Find target entity categories
-        sql_target = "SELECT DISTINCT category FROM alert WHERE entity_id = ? AND category IS NOT NULL AND category != ''"
-        df_target = store.query(sql_target, [entity_id])
-        target_cats = (
-            {c for c in df_target["category"].to_list() if c} if not df_target.is_empty() else set()
-        )
+        target_cats = set(categories.get(entity_id, frozenset()))
 
         missing = {m for m in (peer_common_cats - target_cats) if m is not None}
         if missing:
@@ -237,19 +228,32 @@ def _night_stats(store: DuckDBStore) -> dict[str, tuple[int, int, str]]:
     for itself and for each of its peers, and converting every alert to local time once per
     entity made the rule quadratic in the portfolio's size."""
 
-    def compute() -> dict[str, tuple[int, int, str]]:
-        df = store.query(f"""
-            WITH {ENTITY_TZ_CTE}
-            SELECT entity_id, count(*) AS total, count(CASE WHEN {_NIGHT} THEN 1 END) AS night_cnt,
-                   coalesce(any_value(_satsa_tz.tz), 'UTC') AS tz
-            FROM alert LEFT JOIN _satsa_tz USING (entity_id)
-            WHERE entity_id IS NOT NULL
-            GROUP BY entity_id
-        """)
-        return {r["entity_id"]: (int(r["total"]), int(r["night_cnt"]), str(r["tz"] or "UTC"))
-                for r in df.iter_rows(named=True)}
+    # From the assessment's one conversion of every alert to local time (satsa.context), which the
+    # anomaly scan reads too.
+    return {
+        ent: (total, night, tz)
+        for ent, (total, night, _weekend, tz) in entity_local_counts(store).items()
+        if ent is not None
+    }
 
-    return store.memo(("NS03", "night_stats"), compute)
+
+def _entity_categories(store: DuckDBStore) -> dict[str, frozenset[str]]:
+    """Per entity with at least one alert: the non-empty categories of its alerts.
+
+    Read once per assessment (DuckDBStore.memo) for NS02, which needs every peer's categories for
+    each entity. An entity whose alerts carry no category is present with an empty set: it still
+    counts as a peer, as `count(DISTINCT entity_id) FROM alert` counted it."""
+
+    def compute() -> dict[str, frozenset[str]]:
+        df = store.query("SELECT DISTINCT entity_id, category FROM alert WHERE entity_id IS NOT NULL")
+        found: dict[str, set[str]] = {}
+        for ent, cat in df.iter_rows():
+            cats = found.setdefault(str(ent), set())
+            if cat:
+                cats.add(cat)
+        return {ent: frozenset(cats) for ent, cats in found.items()}
+
+    return store.memo(("NS02", "entity_categories"), compute)
 
 
 class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
@@ -785,9 +789,8 @@ class NS08SubmissionCompleteness(BaseRule):
         # capped at the configured review period. Judging a short or partly-elapsed period
         # against the full period would flag every entity.
         review_months = self.review_period_months()
-        others = self.population(
-            store, "SELECT count(DISTINCT entity_id) FROM alert WHERE entity_id != ?", [entity_id]
-        )
+        # count(DISTINCT entity_id) of the other entities' alerts, from the set read once per run.
+        others = len(self.alert_entities(store) - {entity_id})
         expected = min(review_months, len(portfolio)) if others else review_months
         if month_cnt < expected:
             missing_months = expected - month_cnt

@@ -90,19 +90,18 @@ def unusable_alert_fields(store: DuckDBStore, entity_id: str, fields: set[str]) 
     """
     if not fields:
         return set()
-    total = store.query("SELECT count(*) FROM alert WHERE entity_id = ?", [entity_id]).row(0)[0]
-    if not total:
-        return set()
     columns = set(store.query("SELECT * FROM alert LIMIT 0").columns)
-    unusable: set[str] = set()
-    for f in sorted(fields):
-        if f not in columns:
-            unusable.add(f)
-            continue
-        cond = f'"{f}" IS NOT NULL'
-        if f in ("disposition", "severity_final"):
-            cond += f" AND lower(CAST(\"{f}\" AS VARCHAR)) NOT IN ('unknown', 'unmapped', '')"
-        n = store.query(f"SELECT count(*) FROM alert WHERE entity_id = ? AND {cond}", [entity_id]).row(0)[0]
-        if not n:
-            unusable.add(f)
-    return unusable
+    present = [f for f in sorted(fields) if f in columns]
+    # One pass over the entity's alerts: its count, and per field the alerts with a usable value.
+    counts = [
+        f'count(*) FILTER (WHERE "{f}" IS NOT NULL'
+        + (f" AND lower(CAST(\"{f}\" AS VARCHAR)) NOT IN ('unknown', 'unmapped', '')"
+           if f in ("disposition", "severity_final") else "")
+        + ")"
+        for f in present
+    ]
+    row = store.query(f"SELECT count(*){''.join(', ' + c for c in counts)} FROM alert WHERE entity_id = ?",
+                      [entity_id]).row(0)
+    if not row[0]:
+        return set()
+    return {f for f in fields if f not in columns} | {f for f, n in zip(present, row[1:], strict=True) if not n}

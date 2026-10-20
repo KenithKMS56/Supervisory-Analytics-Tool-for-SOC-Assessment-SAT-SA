@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import hashlib
+import io
 import json
 import os
 import re
@@ -288,6 +289,9 @@ class _Staged:
     staged: Path
     final_rel: str
     rows: int
+    # SHA-256 of the staged file, taken when it was written and flushed to disk; empty when the
+    # item was rebuilt from a held batch's manifest (publish then flushes and hashes the file).
+    sha256: str = ""
 
 
 @dataclass
@@ -301,6 +305,7 @@ class BatchWriter:
     published: bool = False
     held: bool = False
     _parts: dict[tuple[str, str], int] = field(default_factory=dict)
+    _made_dirs: set[Path] = field(default_factory=set)
 
     @property
     def staging_dir(self) -> Path:
@@ -327,12 +332,26 @@ class BatchWriter:
         self._parts[(table, entity_id)] = n + 1
         partition = f"entity_id={entity_id}" if entity_id else "_unpartitioned"
         staged = self.staging_dir / table / partition / f"part-{n}.parquet"
-        staged.parent.mkdir(parents=True, exist_ok=True)
-        frame.write_parquet(staged)
+        self._mkdir(staged.parent)
+        # Written, hashed and flushed to disk in one pass: opening each file again to flush it and
+        # again to hash it was most of the publication time (Windows scans every file it opens).
+        buffer = io.BytesIO()
+        frame.write_parquet(buffer)
+        content = buffer.getvalue()
+        with open(staged, "wb") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
         final_dir = f"{table}/entity_id={entity_id}" if entity_id else table
         self.staged.append(
-            _Staged(table, entity_id, n, staged, f"{final_dir}/b-{self.batch_id}-{n}.parquet", frame.height)
+            _Staged(table, entity_id, n, staged, f"{final_dir}/b-{self.batch_id}-{n}.parquet", frame.height,
+                    hashlib.sha256(content).hexdigest())
         )
+
+    def _mkdir(self, path: Path) -> None:
+        if path not in self._made_dirs:
+            path.mkdir(parents=True, exist_ok=True)
+            self._made_dirs.add(path)
 
     def declare(self, table: str, entity_ids: list[str], completeness: str) -> None:
         """Record that the batch submitted `table` for these entities with no rows (or rejected it)."""
@@ -349,10 +368,13 @@ class BatchWriter:
         try:
             entries: list[tuple[str, str, int, str, str | None, str | None, int]] = []
             for item in self.staged:
-                _fsync_file(item.staged)
-                digest = _sha256(item.staged)
+                if item.sha256:
+                    digest = item.sha256  # flushed and hashed when it was staged
+                else:
+                    _fsync_file(item.staged)
+                    digest = _sha256(item.staged)
                 final = self.catalog.parquet_dir / item.final_rel
-                final.parent.mkdir(parents=True, exist_ok=True)
+                self._mkdir(final.parent)
                 if final.exists():
                     raise PublicationError(f"refusing to overwrite published file {item.final_rel}")
                 os.replace(item.staged, final)
