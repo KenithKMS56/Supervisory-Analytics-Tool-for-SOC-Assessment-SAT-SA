@@ -1,5 +1,6 @@
 """CLI for SAT-SA."""
 
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -129,6 +130,12 @@ def ingest_cmd(
         "--api-config",
         help="YAML of local REST endpoints to fetch the submission from (instead of --data-dir)",
     ),
+    period: str = typer.Option(
+        None,
+        "--period",
+        "-p",
+        help="Review period the submission covers (2026-Q1, 2026-H1, 2026-03); recorded on the batch",
+    ),
 ) -> None:
     """Ingest datasets, execute DQ checks, pseudonymise actors, redact PII, and store partitioned Parquet.
 
@@ -196,7 +203,9 @@ def ingest_cmd(
     pipeline = IngestionPipeline(duckdb_store, sqlite_store)
 
     try:
-        result = pipeline.ingest_directory(Path(data_dir), default_entity_id=entity, mapping=mapping)
+        result = pipeline.ingest_directory(
+            Path(data_dir), default_entity_id=entity, mapping=mapping, period=period, transport="cli"
+        )
     finally:
         duckdb_store.close()
         sqlite_store.close()
@@ -222,11 +231,139 @@ def ingest_cmd(
         _print_ingest_coverage(result)
     else:
         console.print(f"[bold red][!] Ingestion failed/empty:[/bold red] {result.get('message')}")
+        if result.get("status") == "rejected":
+            raise typer.Exit(code=1)
+
+
+@app.command("replay")
+def replay_cmd(
+    run_id: str = typer.Argument(..., help="Run to replay (see the Runs page)"),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory (Parquet tree and catalog.db)"),
+    db_path: str = typer.Option("data/satsa.db", "--db-path", help="Path to the operational SQLite database"),
+) -> None:
+    """Re-run a recorded assessment with its own configuration, selection and source snapshot, and compare."""
+    import json as _json
+
+    from satsa.scoring.replay import ReplayError, replay_run
+    from satsa.store.sqlite import SQLiteStore
+
+    sqlite_store = SQLiteStore(db_path)
+    try:
+        report = replay_run(run_id, data_dir, sqlite_store)
+    except ReplayError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=2) from None
+    finally:
+        sqlite_store.close()
+    verdict = "[bold green]reproduced[/bold green]" if report["results_match"] else "[bold red]NOT reproduced[/bold red]"
+    console.print(f"Run {run_id}: results {verdict}; fingerprint "
+                  f"{'matches' if report['fingerprint_match'] else 'differs'}")
+    if report["differences"]:
+        console.print("Differences in the inputs:")
+        console.print(_json.dumps(report["differences"], indent=2, default=str))
+    if not report["results_match"]:
+        console.print(_json.dumps({k: report[k] for k in ("score_differences", "findings_only_recorded",
+                                                          "findings_only_replay")}, indent=2, default=str))
+        raise typer.Exit(code=1)
+
+
+@app.command("migrate")
+def migrate_cmd(
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory (Parquet tree and catalog.db)"),
+    db_path: str = typer.Option("data/satsa.db", "--db-path", help="Path to the operational SQLite database"),
+) -> None:
+    """Apply pending schema migrations, adopt pre-catalog Parquet files, recover and verify (docs/migrations.md).
+
+    Takes a backup of each database before migrating it. Safe to run more than once.
+    """
+    from satsa.store.catalog import Catalog
+    from satsa.store.migrations import applied_versions
+    from satsa.store.sqlite import SQLiteStore
+
+    sqlite_store = SQLiteStore(db_path)
+    applied = sqlite_store.schema_versions_applied
+    versions = applied_versions(sqlite_store.conn)
+    backups = [
+        r["backup_path"]
+        for r in sqlite_store.conn.execute("SELECT DISTINCT backup_path FROM schema_migrations WHERE backup_path IS NOT NULL")
+    ]
+    sqlite_store.close()
+    catalog = Catalog(data_dir)
+    try:
+        legacy = catalog.adopt_legacy_files()
+        recovered = catalog.recover()
+        problems = catalog.verify()
+        catalog_versions = applied_versions(catalog.conn)
+    finally:
+        catalog.close()
+    console.print("[bold blue]Operational store[/bold blue] " + db_path)
+    console.print(f"  * migrations applied now: {applied or 'none (up to date)'}; schema versions: {versions}")
+    for b in backups:
+        console.print(f"  * pre-migration backup: {b}")
+    console.print("[bold blue]Publication catalog[/bold blue] " + str(Path(data_dir) / "catalog.db"))
+    console.print(f"  * schema versions: {catalog_versions}")
+    console.print(f"  * legacy Parquet adopted as batch: {legacy or 'none'}")
+    console.print(
+        f"  * recovery: {recovered['staging_discarded']} staging dir(s) discarded, "
+        f"{recovered['orphans_quarantined']} orphan file(s) quarantined"
+    )
+    if problems:
+        console.print(f"[bold red][!] {len(problems)} published file(s) failed verification:[/bold red]")
+        for problem in problems[:50]:
+            console.print(f"    {problem}")
+        raise typer.Exit(code=1)
+    console.print("[bold green][+] Every published file is present and matches its recorded hash.[/bold green]")
+
+
+@app.command("verify-data")
+def verify_data_cmd(
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory (Parquet tree and catalog.db)"),
+) -> None:
+    """Check that every published Parquet file exists and matches the SHA-256 recorded at publication."""
+    from satsa.store.catalog import Catalog
+
+    catalog = Catalog(data_dir)
+    try:
+        problems = catalog.verify()
+        files = sum(1 for e in catalog.published_manifest() if e["rel_path"])
+        seq = catalog.max_pub_seq()
+    finally:
+        catalog.close()
+    if problems:
+        console.print(f"[bold red][!] {len(problems)} of {files} published file(s) failed:[/bold red]")
+        for problem in problems[:100]:
+            console.print(f"    {problem}")
+        raise typer.Exit(code=1)
+    console.print(f"[bold green][+] {files} published file(s) verified (publication sequence {seq}).[/bold green]")
+
+
+@app.command("recover")
+def recover_cmd(
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory (Parquet tree and catalog.db)"),
+) -> None:
+    """Quarantine what an interrupted writer left behind (staging files, unlisted batch files)."""
+    from satsa.store.catalog import Catalog
+
+    catalog = Catalog(data_dir)
+    try:
+        report = catalog.recover()
+    finally:
+        catalog.close()
+    console.print(
+        f"[bold green][+] Recovery done:[/bold green] {report['staging_discarded']} staging dir(s) discarded, "
+        f"{report['orphans_quarantined']} orphan file(s) moved to {Path(data_dir) / 'quarantine'}"
+    )
 
 
 @app.command("run")
 def run_cmd(
-    period: str = typer.Option("2026-Q1", "--period", "-p", help="Supervisory review period"),
+    period: str = typer.Option(
+        "",
+        "--period",
+        "-p",
+        help="Review period to assess (2026, 2026-Q1, 2026-H1 or 2026-03): only records of that period "
+        "are read. Default: every submitted record, with no period filter (the run says so).",
+    ),
     db_path: str = typer.Option(
         "data/satsa.db", "--db-path", help="Path to SQLite metadata database"
     ),
@@ -251,17 +388,21 @@ def run_cmd(
             console.print("[bold red][!] --reference-date must be YYYY-MM-DD[/bold red]")
             raise typer.Exit(code=2) from None
     from satsa.scoring.runner import AssessmentRunner
+    from satsa.scoring.selection import window_for_period
     from satsa.store.duckdb import DuckDBStore
     from satsa.store.sqlite import SQLiteStore
 
     console.print(
-        f"[bold blue]Executing supervisory assessment for period:[/bold blue] [cyan]{period}[/cyan]"
+        "[bold blue]Executing supervisory assessment for:[/bold blue] "
+        f"[cyan]{window_for_period(period or None).describe()}[/cyan]"
     )
     duckdb_store = DuckDBStore(parquet_dir)
     sqlite_store = SQLiteStore(db_path)
     runner = AssessmentRunner(duckdb_store, sqlite_store)
 
-    res = runner.run_assessment(period=period, reference_date=as_of)
+    res = runner.run_assessment(period=period or None, reference_date=as_of)
+    if res.get("fingerprint"):
+        console.print(f"  * Analytical fingerprint: [cyan]{res['fingerprint'][:16]}[/cyan]")
     if res.get("reference_date"):
         console.print(f"  * Reference date (as of): [cyan]{res['reference_date']}[/cyan]")
     duckdb_store.close()
@@ -283,8 +424,14 @@ def run_cmd(
                 if data["risk_index"] > 50
                 else ("yellow" if data["risk_index"] > 25 else "green")
             )
+            coverage = data.get("coverage")
+            evidence = (
+                f" -- {data['classification_status'].replace('_', ' ')}, {coverage:.0%} of rules assessed"
+                if data.get("classification_status") and coverage is not None
+                else ""
+            )
             console.print(
-                f"  * {ent}: [{color}]Risk Index = {data['risk_index']:.1f} ({data['risk_band']})[/{color}]"
+                f"  * {ent}: [{color}]Risk Index = {data['risk_index']:.1f} ({data['risk_band']})[/{color}]{evidence}"
             )
     else:
         console.print(f"[bold red][!] Run failed:[/bold red] {res.get('message')}")

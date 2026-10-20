@@ -49,7 +49,10 @@ def test_full_pipeline_airgapped(airgap_socket_guard, tmp_path: Path):
 
     # 1. Assessment Runner
     runner = AssessmentRunner(duckdb_store, sqlite_store)
-    res = runner.run_assessment(period="2026-Q1")
+    # The synthetic dataset and its ground truth span 2026-01-01..2026-06-30: the period that
+    # covers them is H1. (A Q1 assessment reads Q1 only since the period selects data, and
+    # correctly misses the defects injected in Q2: NS07's May/June incidents, NS08's June gap.)
+    res = runner.run_assessment(period="2026-H1")
     assert res["status"] == "success"
 
     # 2. Report Generation

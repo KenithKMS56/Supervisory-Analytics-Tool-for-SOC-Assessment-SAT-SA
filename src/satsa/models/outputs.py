@@ -16,6 +16,12 @@ class Run(BaseModel):
     code_version: str
     status: str = "completed"
     manifest_json: str | None = None
+    # Complete run identity (scoring.fingerprint); None on runs recorded before it existed.
+    fingerprint: str | None = None
+    selection_json: str | None = None
+    source_snapshot: int | None = None
+    data_fingerprint_json: str | None = None
+    environment_json: str | None = None
 
 
 class MetricValue(BaseModel):
@@ -67,7 +73,11 @@ class DomainScore(BaseModel):
     run_id: str
     entity_id: str
     domain: str
-    score: float = Field(ge=0.0, le=100.0)
+    # None: no rule of the domain could be assessed for the entity (unknown, not zero).
+    score: float | None = Field(default=None, ge=0.0, le=100.0)
+    rules_applicable: int | None = None
+    rules_assessed: int | None = None
+    coverage_status: str | None = None  # assessed / partial / unknown
 
 
 class EntityScore(BaseModel):
@@ -78,7 +88,18 @@ class EntityScore(BaseModel):
     risk_index: float = Field(ge=0.0, le=100.0)
     risk_band: str  # Low, Moderate, High, Critical
     distinct_rules_triggered: int = 0
-    domain_scores: dict[str, float] = Field(default_factory=dict)
+    domain_scores: dict[str, float | None] = Field(default_factory=dict)
+    # Evidence coverage (docs/analytics_methodology.md, "Evidence coverage"). None on rows
+    # written before coverage was recorded.
+    classification_status: str | None = None  # assessable / partially_assessable / insufficient_evidence
+    rules_applicable: int | None = None
+    rules_assessed: int | None = None
+    rules_degraded: int | None = None
+    rules_insufficient: int | None = None
+    rules_not_applicable: int | None = None
+    coverage: float | None = None
+    data_request_priority: list[dict[str, Any]] = Field(default_factory=list)
+    missing_inputs: list[str] = Field(default_factory=list)
 
 
 class ReviewQueueItem(BaseModel):

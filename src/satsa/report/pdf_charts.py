@@ -64,7 +64,8 @@ def band_for(score: float) -> BandStyle:
 def band_for_label(risk_band: str) -> BandStyle:
     """Style for an entity's stored risk band, named by the band's own first word
     (LOW / MODERATE / HIGH / CRITICAL) so the PDF shows the same classification as the UI."""
-    base = {"critical": BAND_CRITICAL, "moderate": BAND_MODERATE, "low": BAND_LOW}[band_tier(risk_band)]
+    tiers = {"critical": BAND_CRITICAL, "moderate": BAND_MODERATE, "low": BAND_LOW, "insufficient": BAND_MODERATE}
+    base = tiers[band_tier(risk_band)]
     name = (risk_band.split() or [base.name])[0].upper()
     styled = BandStyle(name, "#000000", "#000000", "#000000", hatch=base.hatch)
     styled.fill, styled.stroke, styled.text = base.fill, base.stroke, base.text

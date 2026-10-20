@@ -674,7 +674,7 @@
    ],
    [
     "CSE-08",
-    29.6,
+    34.3,
     "High Supervisory Concern",
     3
    ],
@@ -1111,7 +1111,7 @@
   "entity_scores": [
    [
     "CSE-SPL",
-    12.9,
+    19.5,
     "Low Supervisory Concern",
     2
    ]
@@ -1322,7 +1322,7 @@
   "entity_scores": [
    [
     "CSE-HIVE",
-    9.9,
+    14.6,
     "Low Supervisory Concern",
     2
    ]

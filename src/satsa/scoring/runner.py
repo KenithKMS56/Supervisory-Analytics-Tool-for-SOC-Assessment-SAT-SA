@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import logging
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -19,13 +21,52 @@ from satsa.models.outputs import (
 from satsa.peers.anomaly_scan import AnomalyScanner
 from satsa.peers.grouping import PeerResolver
 from satsa.rules.base import data_reference_date
-from satsa.rules.registry import RuleRegistry, rule_tables
+from satsa.rules.contracts import (
+    ASSESSED_CLEAR,
+    DEGRADED,
+    FINDING,
+    INSUFFICIENT_EVIDENCE,
+    NOT_APPLICABLE,
+    RuleContract,
+    contract_for,
+    evaluated_population,
+    unusable_alert_fields,
+)
+from satsa.rules.registry import RuleRegistry
 from satsa.rules.systemic import SystemicCorrelationDetector
+from satsa.scoring.fingerprint import (
+    analytical_fingerprint,
+    config_hash,
+    config_snapshot,
+    data_fingerprint,
+    environment_identity,
+)
 from satsa.scoring.prioritiser import ReviewPrioritiser
 from satsa.scoring.scorer import ScoringEngine
+from satsa.scoring.selection import ALL_SUBMITTED, AssessmentWindow, apply_window, window_for_period
 from satsa.security import is_valid_entity_id
+from satsa.store.catalog import DECLARED_EMPTY, REJECTED
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
+
+logger = logging.getLogger(__name__)
+
+# Label of an assessment that names no review period: every submitted record, no period filter.
+ALL_SUBMITTED_LABEL = "ALL-SUBMITTED"
+
+# How each table an entity's rules read stands in the assessed selection.
+PRESENT = "present"  # rows in the selection
+TABLE_DECLARED_EMPTY = "declared_empty"  # submitted for the selection, with no rows: absence is a signal
+OMITTED = "omitted"  # never submitted
+TABLE_REJECTED = "rejected"  # submitted but could not be stored
+STALE = "stale"  # submitted only for other periods: nothing is known about this one
+UNUSABLE_TABLE_STATES = frozenset({OMITTED, TABLE_REJECTED, STALE})
+
+_STATUS_WORDS = {
+    OMITTED: "was not submitted",
+    TABLE_REJECTED: "was submitted but could not be stored",
+    STALE: "has no records for the assessed period and was not submitted for it",
+}
 
 
 class AssessmentRunner:
@@ -54,108 +95,267 @@ class AssessmentRunner:
         self.queue_size_per_entity = int(queue_cfg.get("queue_size_per_entity", 30))
         self.systemic_detector = SystemicCorrelationDetector(systemic_config_path)
         self.anomaly_scanner = AnomalyScanner(anomaly_config_path)
+        # Every file whose content changes results (scoring.fingerprint). Taxonomy, expected
+        # values and source mappings shape what ingestion stored; they are snapshotted with the
+        # run so a replay can tell whether they differ.
+        config_dir = Path(rules_config_path).parent
+        self.config_paths: dict[str, Path] = {
+            "rules": Path(rules_config_path),
+            "scoring": Path(scoring_config_path),
+            "peers": Path(peers_config_path),
+            "systemic": Path(systemic_config_path),
+            "anomaly": Path(anomaly_config_path),
+            "taxonomy": config_dir / "taxonomy.yaml",
+            "expected": config_dir / "expected.yaml",
+        }
+        self.mapping_dirs = tuple(d for d in (config_dir / "mappings",) if d.is_dir())
 
-    def _report_empty_dependencies(
-        self, entity_ids: list[str], submitted: dict[str, set[str]], record: bool = True
-    ) -> dict[str, dict[str, list[str]]]:
-        """Decide, per entity, which rules cannot be assessed, and report data gaps on the DQ view.
+    # --- evidence -------------------------------------------------------------------------------
 
-        A rule such as EG03 reads "no escalation rows" as "never escalated". What that means
-        depends on the entity's submission manifest (tables it has ever submitted):
+    def _table_status(
+        self, entity_ids: list[str], tables: set[str], window: AssessmentWindow
+    ) -> dict[str, dict[str, str]]:
+        """entity -> table -> PRESENT / TABLE_DECLARED_EMPTY / OMITTED / TABLE_REJECTED / STALE.
 
-        - table **not in the manifest**: the entity never sent it, so the rule is *not assessed*
-          for that entity (returned here, reported as `rule_not_assessed`);
-        - table **in the manifest but with no rows**: the entity submitted an empty table, so
-          absence is a real signal; the rule runs and `rule_dependency_empty` notes the basis;
-        - entity with **no manifest at all** (data stored before manifests existed): the rule
-          runs and `rule_dependency_empty` warns that the finding may be an artifact.
+        - rows in the selection: present;
+        - no rows, and a published batch declared the table for this entity (with no rows, or
+          with rows outside a windowed selection while the batch's period covers the window):
+          declared empty, so absence is a real signal;
+        - no rows, submitted only for other periods (a windowed selection): stale;
+        - every submission of it was rejected: rejected;
+        - otherwise: omitted.
 
-        Returns entity_id -> {rule_id: [missing tables]} for the rules to skip. With
-        `record=False` the DQ view is left untouched (used for historical-window runs).
+        Data stored before the catalog existed is described by the operational store's
+        manifest (`submitted_tables`), which is used for batches the catalog does not know.
         """
-        if record:
-            with self.sqlite_store.conn:
-                self.sqlite_store.conn.execute(
-                    "DELETE FROM dq_issues WHERE check_name IN ('rule_dependency_empty', 'rule_not_assessed')"
-                )
+        snapshot = window.max_pub_seq
+        catalog = self.duckdb_store.catalog
+        declared = catalog.submitted_tables(snapshot)
+        known_batches = catalog.batch_ids()
+        # Declarations made before the catalog existed carry no period: like any undated batch
+        # they describe a complete export and count for every period.
+        undated_legacy: dict[str, set[str]] = {}
+        for ent, tbl_batches in self.sqlite_store.get_submitted_table_batches().items():
+            for table, batch_id in tbl_batches.items():
+                if batch_id in known_batches:
+                    continue  # the catalog already says how that batch declared it
+                declared.setdefault(ent, {}).setdefault(table, DECLARED_EMPTY)
+                undated_legacy.setdefault(ent, set()).add(table)
+
+        present: dict[str, set[str]] = {}
+        for table in sorted(tables):
+            df = self.duckdb_store.query(f'SELECT DISTINCT entity_id FROM "{table}" WHERE entity_id IS NOT NULL')
+            for ent in df["entity_id"].to_list() if not df.is_empty() else []:
+                present.setdefault(str(ent), set()).add(table)
+
+        windowed = window.mode != ALL_SUBMITTED
+        out: dict[str, dict[str, str]] = {}
+        for ent in entity_ids:
+            statuses: dict[str, str] = {}
+            ent_declared = declared.get(ent, {})
+            covering: set[str] | None = None
+            for table in sorted(tables):
+                if table in present.get(ent, set()):
+                    statuses[table] = PRESENT
+                    continue
+                how = ent_declared.get(table)
+                if how is None:
+                    statuses[table] = OMITTED
+                elif how == REJECTED:
+                    statuses[table] = TABLE_REJECTED
+                elif how == DECLARED_EMPTY and not windowed:
+                    statuses[table] = TABLE_DECLARED_EMPTY
+                elif not windowed:
+                    # Rows were published but none selected: only possible for rows the window
+                    # cannot place, which an all-submitted selection keeps. Treat as declared.
+                    statuses[table] = TABLE_DECLARED_EMPTY
+                elif table in undated_legacy.get(ent, set()):
+                    statuses[table] = TABLE_DECLARED_EMPTY
+                else:
+                    if covering is None:
+                        covering = self._tables_submitted_for_window(ent, window)
+                    statuses[table] = TABLE_DECLARED_EMPTY if table in covering else STALE
+            out[ent] = statuses
+        return out
+
+    def _tables_submitted_for_window(self, entity_id: str, window: AssessmentWindow) -> set[str]:
+        assert window.end is not None
+        start = (window.start or datetime(1, 1, 1)).isoformat()
+        return self.duckdb_store.catalog.tables_submitted_for_period(
+            entity_id, start, window.end.isoformat(), window.max_pub_seq
+        )
+
+    def _rule_result(
+        self,
+        rule: Any,
+        contract: RuleContract,
+        ent_id: str,
+        statuses: dict[str, str],
+        decision: dict[str, Any] | None,
+        unusable: set[str],
+        population_cache: dict[str, int],
+        run_id: str,
+        peers: list[Any],
+    ) -> tuple[dict[str, Any], list[Finding], list[FindingEvidence]]:
+        base = {
+            "run_id": run_id,
+            "entity_id": ent_id,
+            "rule_id": rule.id,
+            "rule_version": rule.version,
+            "domain": rule.domain,
+            "min_sample": contract.min_sample,
+            "missing_inputs": [],
+            "population": None,
+            "findings_count": 0,
+        }
+        if decision is not None:
+            return (
+                {
+                    **base,
+                    "state": NOT_APPLICABLE,
+                    "reason": f"Not applicable by decision {decision['decision_id']} of {decision['decided_by']}: "
+                    f"{decision['reason']}",
+                },
+                [],
+                [],
+            )
+        missing = [t for t in contract.required_tables if statuses.get(t) in UNUSABLE_TABLE_STATES]
+        if missing:
+            why = "; ".join(f"'{t}' {_STATUS_WORDS[statuses[t]]}" for t in missing)
+            return (
+                {
+                    **base,
+                    "state": INSUFFICIENT_EVIDENCE,
+                    "missing_inputs": missing,
+                    "reason": f"Not assessed: {why}. Neither a finding nor a clean result.",
+                },
+                [],
+                [],
+            )
+        findings, evidences = rule.evaluate(ent_id, self.duckdb_store, peers, run_id)
+        if contract.population_table not in population_cache:
+            population_cache[contract.population_table] = evaluated_population(contract, self.duckdb_store, ent_id)
+        population = population_cache[contract.population_table]
+        base["population"] = population
+        if findings:
+            return (
+                {**base, "state": FINDING, "findings_count": len(findings), "reason": f"{len(findings)} finding(s)."},
+                findings,
+                evidences,
+            )
+        blind = sorted(f for f in contract.alert_fields if f in unusable)
+        if blind:
+            return (
+                {
+                    **base,
+                    "state": DEGRADED,
+                    "missing_inputs": [f"alert.{f}" for f in blind],
+                    "reason": f"Ran, but {', '.join('alert.' + f for f in blind)} holds no usable value, so it "
+                    "cannot fire: no finding is not evidence that the control works.",
+                },
+                [],
+                [],
+            )
+        if population < contract.min_sample:
+            return (
+                {
+                    **base,
+                    "state": INSUFFICIENT_EVIDENCE,
+                    "reason": f"No finding, but only {population} {contract.population_table} record(s) were "
+                    f"evaluated; at least {contract.min_sample} are needed to call the control clear.",
+                },
+                [],
+                [],
+            )
+        return (
+            {
+                **base,
+                "state": ASSESSED_CLEAR,
+                "reason": f"Assessed over {population} {contract.population_table} record(s); no finding.",
+            },
+            [],
+            [],
+        )
+
+    def _dependency_issues(
+        self, statuses: dict[str, dict[str, str]], results: list[dict[str, Any]]
+    ) -> list[DQIssue]:
+        """The DQ view's data-gap entries for the current submission (unchanged check names)."""
+        issues: list[DQIssue] = []
         rules_by_table: dict[str, list[str]] = {}
         for rule in self.registry.get_all_rules():
-            for table in rule_tables(rule.id):
+            for table in contract_for(rule).required_tables:
                 rules_by_table.setdefault(table, []).append(rule.id)
-
-        not_assessed: dict[str, dict[str, list[str]]] = {}
-        for table, rule_ids in sorted(rules_by_table.items()):
-            df = self.duckdb_store.query(f'SELECT DISTINCT entity_id FROM "{table}"')
-            present = set(df["entity_id"].to_list()) if not df.is_empty() else set()
-            for entity_id in entity_ids:
-                if entity_id in present:
+        for ent_id, ent_status in sorted(statuses.items()):
+            for table, status in sorted(ent_status.items()):
+                if status != TABLE_DECLARED_EMPTY:
                     continue
-                manifest = submitted.get(entity_id)
-                if manifest is not None and table not in manifest:
-                    for rule_id in rule_ids:
-                        not_assessed.setdefault(entity_id, {}).setdefault(rule_id, []).append(table)
-                    continue
-                if not record:
-                    continue
+                rule_ids = rules_by_table.get(table, [])
                 verb = "depends" if len(rule_ids) == 1 else "depend"
-                if manifest is None:
-                    basis = (
-                        f"No '{table}' records for this entity, and no record of what it submitted. "
-                        f"{', '.join(rule_ids)} {verb} on that table: any finding from them may mean the table "
-                        "was not submitted rather than a SOC defect, and a missing finding does not mean the "
-                        "control works. Confirm what was submitted."
-                    )
-                else:
-                    basis = (
-                        f"'{table}' was submitted for this entity but holds no records for it. "
-                        f"{', '.join(rule_ids)} {verb} on that table and treat the absence as the SOC's "
-                        "behaviour; confirm with the entity that the empty table is complete."
-                    )
-                self.sqlite_store.save_dq_issue(
+                issues.append(
                     DQIssue(
-                        issue_id=f"DQ-DEPENDENCY-{entity_id}-{table}",
-                        entity_id=entity_id,
+                        issue_id=f"DQ-DEPENDENCY-{ent_id}-{table}",
+                        entity_id=ent_id,
                         check_name="rule_dependency_empty",
                         severity="warning",
                         count=len(rule_ids),
                         sample_records=rule_ids,
-                        details=basis,
-                    )
-                )
-
-        for entity_id, rules in sorted(not_assessed.items()) if record else []:
-            for rule_id, missing in sorted(rules.items()):
-                self.sqlite_store.save_dq_issue(
-                    DQIssue(
-                        issue_id=f"DQ-NOT-ASSESSED-{entity_id}-{rule_id}",
-                        entity_id=entity_id,
-                        check_name="rule_not_assessed",
-                        severity="warning",
-                        count=len(missing),
-                        sample_records=sorted(missing),
                         details=(
-                            f"{rule_id} was not assessed for this entity: its submission does not include "
-                            f"{', '.join(repr(t) for t in sorted(missing))}. This is neither a finding nor a clean "
-                            "result; request the table to assess this control."
+                            f"'{table}' was submitted for this entity but holds no records for it. "
+                            f"{', '.join(rule_ids)} {verb} on that table and treat the absence as the SOC's "
+                            "behaviour; confirm with the entity that the empty table is complete."
                         ),
                     )
                 )
-        return not_assessed
+        for r in results:
+            if r["state"] != INSUFFICIENT_EVIDENCE or not r["missing_inputs"]:
+                continue
+            missing = sorted(r["missing_inputs"])
+            ent_status = statuses[r["entity_id"]]
+            if all(ent_status[t] == OMITTED for t in missing):
+                why = f"its submission does not include {', '.join(repr(t) for t in missing)}"
+            else:
+                why = "; ".join(f"{t!r} {_STATUS_WORDS[ent_status[t]]}" for t in missing)
+            issues.append(
+                DQIssue(
+                    issue_id=f"DQ-NOT-ASSESSED-{r['entity_id']}-{r['rule_id']}",
+                    entity_id=r["entity_id"],
+                    check_name="rule_not_assessed",
+                    severity="warning",
+                    count=len(missing),
+                    sample_records=missing,
+                    details=(
+                        f"{r['rule_id']} was not assessed for this entity: {why}. This is neither a finding "
+                        "nor a clean result; request the table to assess this control."
+                    ),
+                )
+            )
+        return issues
+
+    # --- the run --------------------------------------------------------------------------------
 
     def run_assessment(
         self,
-        period: str = "2026-Q1",
-        code_version: str = "0.1.0",
+        period: str | None = None,
+        code_version: str | None = None,
         actor: str = "system",
         refresh_tables: bool = True,
         record_data_gaps: bool = True,
         dry_run: bool = False,
         reference_date: datetime | None = None,
+        window: AssessmentWindow | None = None,
+        max_pub_seq: int | None = None,
     ) -> dict[str, Any]:
         """Run full evaluation pipeline.
 
+        What is assessed (satsa.scoring.selection): `window` if given, else the window the
+        `period` label names (`2026`, `2026-Q1`, `2026-H1`, `2026-03`). A label that names no
+        period (or none at all) assesses every submitted record, and the run says so. The
+        source snapshot is the catalog's publication sequence `max_pub_seq` (default: all
+        published data now); both are recorded in the run so it can be replayed.
+
         `reference_date` is the date the assessment is "as of" for time-dependent rules
-        (EG09's case age). It defaults to the latest timestamp in the submitted data, never
+        (EG09's case age). It defaults to the latest timestamp in the selected data, never
         the wall clock, and is recorded in the run manifest.
 
         `dry_run=True` evaluates and scores exactly as a real run would but persists nothing:
@@ -163,13 +363,24 @@ class AssessmentRunner:
         the findings themselves (`findings`) so a caller can preview a configuration.
 
         `refresh_tables=False` assesses the store exactly as the caller prepared it instead
-        of reloading every table from Parquet. satsa.scoring.history relies on this: it
-        truncates the tables to a past window first, and a reload would silently restore the
-        full dataset. `record_data_gaps=False` keeps such a run from rewriting the DQ view's
-        missing-table entries, which describe the current submission.
+        of reloading and selecting from the published data (the selection is then recorded as
+        prepared by the caller). `record_data_gaps=False` keeps such a run from rewriting the
+        DQ view's missing-table entries, which describe the current submission.
+
+        Everything the run writes is published in one SQLite transaction: a failure leaves no
+        partial run (and is recorded in the audit log as `run_failed`).
         """
+        label = period or ALL_SUBMITTED_LABEL
+        if window is None:
+            window = window_for_period(period, max_pub_seq)
+        selection_report: dict[str, Any] = {}
         if refresh_tables:
-            self.duckdb_store.load_all_tables()
+            self.duckdb_store.load_all_tables(window.max_pub_seq if window.max_pub_seq is not None else max_pub_seq)
+            window = replace(window, max_pub_seq=self.duckdb_store.source_snapshot)
+            selection_report = apply_window(self.duckdb_store, window)
+        else:
+            window = replace(window, max_pub_seq=self.duckdb_store.source_snapshot)
+            selection_report = {"mode": window.mode, "prepared_by_caller": True}
 
         # Query all entities
         df_entities = self.duckdb_store.query("SELECT * FROM entity")
@@ -186,13 +397,17 @@ class AssessmentRunner:
         )
         if not entities:
             return {"status": "error", "message": "No entities with valid IDs found in storage."}
-        config_hash = hashlib.sha256(self.registry.config_path.read_bytes()).hexdigest()[:16]
+
+        snapshot = config_snapshot(self.config_paths, self.mapping_dirs)
+        cfg_hash = config_hash(snapshot)
+        environment = environment_identity()
+        code_version = code_version or str(environment["code_revision"])
         now = datetime.now(UTC)
         # Microsecond precision (plus the period label folded into the hash
         # suffix) keeps run_id unique even across rapid successive calls in
         # the same wall-clock second, e.g. when seeding several historical
         # periods back-to-back (see satsa.scoring.history).
-        uniq_suffix = hashlib.sha256(f"{config_hash}:{period}:{now.isoformat()}".encode()).hexdigest()[:8]
+        uniq_suffix = hashlib.sha256(f"{cfg_hash}:{label}:{now.isoformat()}".encode()).hexdigest()[:8]
         run_id = f"RUN-{now.strftime('%Y%m%d%H%M%S%f')}-{uniq_suffix}"
 
         all_findings: list[Finding] = []
@@ -200,16 +415,16 @@ class AssessmentRunner:
         all_domain_scores: list[DomainScore] = []
         all_entity_scores: list[EntityScore] = []
         all_queue_items: list[ReviewQueueItem] = []
+        all_results: list[dict[str, Any]] = []
 
-        submitted = self.sqlite_store.get_submitted_tables()
-        not_assessed = self._report_empty_dependencies(
-            [e.entity_id for e in entities],
-            submitted,
-            record=record_data_gaps and not dry_run,
-        )
-
-        # Evaluate rules per entity
         all_rules = self.registry.get_all_rules()
+        rule_contracts = {rule.id: contract_for(rule) for rule in all_rules}
+        needed_tables = {t for c in rule_contracts.values() for t in c.required_tables}
+        entity_ids = [e.entity_id for e in entities]
+        statuses = self._table_status(entity_ids, needed_tables, window)
+        decisions = self.sqlite_store.active_applicability_decisions()
+        all_alert_fields = {f for c in rule_contracts.values() for f in c.alert_fields}
+
         as_of = reference_date or data_reference_date(self.duckdb_store)
         for rule in all_rules:
             rule.reference_date = as_of
@@ -219,21 +434,41 @@ class AssessmentRunner:
 
             ent_findings: list[Finding] = []
             ent_evidences: list[FindingEvidence] = []
-
-            skipped = not_assessed.get(ent_id, {})
+            unusable = unusable_alert_fields(self.duckdb_store, ent_id, all_alert_fields)
+            population_cache: dict[str, int] = {}
+            ent_results: list[dict[str, Any]] = []
             for rule in all_rules:
-                if rule.id in skipped:
-                    continue  # a table it depends on was never submitted: see rule_not_assessed
-                findings, evidences = rule.evaluate(ent_id, self.duckdb_store, peers, run_id)
+                rule_result, findings, evidences = self._rule_result(
+                    rule,
+                    rule_contracts[rule.id],
+                    ent_id,
+                    statuses[ent_id],
+                    decisions.get((ent_id, rule.id)),
+                    unusable,
+                    population_cache,
+                    run_id,
+                    peers,
+                )
+                ent_results.append(rule_result)
                 ent_findings.extend(findings)
                 ent_evidences.extend(evidences)
 
             all_findings.extend(ent_findings)
             all_evidences.extend(ent_evidences)
+            all_results.extend(ent_results)
 
-            # Compute Domain Scores and Entity Score
-            dom_scores = self.scorer.compute_domain_scores(ent_id, run_id, ent_findings)
-            ent_score = self.scorer.compute_entity_score(ent_id, run_id, dom_scores, ent_findings)
+            # Evidence coverage, then domain and entity scores that know what was assessed.
+            states = {r["rule_id"]: r["state"] for r in ent_results}
+            missing_by_rule = {
+                r["rule_id"]: r["missing_inputs"]
+                for r in ent_results
+                if r["state"] in (INSUFFICIENT_EVIDENCE, DEGRADED) and r["missing_inputs"]
+            }
+            coverage = self.scorer.classify_coverage(states, missing_by_rule)
+            dom_scores = self.scorer.compute_domain_scores(
+                ent_id, run_id, ent_findings, {r["rule_id"]: (r["domain"], r["state"]) for r in ent_results}
+            )
+            ent_score = self.scorer.compute_entity_score(ent_id, run_id, dom_scores, ent_findings, coverage)
             all_domain_scores.extend(dom_scores)
             all_entity_scores.append(ent_score)
 
@@ -248,45 +483,77 @@ class AssessmentRunner:
             )
             all_queue_items.extend(q_items)
 
+        # The run's complete identity (scoring.fingerprint): configuration, selected data,
+        # selection, applicability decisions in force, and environment.
+        data_fp = data_fingerprint(self.duckdb_store)
+        selection = {
+            **window.as_dict(),
+            "reference_date": as_of.isoformat() if as_of else None,
+            "applicability_decisions": sorted(d["decision_id"] for d in decisions.values()),
+        }
+        fingerprint = analytical_fingerprint(snapshot, data_fp, selection, environment)
+
         # Build Run record
+        coverage_summary: dict[str, int] = {}
+        for es in all_entity_scores:
+            key = es.classification_status or "unknown"
+            coverage_summary[key] = coverage_summary.get(key, 0) + 1
         manifest_dict = {
             "run_id": run_id,
-            "period": period,
+            "period": label,
             "timestamp": now.isoformat(),
-            "config_hash": config_hash,
+            "config_hash": cfg_hash,
+            "fingerprint": fingerprint,
             "code_version": code_version,
             "reference_date": as_of.isoformat() if as_of else None,
-            "entities_evaluated": [e.entity_id for e in entities],
+            "selection": selection,
+            "selection_report": selection_report,
+            "source_snapshot": window.max_pub_seq,
+            "entities_evaluated": entity_ids,
             "entities_skipped_invalid_id": skipped_entity_ids,
+            "classification_summary": coverage_summary,
             "total_findings": len(all_findings),
             "total_queue_items": len(all_queue_items),
             "anomaly_config_hash": self.anomaly_scanner.config_hash,
         }
-        run_obj = Run(
-            run_id=run_id,
-            period=period,
-            created_at=now,
-            config_hash=config_hash,
-            code_version=code_version,
-            status="completed",
-            manifest_json=json.dumps(manifest_dict),
-        )
 
         # Cross-entity ("systemic") correlation: looks ACROSS the per-entity
         # findings just computed, not within any single entity's data.
         systemic_findings = self.systemic_detector.evaluate(entities, all_findings, run_id)
 
         # Exploratory scan for indicators no rule tests: leads for the examiner, kept out of
-        # the scores and the queue (satsa.peers.anomaly_scan).
+        # the scores and the queue (satsa.peers.anomaly_scan). A table counts as submitted when
+        # it holds rows or was declared for the selection.
+        submitted = {
+            ent: {t for t, st in tables.items() if st in (PRESENT, TABLE_DECLARED_EMPTY)}
+            for ent, tables in statuses.items()
+        }
         anomaly = self.anomaly_scanner.scan(run_id, entities, self.duckdb_store, self.peer_resolver, submitted)
         manifest_dict["anomaly_signals"] = len(anomaly["signals"])
-        run_obj.manifest_json = json.dumps(manifest_dict)
+        run_obj = Run(
+            run_id=run_id,
+            period=label,
+            created_at=now,
+            config_hash=cfg_hash,
+            code_version=code_version,
+            status="completed",
+            manifest_json=json.dumps(manifest_dict),
+            fingerprint=fingerprint,
+            selection_json=json.dumps(selection),
+            source_snapshot=window.max_pub_seq,
+            data_fingerprint_json=json.dumps(data_fp, sort_keys=True),
+            environment_json=json.dumps(environment, sort_keys=True),
+        )
 
         result: dict[str, Any] = {
             "status": "success",
             "run_id": run_id,
-            "period": period,
-            "config_hash": config_hash,
+            "period": label,
+            "config_hash": cfg_hash,
+            "fingerprint": fingerprint,
+            "selection": selection,
+            "data_fingerprint": data_fp,
+            "source_snapshot": window.max_pub_seq,
             "reference_date": as_of.isoformat() if as_of else None,
             "entities_count": len(entities),
             "findings_count": len(all_findings),
@@ -294,7 +561,12 @@ class AssessmentRunner:
             "systemic_findings_count": len(systemic_findings),
             "anomaly_signals_count": len(anomaly["signals"]),
             "entity_scores": {
-                es.entity_id: {"risk_index": es.risk_index, "risk_band": es.risk_band}
+                es.entity_id: {
+                    "risk_index": es.risk_index,
+                    "risk_band": es.risk_band,
+                    "classification_status": es.classification_status,
+                    "coverage": es.coverage,
+                }
                 for es in all_entity_scores
             },
         }
@@ -304,32 +576,56 @@ class AssessmentRunner:
                 {"entity_id": f.entity_id, "rule_id": f.rule_id, "score": f.score, "severity": f.severity, "title": f.title}
                 for f in all_findings
             ]
+            result["rule_results"] = all_results
             return result
 
-        # Save to SQLite
-        self.sqlite_store.save_run(run_obj)
-        self.sqlite_store.save_findings(all_findings, all_evidences)
-        self.sqlite_store.save_scores(all_domain_scores, all_entity_scores)
-        self.sqlite_store.save_review_queue(all_queue_items)
-        if systemic_findings:
-            self.sqlite_store.save_systemic_findings(systemic_findings)
-        self.sqlite_store.save_anomaly_signals(anomaly["signals"])
-        self.sqlite_store.save_metric_values(run_id, anomaly["metric_values"])
-
-        # Append to Audit Log with hash chaining
-        self.sqlite_store.append_audit(
-            action="run",
-            actor=actor,
-            details={
-                "run_id": run_id,
-                "period": period,
-                "config_hash": config_hash,
-                "findings_count": len(all_findings),
-                "entities_count": len(entities),
-                "systemic_findings_count": len(systemic_findings),
-                "anomaly_signals_count": len(anomaly["signals"]),
-                "anomaly_config_hash": self.anomaly_scanner.config_hash,
-            },
+        dependency_issues = (
+            self._dependency_issues(statuses, all_results) if record_data_gaps else []
         )
+        audit_details = {
+            "run_id": run_id,
+            "period": label,
+            "config_hash": cfg_hash,
+            "fingerprint": fingerprint,
+            "selection": window.describe(),
+            "source_snapshot": window.max_pub_seq,
+            "findings_count": len(all_findings),
+            "entities_count": len(entities),
+            "systemic_findings_count": len(systemic_findings),
+            "anomaly_signals_count": len(anomaly["signals"]),
+            "anomaly_config_hash": self.anomaly_scanner.config_hash,
+        }
+        store = self.sqlite_store
+        try:
+            with store.audited_transaction():
+                if record_data_gaps:
+                    store.conn.execute(
+                        "DELETE FROM dq_issues WHERE check_name IN ('rule_dependency_empty', 'rule_not_assessed')"
+                    )
+                    for issue in dependency_issues:
+                        store.save_dq_issue(issue)
+                store.save_run(run_obj)
+                store.save_findings(all_findings, all_evidences)
+                store.save_scores(all_domain_scores, all_entity_scores)
+                store.save_rule_results(all_results)
+                store.save_review_queue(all_queue_items)
+                if systemic_findings:
+                    store.save_systemic_findings(systemic_findings)
+                store.save_anomaly_signals(anomaly["signals"])
+                store.save_metric_values(run_id, anomaly["metric_values"])
+                store.save_config_snapshot(run_id, snapshot)
+                # Append to Audit Log with hash chaining (same transaction: no run without its entry)
+                store.append_audit(action="run", actor=actor, details=audit_details)
+        except Exception as exc:
+            logger.exception("Assessment run %s failed to publish; nothing of it was kept", run_id)
+            try:
+                store.append_audit(
+                    action="run_failed",
+                    actor=actor,
+                    details={"run_id": run_id, "period": label, "error": f"{type(exc).__name__}: {exc}"[:500]},
+                )
+            except Exception:
+                logger.exception("Could not record the failed run %s in the audit log", run_id)
+            raise
 
         return result

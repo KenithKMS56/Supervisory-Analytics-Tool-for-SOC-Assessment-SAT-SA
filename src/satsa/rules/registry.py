@@ -140,6 +140,16 @@ class RuleRegistry:
         self.rules: dict[str, BaseRule] = {}
         self._instantiate_rules()
 
+    @classmethod
+    def from_yaml_text(cls, text: str) -> "RuleRegistry":
+        """The registry a stored configuration snapshot describes (e.g. the one a run used)."""
+        registry = cls.__new__(cls)
+        registry.config_path = Path("<snapshot>")
+        registry.config = yaml.safe_load(text) or {}
+        registry.rules = {}
+        registry._instantiate_rules()
+        return registry
+
     def _load_config(self) -> dict[str, Any]:
         if not self.config_path.exists():
             return {}

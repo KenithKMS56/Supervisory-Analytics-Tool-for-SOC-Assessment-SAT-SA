@@ -304,9 +304,11 @@ def test_rule_runs_when_its_table_was_submitted_empty(tmp_path):
     )
 
 
-def test_rule_runs_with_a_warning_when_there_is_no_manifest(tmp_path):
-    """Data stored without a manifest (before manifests existed, or written directly) keeps the
-    old behaviour: the rule runs and the DQ view warns the finding may be an artifact."""
+def test_rule_is_not_assessed_when_there_is_no_manifest(tmp_path):
+    """Data stored without any record of what was submitted (before manifests existed, or
+    written directly): a table with no rows was never shown to have been submitted, so a rule
+    that needs it is insufficient evidence, never a finding read from the absence (brief B01).
+    It used to run and only warn that its finding might be an artifact."""
     from satsa.scoring.runner import AssessmentRunner
     from satsa.store.duckdb import DuckDBStore
     from satsa.store.sqlite import SQLiteStore
@@ -322,16 +324,19 @@ def test_rule_runs_with_a_warning_when_there_is_no_manifest(tmp_path):
     fired = sqlite_store.conn.execute(
         "SELECT count(*) FROM findings WHERE run_id = ? AND rule_id = 'EG03'", (run["run_id"],)
     ).fetchone()[0]
-    detail = sqlite_store.conn.execute(
-        "SELECT details FROM dq_issues WHERE issue_id = 'DQ-DEPENDENCY-OLD-ENT-escalation'"
+    state = sqlite_store.conn.execute(
+        "SELECT state, missing_inputs_json FROM rule_results WHERE run_id = ? AND entity_id = 'OLD-ENT' "
+        "AND rule_id = 'EG03'",
+        (run["run_id"],),
     ).fetchone()
-    not_assessed = sqlite_store.conn.execute(
-        "SELECT count(*) FROM dq_issues WHERE check_name = 'rule_not_assessed'"
-    ).fetchone()[0]
+    detail = sqlite_store.conn.execute(
+        "SELECT details FROM dq_issues WHERE issue_id = 'DQ-NOT-ASSESSED-OLD-ENT-EG03'"
+    ).fetchone()
     duck.close()
     sqlite_store.close()
-    assert fired == 1 and not_assessed == 0
-    assert "no record of what it submitted" in detail["details"]
+    assert fired == 0
+    assert state["state"] == "insufficient_evidence" and "escalation" in state["missing_inputs_json"]
+    assert "does not include 'escalation'" in detail["details"]
 
 
 def test_an_unreadable_file_is_reported_and_kept_out_of_the_manifest(tmp_path, monkeypatch):

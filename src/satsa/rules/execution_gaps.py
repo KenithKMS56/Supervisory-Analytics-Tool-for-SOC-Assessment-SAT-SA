@@ -860,10 +860,10 @@ class EG10KPIRadicalGap(BaseRule):
             GROUP BY severity_final
         ),
         declared AS (
-            SELECT severity, avg(value) as dec
+            SELECT lower(severity) AS severity, avg(value) as dec
             FROM declared_kpi
-            WHERE entity_id = ? AND metric = 'MTTR' AND severity IN ('high', 'critical')
-            GROUP BY severity
+            WHERE entity_id = ? AND upper(metric) = 'MTTR' AND lower(severity) IN ('high', 'critical')
+            GROUP BY lower(severity)
         )
         SELECT
             sum(e.n * e.emp) / sum(e.n) as emp_mttr,
@@ -896,8 +896,8 @@ class EG10KPIRadicalGap(BaseRule):
             score, conf = self.compute_rule_score(gap_ratio / 0.50, examined)
             # The declared KPI rows this comparison used, as metric:severity:period.
             kpi_df = store.query(
-                "SELECT DISTINCT severity, period FROM declared_kpi WHERE entity_id = ? AND metric = 'MTTR' "
-                "AND severity IN ('high', 'critical') ORDER BY severity, period",
+                "SELECT DISTINCT lower(severity) AS severity, period FROM declared_kpi WHERE entity_id = ? "
+                "AND upper(metric) = 'MTTR' AND lower(severity) IN ('high', 'critical') ORDER BY severity, period",
                 [entity_id],
             )
             kpi_keys = [f"MTTR:{r['severity']}:{r['period']}" for r in kpi_df.iter_rows(named=True)]

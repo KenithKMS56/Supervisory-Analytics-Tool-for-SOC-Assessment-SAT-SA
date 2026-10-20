@@ -1,11 +1,13 @@
 """End-to-end ingestion pipeline orchestrator with intelligent canonical schema mapping."""
 
+import hashlib
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import duckdb
 import polars as pl
 
 from satsa.ingest.adapters import SourceAdapter
@@ -30,8 +32,10 @@ from satsa.ingest.sanitise import (
 )
 from satsa.models.outputs import DQIssue
 from satsa.rules.registry import RULE_ALERT_FIELDS, rule_coverage
+from satsa.scoring.selection import period_bounds
 from satsa.security import is_valid_entity_id, require_entity_id
-from satsa.store.duckdb import DuckDBStore
+from satsa.store.catalog import DECLARED_EMPTY, REJECTED, PublicationError, frame_content_hash
+from satsa.store.duckdb import DuckDBStore, text_timestamp_sql
 from satsa.store.sqlite import SQLiteStore
 
 logger = logging.getLogger(__name__)
@@ -57,6 +61,21 @@ assert set(FILE_ORDER) == set(SUPPORTED_SUFFIXES)
 # (missing_entity_id, invalid_entity_id); every other reason is reported as rows_rejected.
 NO_ENTITY = "no entity_id"
 BAD_ENTITY = "invalid entity_id"
+# A row of a submission bound to one entity (an upload's target, an API batch's entity) that
+# names another entity: never stored under either.
+OTHER_ENTITY = "names another entity"
+ENTITY_REASONS = (NO_ENTITY, BAD_ENTITY, OTHER_ENTITY)
+
+# What a submission with problems does (docs/data_contract.md, "Publication policy"):
+# - auto: rows that pass are published; rejected rows and invalid values are reported (CLI).
+# - strict: any rejected row, unreadable file or invalid value rejects the whole submission and
+#   nothing is stored; the response lists every error (JSON API).
+# - if_clean: a clean submission is published; one with problems is held unpublished until an
+#   analyst publishes or discards it (web upload).
+POLICIES = ("auto", "strict", "if_clean")
+
+# Largest number of error entries a rejected submission reports (the count is always exact).
+MAX_ERRORS = 200
 
 
 def _why(exc: Exception) -> str:
@@ -222,6 +241,53 @@ def _rows_per_entity(frame: pl.DataFrame) -> dict[str, int]:
 def _store_table(canonical_table: str) -> str:
     """Name a table is stored and queried under (`case_record` is stored as `case`)."""
     return "case" if canonical_table == "case_record" else canonical_table
+
+
+def invalid_timestamps(frame: pl.DataFrame, columns: list[str], limit: int = MAX_ERRORS) -> list[dict[str, Any]]:
+    """Text values of timestamp `columns` the store could not read as a time ({column,row,value}).
+
+    Read exactly as the store reads them (`text_timestamp_sql`), so a value reported here is one
+    that would otherwise be stored as missing without anyone noticing. `row` is 1-based within
+    `frame`.
+    """
+    text = [c for c in columns if c in frame.columns and frame[c].dtype == pl.String]
+    if not text or frame.height == 0:
+        return []
+    found: list[dict[str, Any]] = []
+    con = duckdb.connect(":memory:")
+    try:
+        con.register("f", frame.select(text).with_row_index("_row"))
+        for c in text:
+            q = '"' + c.replace('"', '""') + '"'
+            for row, value in con.execute(
+                f"SELECT _row, {q} FROM f WHERE {q} IS NOT NULL AND trim({q}) <> '' "
+                f"AND ({text_timestamp_sql(q)}) IS NULL ORDER BY _row LIMIT ?",
+                [limit],
+            ).fetchall():
+                found.append({"column": c, "row": int(row) + 1, "value": str(value)[:80]})
+    finally:
+        con.close()
+    return found
+
+
+def count_invalid_timestamps(frame: pl.DataFrame, columns: list[str]) -> dict[str, int]:
+    text = [c for c in columns if c in frame.columns and frame[c].dtype == pl.String]
+    if not text or frame.height == 0:
+        return {}
+    con = duckdb.connect(":memory:")
+    try:
+        con.register("f", frame.select(text))
+        out = {}
+        for c in text:
+            q = '"' + c.replace('"', '""') + '"'
+            n = con.execute(
+                f"SELECT count(*) FROM f WHERE {q} IS NOT NULL AND trim({q}) <> '' AND ({text_timestamp_sql(q)}) IS NULL"
+            ).fetchone()
+            if n and n[0]:
+                out[c] = int(n[0])
+        return out
+    finally:
+        con.close()
 
 
 def default_entity_record(entity_id: str) -> dict[str, Any]:
@@ -579,6 +645,48 @@ class IngestionPipeline:
 
         return norm
 
+    def _column_types(self, table: str) -> dict[str, str]:
+        rows = self.duckdb_store.conn.execute(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ?", [table]
+        ).fetchall()
+        return {r[0]: r[1] for r in rows}
+
+    @staticmethod
+    def _submission_errors(
+        ledgers: dict[Any, FileLedger],
+        unreadable_files: list[str],
+        unrecognised_files: list[str],
+        unmapped_files: list[str],
+        ts_samples: dict[str, list[dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        """Every problem that makes a strict submission unacceptable, one entry per row/value."""
+        errors: list[dict[str, Any]] = []
+        for name in sorted(unreadable_files):
+            errors.append({"file": name, "reason": "file could not be read"})
+        for name in sorted(unrecognised_files):
+            errors.append({"file": name, "reason": "file matches no table of the submission template"})
+        for name in sorted(unmapped_files):
+            errors.append({"file": name, "reason": "file is not described by the source mapping"})
+        for book in ledgers.values():
+            table = Path(book.file).stem
+            for reason, rejected in book.rejected.items():
+                field_name = "entity_id" if reason in ENTITY_REASONS else None
+                rows: list[int | None] = list(rejected.rows) or [None] * min(rejected.count, 1)
+                for row in rows:
+                    errors.append({"table": table, "field": field_name, "row": row, "reason": reason})
+        for table, samples in sorted(ts_samples.items()):
+            for e in samples:
+                errors.append(
+                    {
+                        "table": table,
+                        "field": e["column"],
+                        "row": e["row"],
+                        "value": e["value"],
+                        "reason": "not a readable timestamp (ISO 8601, UTC or with an offset)",
+                    }
+                )
+        return errors
+
     def _apply_row_hygiene(self, table: str, rows: list[dict[str, Any]]) -> None:
         """Pseudonymise people, normalise taxonomy values and reduce free text, in place."""
         if table == "alert":
@@ -624,10 +732,11 @@ class IngestionPipeline:
         input_dir: Path | str,
         default_entity_id: str | None = None,
         mapping: SourceMapping | None = None,
+        **submission: Any,
     ) -> dict[str, Any]:
         """Ingest a directory (see `_ingest_directory`), reporting how each file had to be read."""
         with collect_reports():
-            result = self._ingest_directory(input_dir, default_entity_id, mapping)
+            result = self._ingest_directory(input_dir, default_entity_id, mapping, **submission)
             result["file_sanitising"] = [r.as_dict() for r in collected() if r.noteworthy]
         return result
 
@@ -636,6 +745,16 @@ class IngestionPipeline:
         input_dir: Path | str,
         default_entity_id: str | None = None,
         mapping: SourceMapping | None = None,
+        *,
+        bound_entity: str | None = None,
+        period: str | None = None,
+        transport: str = "file",
+        submitted_by: str | None = None,
+        policy: str = "auto",
+        idempotency_key: str | None = None,
+        revision_of: str | None = None,
+        reject_overlap: bool = False,
+        declared_empty: Iterable[str] = (),
     ) -> dict[str, Any]:
         """Ingest all CSV, TSV, Excel and JSON tables from directory, validate DQ, and store as Parquet.
 
@@ -650,7 +769,41 @@ class IngestionPipeline:
 
         The result says what the submission lets each rule do (`rule_coverage`) and how
         complete each stored column is (`field_coverage`).
+
+        Submission options (every transport -- CLI, upload, JSON API -- goes through here):
+
+        - `bound_entity`: the submission belongs to this entity. Rows without an entity_id get
+          it; a row naming another entity is rejected (`entity_mismatch`), never stored.
+        - `period`: the review period the submission covers (`2026-Q1`, `2026-03`, ...),
+          recorded on the batch; it decides which assessments may read an empty table as
+          "nothing happened" (satsa.scoring.runner).
+        - `policy`: what a submission with rejected rows, unreadable files or unreadable
+          timestamps does (POLICIES above).
+        - `idempotency_key`: a retry with the same key and the same content returns the batch
+          already stored (`idempotent_replay`); the same key with other content is a conflict.
+        - `reject_overlap`: another published batch of the entity whose period overlaps this
+          one is a conflict, unless `revision_of` names the batch this one corrects.
+        - `declared_empty`: tables the submitter declares complete with no rows.
+
+        All tables of a submission are published as one immutable batch (satsa.store.catalog):
+        readers see all of it or none of it.
         """
+        if policy not in POLICIES:
+            raise ValueError(f"unknown ingestion policy {policy!r}")
+        bounds = None
+        if period is not None:
+            bounds = period_bounds(period)
+            if bounds is None:
+                return {
+                    "status": "rejected",
+                    "message": f"period {period!r} is not a review period (2026, 2026-Q1, 2026-H1 or 2026-03).",
+                    "errors": [{"field": "period", "reason": "not a review period"}],
+                }
+        if bound_entity is not None:
+            require_entity_id(bound_entity)
+            if default_entity_id is not None and default_entity_id != bound_entity:
+                raise ValueError("default_entity_id and bound_entity differ")
+            default_entity_id = bound_entity
         if mapping is not None:
             default_entity_id = default_entity_id or mapping.entity_id
             if not default_entity_id:
@@ -719,6 +872,8 @@ class IngestionPipeline:
         unmapped_files: list[str] = []
         unrecognised_files: list[str] = []
         unused_source_columns: dict[str, list[str]] = {}
+        # table -> entity ids of rows that named another entity than the bound one
+        mismatched: dict[str, list[str]] = {}
 
         def store_rows(table: str, rows: list[dict[str, Any]]) -> None:
             """Hygiene, canonical columns only, then into the table's columnar buffer."""
@@ -764,6 +919,11 @@ class IngestionPipeline:
                     if set_aside is not None:
                         set_aside.setdefault(BAD_ENTITY, Rejected()).add(1, [offset + i])
                     continue
+                if bound_entity is not None and str(eid).strip() != bound_entity:
+                    mismatched.setdefault(table, []).append(str(eid))
+                    if set_aside is not None:
+                        set_aside.setdefault(OTHER_ENTITY, Rejected()).add(1, [offset + i])
+                    continue
                 kept.append(clean_r)
             return kept
 
@@ -778,6 +938,15 @@ class IngestionPipeline:
                 unattributed[table] = unattributed.get(table, 0) + done.unattributed
             if done.rejected:
                 rejected_ids.setdefault(table, []).extend(done.rejected)
+            if bound_entity is not None and done.frame.height and "entity_id" in done.frame.columns:
+                other = done.frame["entity_id"].cast(pl.String).str.strip_chars() != bound_entity
+                n_other = int(other.sum())
+                if n_other:
+                    mismatched.setdefault(table, []).extend(
+                        str(v) for v in done.frame.filter(other)["entity_id"].head(ROW_SAMPLE).to_list()
+                    )
+                    done.other_entity = n_other
+                    done.frame = done.frame.filter(~other)
             if done.frame.height:
                 if done.dropped:
                     dropped.setdefault(_store_table(table), set()).update(done.dropped)
@@ -908,6 +1077,7 @@ class IngestionPipeline:
                     book.store(target, done.frame.height)
                     book.reject(NO_ENTITY, done.unattributed, file_rows(f, done.unattributed_at))
                     book.reject(BAD_ENTITY, len(done.rejected), file_rows(f, done.rejected_at))
+                    book.reject(OTHER_ENTITY, done.other_entity, [])
                     continue
                 set_aside: dict[str, Rejected] = {}
                 offset = 0
@@ -948,6 +1118,88 @@ class IngestionPipeline:
 
         tables: dict[str, pl.DataFrame] = {name: _concat_frames(parts) for name, parts in buffers.items()}
         buffers.clear()
+
+        # Timestamps the store could not read would silently become missing values: they are
+        # validated here, exactly as the store will read them.
+        ts_counts: dict[tuple[str, str], int] = {}
+        ts_samples: dict[str, list[dict[str, Any]]] = {}
+        for name, frame in tables.items():
+            target = _store_table(name)
+            ts_cols = [
+                c for c, t in self._column_types(target).items() if t == "TIMESTAMP" and c in frame.columns
+            ]
+            for column, n in count_invalid_timestamps(frame, ts_cols).items():
+                ts_counts[(target, column)] = ts_counts.get((target, column), 0) + n
+            if any(k[0] == target for k in ts_counts):
+                ts_samples[target] = invalid_timestamps(frame, ts_cols)
+
+        if policy == "strict":
+            errors = self._submission_errors(ledgers, unreadable_files, unrecognised_files, unmapped_files, ts_samples)
+            total = sum(book.rejected_count for book in ledgers.values()) + sum(ts_counts.values())
+            total += len(unreadable_files) + len(unrecognised_files) + len(unmapped_files)
+            if errors:
+                return {
+                    "status": "rejected",
+                    "message": f"The submission was not stored: {total} problem(s) found. Nothing was published.",
+                    "errors": errors[:MAX_ERRORS],
+                    "error_count": total,
+                    "file_coverage": file_coverage,
+                }
+
+        content_hash = frame_content_hash(tables)
+        period_start = bounds[0].isoformat() if bounds else None
+        period_end = bounds[1].isoformat() if bounds else None
+        source_name = mapping.source if mapping is not None else "canonical"
+        catalog = self.duckdb_store.catalog
+        if idempotency_key is not None:
+            earlier = catalog.batch_by_idempotency_key(idempotency_key)
+            if earlier is not None:
+                if earlier["content_hash"] == content_hash and earlier["state"] in ("published", "held"):
+                    return {
+                        "status": "success",
+                        "idempotent_replay": True,
+                        "batch_id": earlier["batch_id"],
+                        "batch_state": earlier["state"],
+                        "message": "This submission was already received; nothing new was stored.",
+                        "file_coverage": file_coverage,
+                    }
+                return {
+                    "status": "conflict",
+                    "message": (
+                        f"A different submission with the same idempotency key was already received as batch "
+                        f"{earlier['batch_id']}. Submit a correction with revision_of to replace it."
+                    ),
+                    "conflicting_batches": [earlier["batch_id"]],
+                    "file_coverage": file_coverage,
+                }
+        if revision_of is not None:
+            parent = catalog.batch(revision_of)
+            if parent is None or parent["state"] != "published" or (
+                bound_entity is not None and parent["entity_id"] != bound_entity
+            ):
+                return {
+                    "status": "conflict",
+                    "message": f"revision_of names {revision_of!r}, which is not a published batch of this entity.",
+                    "conflicting_batches": [],
+                    "file_coverage": file_coverage,
+                }
+        if reject_overlap and bound_entity is not None and bounds is not None:
+            assert period_start is not None and period_end is not None
+            overlaps = [
+                b for b in catalog.overlapping_batches(bound_entity, period_start, period_end, source_name)
+                if b["batch_id"] != revision_of
+            ]
+            if overlaps:
+                names = ", ".join(f"{b['batch_id']} ({b['period_label']})" for b in overlaps)
+                return {
+                    "status": "conflict",
+                    "message": (
+                        f"{bound_entity} already has a published submission whose period overlaps "
+                        f"{period}: {names}. A correction must name the batch it revises (revision_of)."
+                    ),
+                    "conflicting_batches": [b["batch_id"] for b in overlaps],
+                    "file_coverage": file_coverage,
+                }
 
         # Determine entities involved
         entities_present: set[str] = set()
@@ -1094,7 +1346,7 @@ class IngestionPipeline:
             )
         # Rows a source mapping could not fill (the entity checks below report their own).
         left_out = [
-            (book, {r: rej for r, rej in book.rejected.items() if r not in (NO_ENTITY, BAD_ENTITY)})
+            (book, {r: rej for r, rej in book.rejected.items() if r not in ENTITY_REASONS})
             for book in ledgers.values()
         ]
         left_out = [(book, reasons) for book, reasons in left_out if reasons]
@@ -1127,6 +1379,33 @@ class IngestionPipeline:
                         for rej in reasons.values()
                         for n in rej.rows[:5]
                     ][:5],
+                )
+            )
+        for tbl, other_ids in sorted(mismatched.items()):
+            all_dq_issues.extend(
+                batch_issues(
+                    "DQ-ENTITY-MISMATCH",
+                    tbl,
+                    f"{len(other_ids)} '{tbl}' rows rejected: the submission is for {bound_entity}, but these "
+                    "rows name another entity (rows were not stored or evaluated).",
+                    check_name="entity_mismatch",
+                    severity="error",
+                    count=len(other_ids),
+                    sample_records=sorted({repr(b)[:80] for b in other_ids})[:5],
+                )
+            )
+        for (tbl, column), n in sorted(ts_counts.items()):
+            samples = [e for e in ts_samples.get(tbl, []) if e["column"] == column][:5]
+            all_dq_issues.extend(
+                batch_issues(
+                    "DQ-INVALID-TIMESTAMP",
+                    f"{tbl}-{column}",
+                    f"{n} value(s) of {tbl}.{column} could not be read as a timestamp and are stored as "
+                    "missing. Rules that read the column do not see these records' times.",
+                    check_name="invalid_timestamp",
+                    severity="error",
+                    count=n,
+                    sample_records=[f"row {e['row']}: {e['value']}" for e in samples],
                 )
             )
         for tbl, bad_ids in sorted(rejected_ids.items()):
@@ -1251,35 +1530,90 @@ class IngestionPipeline:
         partitions.clear()
         row_positions.clear()
 
-        # Write to partitioned Parquet via DuckDBStore. A table that fails to store must
-        # not vanish quietly: rules would then read its absence as a SOC defect. Each table's
-        # frame is released once written, and the written tables are reloaded into DuckDB
-        # only after all are written, so the submission is not held as frames and as DuckDB
-        # tables at the same time. A reload that fails counts as a failed store, as it did
-        # when the reload was part of each write.
-        # A failed table is filed under the entities whose rows it held, each with its own row
-        # count; those counts are taken while the frame is held, for a reload that fails later.
+        # All tables of the submission are published as ONE immutable batch (satsa.store.catalog):
+        # readers see all of it or none of it. A table that fails to stage must not vanish
+        # quietly -- rules would read its absence as a SOC defect -- so it is declared `rejected`
+        # in the batch for the entities whose rows it held (their rules become insufficient
+        # evidence) and reported as a DQ error. Each table's frame is released once staged, and
+        # the published tables are reloaded into DuckDB only after publication.
         failures: dict[str, tuple[int, dict[str, int], str]] = {}
         written: list[tuple[str, int, dict[str, int]]] = []
         table_order = list(tables)
-        with self.duckdb_store.deferred_reload():
-            for table_name in table_order:
-                df = tables.pop(table_name)
-                if df.height:
-                    entity_rows = _rows_per_entity(df)
-                    try:
-                        self.duckdb_store.write_partitioned_parquet(_store_table(table_name), df)
-                        written.append((table_name, df.height, entity_rows))
-                    except Exception as exc:
-                        logger.exception("Failed to store table %r (%d rows)", table_name, df.height)
-                        failures[table_name] = (df.height, entity_rows, type(exc).__name__)
-                del df
-        for table_name, height, entity_rows in written:
-            try:
-                self.duckdb_store.load_table_from_parquet(_store_table(table_name))
-            except Exception as exc:
-                logger.exception("Failed to store table %r (%d rows)", table_name, height)
+        batch, _manifest_dict = ManifestBuilder.build_manifest(
+            entity_id=batch_owner, files=list(dict.fromkeys(processed_files)), row_counts=row_counts
+        )
+        batch_id = batch.batch_id
+        if catalog.batch(batch_id) is not None:  # the same files submitted again: a new batch
+            batch_id = f"{batch_id}-{hashlib.sha256(f'{batch_id}:{content_hash}:{catalog.max_pub_seq()}'.encode()).hexdigest()[:6]}"
+            n = 0
+            while catalog.batch(batch_id if n == 0 else f"{batch_id}{n}") is not None:
+                n += 1
+            batch_id = batch_id if n == 0 else f"{batch_id}{n}"
+        rows_by_table: dict[str, set[str]] = {}
+        problems = bool(
+            ts_counts or unreadable_files or unrecognised_files or unmapped_files
+            or any(book.rejected_count for book in ledgers.values())
+        )
+        state = "published"
+        try:
+            with (
+                self.duckdb_store.deferred_reload(),
+                self.duckdb_store.publication(
+                    transport=transport,
+                    entity_id=batch_entities[0] if len(batch_entities) == 1 and entities_present else None,
+                    source=source_name,
+                    period_label=period,
+                    period_start=period_start,
+                    period_end=period_end,
+                    content_hash=content_hash,
+                    idempotency_key=idempotency_key,
+                    parent_batch_id=revision_of,
+                    submitted_by=submitted_by,
+                    mapping_version=getattr(mapping, "version", None) if mapping is not None else None,
+                    batch_id=batch_id,
+                ) as writer,
+            ):
+                for table_name in table_order:
+                    df = tables.pop(table_name)
+                    if df.height:
+                        entity_rows = _rows_per_entity(df)
+                        try:
+                            self.duckdb_store.write_partitioned_parquet(_store_table(table_name), df)
+                            written.append((table_name, df.height, entity_rows))
+                            rows_by_table.setdefault(_store_table(table_name), set()).update(entity_rows)
+                        except Exception as exc:
+                            logger.exception("Failed to store table %r (%d rows)", table_name, df.height)
+                            failures[table_name] = (df.height, entity_rows, type(exc).__name__)
+                            writer.declare(
+                                _store_table(table_name), sorted(entity_rows) or batch_entities, REJECTED
+                            )
+                    del df
+                # A table the submission included (a header-only file, or one the submitter
+                # declared empty) is complete with no rows for every entity of the batch that
+                # has no rows of it: absence is then a real signal.
+                failed_targets = {_store_table(t) for t in failures}
+                for target in sorted((declared_tables | set(declared_empty)) - failed_targets):
+                    empty_for = [e for e in sorted(entities_present) if e not in rows_by_table.get(target, set())]
+                    if empty_for:
+                        writer.declare(target, empty_for, DECLARED_EMPTY)
+                if policy == "if_clean" and (problems or failures):
+                    writer.hold("held for review: the submission has rejected rows, unreadable files or values")
+                    state = "held"
+                else:
+                    writer.publish()
+        except PublicationError as exc:
+            logger.exception("Batch %s could not be published", batch_id)
+            for table_name, height, entity_rows in written:
                 failures[table_name] = (height, entity_rows, type(exc).__name__)
+            written = []
+            state = "failed"
+        if state == "published":
+            for table_name, height, entity_rows in written:
+                try:
+                    self.duckdb_store.load_table_from_parquet(_store_table(table_name))
+                except Exception as exc:
+                    logger.exception("Failed to store table %r (%d rows)", table_name, height)
+                    failures[table_name] = (height, entity_rows, type(exc).__name__)
         failed_tables: list[str] = [t for t in table_order if t in failures]
         for table_name in failed_tables:
             height, entity_rows, error = failures[table_name]
@@ -1300,14 +1634,11 @@ class IngestionPipeline:
                     )
                 )
 
-        # Build manifest and append to audit log
-        batch, _manifest_dict = ManifestBuilder.build_manifest(
-            entity_id=batch_owner, files=list(dict.fromkeys(processed_files)), row_counts=row_counts
-        )
         # Submission manifest: every entity in this batch submitted these tables. A table whose
         # file failed to store is not counted, so its rules are not assessed on missing data.
-        manifest_tables = declared_tables - {_store_table(t) for t in failed_tables}
-        self.sqlite_store.record_submitted_tables(entities_present, manifest_tables, batch.batch_id)
+        manifest_tables = (declared_tables | set(declared_empty)) - {_store_table(t) for t in failed_tables}
+        if state == "published":
+            self.sqlite_store.record_submitted_tables(entities_present, manifest_tables, batch_id)
 
         # What this leaves each rule able to do, per entity: skipped for want of a table, or
         # running on an alert column the source could not fill.
@@ -1345,7 +1676,11 @@ class IngestionPipeline:
             action="ingest",
             actor="pipeline",
             details={
-                "batch_id": batch.batch_id,
+                "batch_id": batch_id,
+                "batch_state": state,
+                "transport": transport,
+                "period": period,
+                "policy": policy,
                 "entity_id": batch_owner,
                 "files_count": len(set(processed_files)),
                 "row_counts": row_counts,
@@ -1355,9 +1690,16 @@ class IngestionPipeline:
             },
         )
 
+        status = "held" if state == "held" else "error" if state == "failed" else (
+            "partial" if failed_tables else "success"
+        )
         return {
-            "status": "partial" if failed_tables else "success",
-            "batch_id": batch.batch_id,
+            "status": status,
+            "batch_id": batch_id,
+            "batch_state": state,
+            "idempotent_replay": False,
+            "period": period,
+            "invalid_timestamps": {f"{t}.{c}": n for (t, c), n in sorted(ts_counts.items())},
             "entities": sorted(entities_present),
             "row_counts": row_counts,
             "failed_tables": failed_tables,

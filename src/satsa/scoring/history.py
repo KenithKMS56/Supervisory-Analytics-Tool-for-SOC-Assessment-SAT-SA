@@ -14,14 +14,11 @@ assessment run and tagged with a period label derived from that window's
 calendar quarter. The portfolio route then queries these real historical
 runs (see `satsa.api.routes.view_portfolio`) instead of synthesizing points.
 
-Known limitation: only the primary time-anchored tables (`alert`, `case`,
-`log_source_daily`) are restricted to each window. Auxiliary tables that are
-usually reached via a JOIN on alert_id/case_id (workflow_event, escalation,
-closure) are filtered indirectly because a filtered-out alert/case row means
-the join drops the related workflow/escalation/closure rows too. Rules that
-scan those auxiliary tables directly without joining back to alert/case
-(none currently do) would not be window-restricted. This is documented in
-docs/analytics_methodology.md.
+Each window is a cumulative selection (satsa.scoring.selection, mode `cumulative`): every
+record created before the window's cutoff, as it was known at the cutoff -- a closure,
+acknowledgement or escalation acknowledgement after the cutoff is masked, so an alert closed
+later is open at the cutoff. The same selection service is used by every assessment, so these
+points use exactly the rules a period assessment uses (docs/analytics_methodology.md).
 """
 
 from __future__ import annotations
@@ -30,6 +27,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from satsa.scoring.runner import AssessmentRunner
+from satsa.scoring.selection import CUMULATIVE, AssessmentWindow
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
 
@@ -91,54 +89,40 @@ def seed_historical_periods(
     window_seconds = total_seconds / n_periods
     used_labels: dict[str, int] = {}
 
-    for i in range(n_periods):
-        cutoff = min_ts + timedelta(seconds=window_seconds * (i + 1))
-        window_store = DuckDBStore(data_dir_str)
-        window_store.load_all_tables()
-
-        # Restrict the primary time-anchored tables to real data observed at
-        # or before this window's cutoff. Rules that JOIN workflow_event,
-        # escalation, and closure back to alert/case by ref_id inherit this
-        # restriction automatically because the parent row is gone.
-        window_store.conn.execute("DELETE FROM alert WHERE created_at > ?", [cutoff])
-        window_store.conn.execute('DELETE FROM "case" WHERE opened_at IS NOT NULL AND opened_at > ?', [cutoff])
-        window_store.conn.execute("DELETE FROM log_source_daily WHERE date > ?", [cutoff.date()])
-        # Tables that rules read directly (not only through a join to alert/case) carry
-        # their own timestamps and are cut at the same point.
-        for table, ts_col in (
-            ("escalation", "escalated_at"),
-            ("workflow_event", "ts"),
-            ("remediation", "created_at"),
-            ("external_report", "reported_at"),
-        ):
-            window_store.conn.execute(
-                f"DELETE FROM {table} WHERE {ts_col} IS NOT NULL AND {ts_col} > ?", [cutoff]
+    store = DuckDBStore(data_dir_str)
+    snapshot = store.catalog.max_pub_seq()  # every window reads the same published data
+    try:
+        for i in range(n_periods):
+            cutoff = min_ts + timedelta(seconds=window_seconds * (i + 1))
+            base_label = period_label_for(cutoff)
+            # A short dataset window can put two chronologically-distinct cutoffs
+            # in the same real calendar quarter (e.g. a 6-month dataset split
+            # into 3 periods puts windows 2 and 3 both in the same quarter).
+            # Disambiguate with a real cutoff-date suffix rather than silently
+            # producing two identically-labeled x-axis points.
+            if base_label in used_labels:
+                used_labels[base_label] += 1
+                period_label = f"{base_label} (as of {cutoff.date().isoformat()})"
+            else:
+                used_labels[base_label] = 1
+                period_label = base_label
+            # Records at or before the cutoff (the window's end is exclusive).
+            window = AssessmentWindow(
+                mode=CUMULATIVE,
+                end=cutoff + timedelta(microseconds=1),
+                max_pub_seq=snapshot,
+                label=period_label,
             )
-
-        base_label = period_label_for(cutoff)
-        # A short dataset window can put two chronologically-distinct cutoffs
-        # in the same real calendar quarter (e.g. a 6-month dataset split
-        # into 3 periods puts windows 2 and 3 both in the same quarter).
-        # Disambiguate with a real cutoff-date suffix rather than silently
-        # producing two identically-labeled x-axis points.
-        if base_label in used_labels:
-            used_labels[base_label] += 1
-            period_label = f"{base_label} (as of {cutoff.date().isoformat()})"
-        else:
-            used_labels[base_label] = 1
-            period_label = base_label
-        runner = AssessmentRunner(window_store, sqlite_store)
-        # refresh_tables=False: run_assessment must assess THIS window. Its default reload
-        # from Parquet would restore the full dataset and make every period identical.
-        res = runner.run_assessment(
-            period=period_label,
-            actor=actor,
-            refresh_tables=False,
-            record_data_gaps=False,
-            reference_date=cutoff,
-        )
-        window_store.close()
-        res["period"] = period_label
-        results.append(res)
+            res = AssessmentRunner(store, sqlite_store).run_assessment(
+                period=period_label,
+                actor=actor,
+                record_data_gaps=False,
+                reference_date=cutoff,
+                window=window,
+            )
+            res["period"] = period_label
+            results.append(res)
+    finally:
+        store.close()
 
     return results

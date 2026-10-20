@@ -55,6 +55,8 @@ SATSA_MATRIX: dict[tuple[str, str], tuple[object, bool]] = {
     ("GET", "/finding/{finding_id}"): (ALL, True),
     ("GET", "/queue"): (ALL, True),
     ("GET", "/dq"): (ANALYST, True),
+    ("POST", "/batches/{batch_id}/publish"): (INGEST, False),
+    ("POST", "/batches/{batch_id}/discard"): (INGEST, False),
     ("GET", "/audit"): (ANALYST, True),
     ("GET", "/runs"): (ANALYST, True),
     ("GET", "/alerts"): (ANALYST, True),
