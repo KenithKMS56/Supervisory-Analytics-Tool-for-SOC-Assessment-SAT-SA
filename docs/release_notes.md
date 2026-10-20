@@ -123,6 +123,11 @@ layout (B08).
   no report. API change log 1.3.
 - *Dependency audit*: `pip-audit` on every pinned package found no known vulnerabilities
   (`docs/dependency_audit.md`).
+- *Performance*: 5,000,000 alerts across 50 entities ingested and assessed in 162.6-164.2 s,
+  against 450.5 s at the end of Phase 5, with identical results on the same data
+  (`docs/benchmarks.md`). Tables are held in entity order; the peer rules and the local-time
+  figures read portfolio-wide figures once per run; an ingest no longer reloads every table
+  after publishing. The memory preflight now assumes 240 bytes per published row.
 
 ## Known limitations
 
@@ -135,10 +140,10 @@ layout (B08).
   machine (`docs/benchmarks.md`). There, 100,000 alerts assess in 4.6–6.3 s and ten concurrent
   readers see a p95 of 0.5–0.9 s (up to 1.5 s while another process ingests); single requests
   reached 3.1 s at 100,000 and 4.5 s at 500,000 alerts during the reload after a publication.
-- **Large portfolios are slower than before the brief's changes**: at 5,000,000 alerts ingest
-  takes 97 s (47 s on 2026-10-02), assessment 354 s (124 s) and the first portfolio page after a
-  run 46 s (17 s). Assessment grows faster than the data. Nothing above 100,000 alerts is a
-  supported tier.
+- **The first page after a run is slow on large portfolios**: 55 s at 5,000,000 alerts (17 s on
+  2026-10-02), while the web app reloads every table; later pages load in under a second.
+  Ingest and assessment of 5,000,000 alerts take under 3 minutes (162.6-164.2 s). Nothing above
+  100,000 alerts is a supported tier until the reference machine is measured.
 - **One worker per deployment.** Several workers are safe by lease, but are not load-tested.
 - **Content-Security-Policy keeps `'unsafe-inline'`** for scripts and styles, because the
   templates still use inline scripts and handlers. The other directives confine every page to

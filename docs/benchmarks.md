@@ -2,8 +2,9 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-**Current figures: Section "Product-brief Phase 5 (2026-10-19)" below.** The other sections are
-earlier runs, kept with their dates. (They use an older project's phase numbering: their
+**Current figures: Section "After the product brief: performance work (2026-10-20)" below.** The
+other sections are earlier runs, kept with their dates, including the end of the brief's Phase 5
+(2026-10-19). (They use an older project's phase numbering: their
 "Phase 5" is an ingest change from 2026-10-01, not the product brief's Phase 5.) Measured with `scripts/benchmark_scale.py`,
 on the machine described below.
 Every figure is a measurement from the runs named here; nothing is extrapolated. Timings on
@@ -20,11 +21,121 @@ the other:
 
 The Phase 5 tables are those runs' own output; the raw results of every run are at the end.
 
-## Product-brief Phase 5 (2026-10-19): current figures
+## After the product brief: performance work (2026-10-20): current figures
+
+Measured on branch `feat/post-brief-followups` after the changes listed below, on the machine
+below (Python 3.13.2, Windows 11 build 10.0.26300). **One development laptop, not the declared
+4-vCPU / 8-GiB reference machine.** Every figure is from the runs whose raw output is at the end
+of this page.
+
+```
+python scripts/benchmark_scale.py --configs 10x10000,10x10000:skewed,10x10000:freetext,10x10000:uneven,10x50000 --readers --workdir build/bench --stage-timeout 3000 --out ... --json ...
+python scripts/benchmark_scale.py --configs 40x50000 --workdir build/bench --stage-timeout 3000 --out ... --json ...
+python scripts/benchmark_scale.py --configs 50x100000 --workdir build/bench --stage-timeout 3000 --out ... --json ...   (run twice)
+```
+
+### Ingest and assessment
+
+| Entities x alerts each | Profile | Alerts | Ingest | Ingest peak | Assess | Assess peak | Ingest + assess | Findings |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| 10 x 10,000 | uniform | 100,000 | 5.2 s | 337 MiB | 4.9 s | 214 MiB | 10.1 s | 29 |
+| 10 x 10,000 | skewed | 100,000 | 3.8 s | 393 MiB | 4.4 s | 215 MiB | 8.2 s | 23 |
+| 10 x 10,000 | freetext | 100,000 | 21.7 s | 518 MiB | 3.5 s | 231 MiB | 25.2 s | 29 |
+| 10 x 10,000 | uneven | 100,000 | 3.5 s | 339 MiB | 3.5 s | 214 MiB | 7.0 s | 29 |
+| 10 x 50,000 | uniform | 500,000 | 6.4 s | 876 MiB | 9.6 s | 568 MiB | 16.0 s | 30 |
+| 40 x 50,000 | uniform | 2,000,000 | 27.2 s | 2,770 MiB | 49.1 s | 1,879 MiB | 76.3 s | 120 |
+| 50 x 100,000 | uniform | 5,000,000 | 51.5 s | 6,398 MiB | 112.7 s | 4,487 MiB | **164.2 s** | 150 |
+| 50 x 100,000 (repeat run) | uniform | 5,000,000 | 50.5 s | 6,390 MiB | 112.1 s | 4,487 MiB | **162.6 s** | 150 |
+
+At 5,000,000 alerts, ingest and assessment together took 164.2 s and 162.6 s in two runs, under
+3 minutes. On the code at the end of the brief's Phase 5 they took 450.5 s (96.9 s + 353.6 s,
+2026-10-19). The free-text ingest at 100,000 alerts (21.7 s) is slower than the Phase 5 run
+(17.1 s) although nothing in its path got more expensive; its repeat ingest took 15.2 s.
+Run-to-run spread on this laptop is that large, so single figures are indications.
+
+### Same data, same session: before and after
+
+At 2,000,000 alerts (40 entities), on copies of one data directory taken at the same moment, the
+code before these changes (commit `c8d191e`) and after:
+
+| | Before | After |
+|---|---:|---:|
+| Assessment | 130.5 s | 49.6 s |
+| Reload of every table (`load_all_tables`, two runs each) | 18.5-18.9 s | 22.3-22.6 s |
+
+The ingest of the same 2,000,000-alert submission, timed step by step on the same day: 48.1 s at
+the start of this work, 26.2 s at the end (not side by side, so an indication).
+
+**Every stored result is identical**: findings and evidence, per-rule results, domain and entity
+scores, review queues, peer comparisons and anomaly-scan metrics, compared value for value, and
+the run's data fingerprint, configuration hash and selection are the same (only the code version,
+run id and time differ). Old runs therefore replay as before.
+
+### Ten concurrent readers (a served instance, one uvicorn process)
+
+| Entities x alerts each | Profile | Phase | Requests | Errors | p50 | p95 | Max |
+|---|---|---|---:|---:|---:|---:|---:|
+| 10 x 10,000 | uniform | idle | 200 | 0 | 635 ms | 781 ms | 1,231 ms |
+| 10 x 10,000 | uniform | during ingest | 200 | 0 | 698 ms | 1,539 ms | 3,668 ms |
+| 10 x 10,000 | skewed | idle | 200 | 0 | 612 ms | 829 ms | 1,501 ms |
+| 10 x 10,000 | skewed | during ingest | 200 | 0 | 635 ms | 1,481 ms | 3,369 ms |
+| 10 x 10,000 | freetext | idle | 200 | 0 | 408 ms | 499 ms | 912 ms |
+| 10 x 10,000 | freetext | during ingest | 200 | 0 | 349 ms | 996 ms | 1,825 ms |
+| 10 x 10,000 | uneven | idle | 200 | 0 | 403 ms | 515 ms | 797 ms |
+| 10 x 10,000 | uneven | during ingest | 200 | 0 | 447 ms | 1,253 ms | 2,167 ms |
+| 10 x 50,000 | uniform | idle | 200 | 0 | 467 ms | 640 ms | 823 ms |
+| 10 x 50,000 | uniform | during ingest | 200 | 0 | 774 ms | 1,574 ms | 6,944 ms |
+
+The p95 stays under the proposed 2 s. At 500,000 alerts during an ingest it is 1.57 s (0.99 s in
+the Phase 5 run) and the slowest single request 6.9 s (4.5 s): the request that waits for the
+reload after the publication, which the entity sort below makes about 16% longer.
+
+### First page after a run
+
+| Entities x alerts each | Reload of every table | `/portfolio` first request | `/portfolio` repeat |
+|---|---:|---:|---:|
+| 10 x 10,000 | 1.42 s | 2,020 ms | 66 ms |
+| 40 x 50,000 | 20.62 s | 22,118 ms | 74 ms |
+| 50 x 100,000 | 50.10 s | 55,273 ms | 83 ms |
+
+**Not improved:** the first analytics request after a run waits for the web app to reload every
+table (55 s at 5,000,000 alerts; 45.9 s in the Phase 5 run, 17.4 s on 2026-10-02). Later
+requests take under a second. The worker does not pre-load the web app's cache after a run.
+
+### What changed
+
+Each change keeps every result as it was (see above); the two that compute differently are
+pinned by tests against the previous computation.
+
+- **Tables loaded in entity order.** Version selection and DISTINCT returned rows in hash order,
+  so every per-entity query (each rule, for each entity) read the whole table: no row group's
+  min/max excluded another entity. Sorted by entity, DuckDB skips them. Costs about 3 s per
+  reload at 2M alerts.
+- **Peer rules read portfolio figures once per run** (`DuckDBStore.memo`): NS02's categories,
+  EG11's false-positive rates, NS08's count of other entities and EG01's close times were
+  queried over the whole peer cohort again for each entity, which made the rules quadratic in
+  the portfolio's size. EG01's 5th percentile is computed in Python with DuckDB's own
+  interpolation (`RobustStats.quantile_cont`; `tests/test_robust_stats.py` checks it bit for bit
+  against DuckDB).
+- **Local time computed once per run** (`satsa.context.local_time_counts`): NS03 and the anomaly
+  scan each converted every alert to its entity's time zone (about 2.6 microseconds an alert).
+  The conversion is now done once, per entity and UTC hour, with alert-by-alert conversion in
+  any hour holding an offset change (`tests/test_local_time.py` compares every alert's local
+  time with converting it alone, across DST changes and fractional offsets, and fails if the
+  fallback is removed).
+- **Ingest no longer reloads every table after publishing.** The published tables are reloaded
+  when the store is next read (`DuckDBStore.mark_stale`); the CLI and the import job never read
+  it again, and an assessment reloads everything itself. The published files are still read
+  back, so a file that cannot be read is reported as before.
+- **Staged files written, hashed and flushed to disk in one pass** (each was opened three times).
+- **Review queue:** a set rebuilt for every alert of the entity, and the unusable-column check run
+  as one query per entity instead of one per column.
+
+## Product-brief Phase 5 (2026-10-19)
 
 Measured on the code at the end of the product brief's Phase 5 (`feat/product-brief-phase5`),
 on the machine below but with Python 3.13.2 and Windows 11 build 10.0.26300. These are the
-current figures. They come from **one development laptop, not the declared 4-vCPU / 8-GiB
+figures at the end of Phase 5, superseded by the section above. They come from **one development laptop, not the declared 4-vCPU / 8-GiB
 reference machine**, so they are not evidence for the proposed targets on that machine.
 
 ```
@@ -1483,6 +1594,736 @@ Final code, with the anomaly scan (2026-10-02):
   },
   "parquet_mb": 281.05873584747314,
   "data_dir_mb": 285.72300243377686
+ }
+]
+```
+
+## Raw results: performance work (2026-10-20)
+
+100,000-alert profiles and 500,000, with readers:
+
+```json
+[
+ {
+  "entities": 10,
+  "alerts_per_entity": 10000,
+  "profile": "uniform",
+  "largest_entity_alerts": 10000,
+  "smallest_entity_alerts": 10000,
+  "alerts": 100000,
+  "rows": 493004,
+  "csv_mb": 47.89201736450195,
+  "generate_seconds": 0.751863700003014,
+  "ingest": {
+   "seconds": 5.2390746000019135,
+   "rows": 493014,
+   "dq_issues": 0,
+   "batch_id": "BATCH-MULTI_CSE-b269a8057c89",
+   "ok": true,
+   "peak_mb": 336.65234375,
+   "wall_seconds": 7.3457606000010855
+  },
+  "assess": {
+   "seconds": 4.878530299996783,
+   "findings": 29,
+   "queue": 300,
+   "ok": true,
+   "peak_mb": 214.08984375,
+   "wall_seconds": 6.553188199999568
+  },
+  "pages": {
+   "reload_seconds": 1.418489399999089,
+   "pages": {
+    "/portfolio": {
+     "first": 2.020107600001211,
+     "repeat_median": 0.06553510000230744
+    },
+    "/alerts": {
+     "first": 0.09688860000460409,
+     "repeat_median": 0.07220919999963371
+    },
+    "/entity/{entity}": {
+     "first": 0.17659939999430208,
+     "repeat_median": 0.08217270000022836
+    },
+    "/queue": {
+     "first": 0.09494350000022678,
+     "repeat_median": 0.06287039999733679
+    },
+    "/api/v1/entities": {
+     "first": 0.02567280000221217,
+     "repeat_median": 0.0248624000014388
+    }
+   },
+   "table_loads": 1,
+   "requests": 30,
+   "ok": true,
+   "peak_mb": 239.5703125,
+   "wall_seconds": 8.256355000004987
+  },
+  "parquet_mb": 6.483229637145996,
+  "data_dir_mb": 7.459996223449707,
+  "readers": {
+   "ok": true,
+   "readers": 10,
+   "idle": {
+    "requests": 200,
+    "errors": 0,
+    "error_examples": [],
+    "p50_ms": 634.5063999979175,
+    "p95_ms": 780.7288999974844,
+    "max_ms": 1231.1406000007992,
+    "seconds": 13.9976647999938,
+    "per_second": 14.288097540390352
+   },
+   "during_ingest": {
+    "requests": 200,
+    "errors": 0,
+    "error_examples": [],
+    "p50_ms": 697.9617000033613,
+    "p95_ms": 1538.9992999989772,
+    "max_ms": 3667.677500001446,
+    "seconds": 17.02085409999563,
+    "per_second": 11.750291661336274,
+    "concurrent": {
+     "seconds": 1.6872824000020046,
+     "rows": 98748,
+     "dq_issues": 0,
+     "batch_id": "BATCH-MULTI_CSE-75b9f8855715",
+     "ok": true,
+     "peak_mb": 207.44921875,
+     "wall_seconds": 3.999900399998296
+    }
+   }
+  },
+  "repeat": {
+   "seconds": 4.021373600000516,
+   "status": "success",
+   "message": "",
+   "alerts_before": 120000,
+   "alerts_after": 120000,
+   "ok": true,
+   "peak_mb": 358.90234375,
+   "wall_seconds": 10.462380000004487
+  },
+  "data_dir_mb_after": 15.29869270324707
+ },
+ {
+  "entities": 10,
+  "alerts_per_entity": 10000,
+  "profile": "skewed",
+  "largest_entity_alerts": 34146,
+  "smallest_entity_alerts": 3414,
+  "alerts": 100000,
+  "rows": 493089,
+  "csv_mb": 47.89621448516846,
+  "generate_seconds": 1.134907400002703,
+  "ingest": {
+   "seconds": 3.8234940999973333,
+   "rows": 493099,
+   "dq_issues": 0,
+   "batch_id": "BATCH-MULTI_CSE-c2543f229a11",
+   "ok": true,
+   "peak_mb": 393.25390625,
+   "wall_seconds": 5.577889000000141
+  },
+  "assess": {
+   "seconds": 4.363475899997866,
+   "findings": 23,
+   "queue": 253,
+   "ok": true,
+   "peak_mb": 215.4140625,
+   "wall_seconds": 5.958467900003598
+  },
+  "pages": {
+   "reload_seconds": 1.385285999996995,
+   "pages": {
+    "/portfolio": {
+     "first": 2.0319222000034642,
+     "repeat_median": 0.06404689999908442
+    },
+    "/alerts": {
+     "first": 0.09414530000503873,
+     "repeat_median": 0.06837599999562372
+    },
+    "/entity/{entity}": {
+     "first": 0.1734435000034864,
+     "repeat_median": 0.08401840000442462
+    },
+    "/queue": {
+     "first": 0.07893419999891194,
+     "repeat_median": 0.0604209000011906
+    },
+    "/api/v1/entities": {
+     "first": 0.02544299999863142,
+     "repeat_median": 0.02502509999612812
+    }
+   },
+   "table_loads": 1,
+   "requests": 30,
+   "ok": true,
+   "peak_mb": 239.89453125,
+   "wall_seconds": 8.158759300000384
+  },
+  "parquet_mb": 6.447968482971191,
+  "data_dir_mb": 7.405203819274902,
+  "readers": {
+   "ok": true,
+   "readers": 10,
+   "idle": {
+    "requests": 200,
+    "errors": 0,
+    "error_examples": [],
+    "p50_ms": 612.0786999963457,
+    "p95_ms": 829.0942999956314,
+    "max_ms": 1500.8431999958702,
+    "seconds": 14.534389299995382,
+    "per_second": 13.760468078288197
+   },
+   "during_ingest": {
+    "requests": 200,
+    "errors": 0,
+    "error_examples": [],
+    "p50_ms": 634.9559999944177,
+    "p95_ms": 1481.0673000029055,
+    "max_ms": 3369.1723000010825,
+    "seconds": 16.91746950000379,
+    "per_second": 11.822099043828937,
+    "concurrent": {
+     "seconds": 1.4395425999973668,
+     "rows": 98581,
+     "dq_issues": 0,
+     "batch_id": "BATCH-MULTI_CSE-d46172108d0b",
+     "ok": true,
+     "peak_mb": 213.37890625,
+     "wall_seconds": 3.658555099995283
+    }
+   }
+  },
+  "repeat": {
+   "seconds": 3.937138599998434,
+   "status": "success",
+   "message": "",
+   "alerts_before": 120000,
+   "alerts_after": 120000,
+   "ok": true,
+   "peak_mb": 390.8515625,
+   "wall_seconds": 10.40316530000564
+  },
+  "data_dir_mb_after": 15.190081596374512
+ },
+ {
+  "entities": 10,
+  "alerts_per_entity": 10000,
+  "profile": "freetext",
+  "largest_entity_alerts": 10000,
+  "smallest_entity_alerts": 10000,
+  "alerts": 100000,
+  "rows": 493004,
+  "csv_mb": 104.58500576019287,
+  "generate_seconds": 1.6788529999976163,
+  "ingest": {
+   "seconds": 21.749190499998804,
+   "rows": 493014,
+   "dq_issues": 0,
+   "batch_id": "BATCH-MULTI_CSE-94a3d0a80d51",
+   "ok": true,
+   "peak_mb": 518.19921875,
+   "wall_seconds": 23.45525869999983
+  },
+  "assess": {
+   "seconds": 3.524512500000128,
+   "findings": 29,
+   "queue": 300,
+   "ok": true,
+   "peak_mb": 230.92578125,
+   "wall_seconds": 5.076410400004534
+  },
+  "pages": {
+   "reload_seconds": 1.3770807000037166,
+   "pages": {
+    "/portfolio": {
+     "first": 1.359895499997947,
+     "repeat_median": 0.039113399994676
+    },
+    "/alerts": {
+     "first": 0.06134159999783151,
+     "repeat_median": 0.043452799996885005
+    },
+    "/entity/{entity}": {
+     "first": 0.10685590000502998,
+     "repeat_median": 0.05033910000202013
+    },
+    "/queue": {
+     "first": 0.05028699999820674,
+     "repeat_median": 0.037227699998766184
+    },
+    "/api/v1/entities": {
+     "first": 0.01588330000231508,
+     "repeat_median": 0.015598999998474028
+    }
+   },
+   "table_loads": 1,
+   "requests": 30,
+   "ok": true,
+   "peak_mb": 255.57421875,
+   "wall_seconds": 6.412370099998952
+  },
+  "parquet_mb": 8.574085235595703,
+  "data_dir_mb": 9.550851821899414,
+  "readers": {
+   "ok": true,
+   "readers": 10,
+   "idle": {
+    "requests": 200,
+    "errors": 0,
+    "error_examples": [],
+    "p50_ms": 407.8912999975728,
+    "p95_ms": 498.9877999978489,
+    "max_ms": 911.8403000029502,
+    "seconds": 8.919743900005415,
+    "per_second": 22.422168421212024
+   },
+   "during_ingest": {
+    "requests": 200,
+    "errors": 0,
+    "error_examples": [],
+    "p50_ms": 348.87480000179494,
+    "p95_ms": 996.3693000026979,
+    "max_ms": 1825.274700000591,
+    "seconds": 10.163053199998103,
+    "per_second": 19.679125560420893,
+    "concurrent": {
+     "seconds": 4.055897099999129,
+     "rows": 98748,
+     "dq_issues": 0,
+     "batch_id": "BATCH-MULTI_CSE-e0300d6ac584",
+     "ok": true,
+     "peak_mb": 223.8203125,
+     "wall_seconds": 6.2594265000007
+    }
+   }
+  },
+  "repeat": {
+   "seconds": 15.227931100002024,
+   "status": "success",
+   "message": "",
+   "alerts_before": 120000,
+   "alerts_after": 120000,
+   "ok": true,
+   "peak_mb": 542.91015625,
+   "wall_seconds": 20.64338129999669
+  },
+  "data_dir_mb_after": 19.897994995117188
+ },
+ {
+  "entities": 10,
+  "alerts_per_entity": 10000,
+  "profile": "uneven",
+  "largest_entity_alerts": 10000,
+  "smallest_entity_alerts": 10000,
+  "alerts": 100000,
+  "rows": 493004,
+  "csv_mb": 47.89201736450195,
+  "generate_seconds": 0.6280119000002742,
+  "ingest": {
+   "seconds": 3.486956000000646,
+   "rows": 493014,
+   "dq_issues": 0,
+   "batch_id": "BATCH-MULTI_CSE-9e75ad235704",
+   "ok": true,
+   "peak_mb": 339.234375,
+   "wall_seconds": 5.283745599997928
+  },
+  "assess": {
+   "seconds": 3.534687399995164,
+   "findings": 29,
+   "queue": 300,
+   "ok": true,
+   "peak_mb": 214.421875,
+   "wall_seconds": 5.1024527000045055
+  },
+  "pages": {
+   "reload_seconds": 1.3740984000032768,
+   "pages": {
+    "/portfolio": {
+     "first": 1.300359800006845,
+     "repeat_median": 0.04003799999918556
+    },
+    "/alerts": {
+     "first": 0.05979530000331579,
+     "repeat_median": 0.047435599997697864
+    },
+    "/entity/{entity}": {
+     "first": 0.11113330000080168,
+     "repeat_median": 0.05759330000000773
+    },
+    "/queue": {
+     "first": 0.05791239999962272,
+     "repeat_median": 0.04117150000092806
+    },
+    "/api/v1/entities": {
+     "first": 0.02105009999650065,
+     "repeat_median": 0.01763020000362303
+    }
+   },
+   "table_loads": 1,
+   "requests": 30,
+   "ok": true,
+   "peak_mb": 239.8046875,
+   "wall_seconds": 6.518966399999044
+  },
+  "parquet_mb": 6.406319618225098,
+  "data_dir_mb": 7.383086204528809,
+  "readers": {
+   "ok": true,
+   "readers": 10,
+   "idle": {
+    "requests": 200,
+    "errors": 0,
+    "error_examples": [],
+    "p50_ms": 402.9085000001942,
+    "p95_ms": 515.1104000033229,
+    "max_ms": 797.2544000003836,
+    "seconds": 9.006018400003086,
+    "per_second": 22.207371905872574
+   },
+   "during_ingest": {
+    "requests": 200,
+    "errors": 0,
+    "error_examples": [],
+    "p50_ms": 447.1902000004775,
+    "p95_ms": 1253.0240999985836,
+    "max_ms": 2166.5638999984367,
+    "seconds": 12.514394399993762,
+    "per_second": 15.981596360755555,
+    "concurrent": {
+     "seconds": 1.508577000000514,
+     "rows": 98748,
+     "dq_issues": 0,
+     "batch_id": "BATCH-MULTI_CSE-0146b59da9ea",
+     "ok": true,
+     "peak_mb": 209.1484375,
+     "wall_seconds": 3.991489800006093
+    }
+   }
+  },
+  "repeat": {
+   "seconds": 3.1897461999978987,
+   "status": "success",
+   "message": "",
+   "alerts_before": 120000,
+   "alerts_after": 120000,
+   "ok": true,
+   "peak_mb": 358.5703125,
+   "wall_seconds": 8.800073599995812
+  },
+  "data_dir_mb_after": 15.129148483276367
+ },
+ {
+  "entities": 10,
+  "alerts_per_entity": 50000,
+  "profile": "uniform",
+  "largest_entity_alerts": 50000,
+  "smallest_entity_alerts": 50000,
+  "alerts": 500000,
+  "rows": 2172437,
+  "csv_mb": 226.40796947479248,
+  "generate_seconds": 1.2770242000042344,
+  "ingest": {
+   "seconds": 6.439549700000498,
+   "rows": 2172447,
+   "dq_issues": 0,
+   "batch_id": "BATCH-MULTI_CSE-b89d1f1cea02",
+   "ok": true,
+   "peak_mb": 876.39453125,
+   "wall_seconds": 8.33528269999806
+  },
+  "assess": {
+   "seconds": 9.557735499998671,
+   "findings": 30,
+   "queue": 300,
+   "ok": true,
+   "peak_mb": 567.53125,
+   "wall_seconds": 11.351741099999344
+  },
+  "pages": {
+   "reload_seconds": 3.749894700005825,
+   "pages": {
+    "/portfolio": {
+     "first": 3.76628879999771,
+     "repeat_median": 0.041955099994083866
+    },
+    "/alerts": {
+     "first": 0.09176969999680296,
+     "repeat_median": 0.07262640000408283
+    },
+    "/entity/{entity}": {
+     "first": 0.10785839999880409,
+     "repeat_median": 0.05484530000103405
+    },
+    "/queue": {
+     "first": 0.08047400000214111,
+     "repeat_median": 0.04226040000503417
+    },
+    "/api/v1/entities": {
+     "first": 0.016963800000667106,
+     "repeat_median": 0.016347199998563156
+    }
+   },
+   "table_loads": 1,
+   "requests": 30,
+   "ok": true,
+   "peak_mb": 593.59375,
+   "wall_seconds": 12.053893800002697
+  },
+  "parquet_mb": 28.365253448486328,
+  "data_dir_mb": 29.51389503479004,
+  "readers": {
+   "ok": true,
+   "readers": 10,
+   "idle": {
+    "requests": 200,
+    "errors": 0,
+    "error_examples": [],
+    "p50_ms": 467.2223000015947,
+    "p95_ms": 639.9962000068626,
+    "max_ms": 822.7466999960598,
+    "seconds": 10.601530100000673,
+    "per_second": 18.865201354282558
+   },
+   "during_ingest": {
+    "requests": 200,
+    "errors": 0,
+    "error_examples": [],
+    "p50_ms": 773.8054000001284,
+    "p95_ms": 1574.3241000018315,
+    "max_ms": 6943.5169999997015,
+    "seconds": 23.145112199999858,
+    "per_second": 8.641133310211442,
+    "concurrent": {
+     "seconds": 2.4485490000006394,
+     "rows": 434602,
+     "dq_issues": 0,
+     "batch_id": "BATCH-MULTI_CSE-d881befbbd32",
+     "ok": true,
+     "peak_mb": 385.44140625,
+     "wall_seconds": 4.965526599997247
+    }
+   }
+  },
+  "repeat": {
+   "seconds": 7.060110499995062,
+   "status": "success",
+   "message": "",
+   "alerts_before": 600000,
+   "alerts_after": 600000,
+   "ok": true,
+   "peak_mb": 883.515625,
+   "wall_seconds": 23.917358200000308
+  },
+  "data_dir_mb_after": 63.53689765930176
+ }
+]
+```
+
+2,000,000:
+
+```json
+[
+ {
+  "entities": 40,
+  "alerts_per_entity": 50000,
+  "profile": "uniform",
+  "largest_entity_alerts": 50000,
+  "smallest_entity_alerts": 50000,
+  "alerts": 2000000,
+  "rows": 8692253,
+  "csv_mb": 905.7588338851929,
+  "generate_seconds": 3.8833184000031906,
+  "ingest": {
+   "seconds": 27.188152299997455,
+   "rows": 8692293,
+   "dq_issues": 0,
+   "batch_id": "BATCH-MULTI_CSE-b67da1723314",
+   "ok": true,
+   "peak_mb": 2769.6328125,
+   "wall_seconds": 29.05372690000513
+  },
+  "assess": {
+   "seconds": 49.05329250000068,
+   "findings": 120,
+   "queue": 1200,
+   "ok": true,
+   "peak_mb": 1879.16015625,
+   "wall_seconds": 50.92490969999926
+  },
+  "pages": {
+   "reload_seconds": 20.620778699994844,
+   "pages": {
+    "/portfolio": {
+     "first": 22.118486699997447,
+     "repeat_median": 0.07388029999856371
+    },
+    "/alerts": {
+     "first": 0.3177245999977458,
+     "repeat_median": 0.29355989999749
+    },
+    "/entity/{entity}": {
+     "first": 0.2860125000006519,
+     "repeat_median": 0.08783470000344096
+    },
+    "/queue": {
+     "first": 0.09369229999720119,
+     "repeat_median": 0.07091939999372698
+    },
+    "/api/v1/entities": {
+     "first": 0.027604399998381268,
+     "repeat_median": 0.026018799995654263
+    }
+   },
+   "table_loads": 1,
+   "requests": 30,
+   "ok": true,
+   "peak_mb": 1907.5390625,
+   "wall_seconds": 49.63372900000104
+  },
+  "parquet_mb": 113.83352088928223,
+  "data_dir_mb": 116.84544372558594
+ }
+]
+```
+
+5,000,000, first run:
+
+```json
+[
+ {
+  "entities": 50,
+  "alerts_per_entity": 100000,
+  "profile": "uniform",
+  "largest_entity_alerts": 100000,
+  "smallest_entity_alerts": 100000,
+  "alerts": 5000000,
+  "rows": 21365529,
+  "csv_mb": 2248.1162853240967,
+  "generate_seconds": 9.92761029999383,
+  "ingest": {
+   "seconds": 51.46248249999917,
+   "rows": 21365579,
+   "dq_issues": 0,
+   "batch_id": "BATCH-MULTI_CSE-0b0c984c3c75",
+   "ok": true,
+   "peak_mb": 6397.90234375,
+   "wall_seconds": 53.270544099999825
+  },
+  "assess": {
+   "seconds": 112.74985609999567,
+   "findings": 150,
+   "queue": 1500,
+   "ok": true,
+   "peak_mb": 4487.46875,
+   "wall_seconds": 115.25782979999349
+  },
+  "pages": {
+   "reload_seconds": 50.35733869999967,
+   "pages": {
+    "/portfolio": {
+     "first": 55.33811059999425,
+     "repeat_median": 0.08115040000120644
+    },
+    "/alerts": {
+     "first": 0.7567553000044427,
+     "repeat_median": 0.7533729999995558
+    },
+    "/entity/{entity}": {
+     "first": 0.19257140000263462,
+     "repeat_median": 0.0961682999986806
+    },
+    "/queue": {
+     "first": 0.11256240000511752,
+     "repeat_median": 0.08694680000189692
+    },
+    "/api/v1/entities": {
+     "first": 0.16904219999560155,
+     "repeat_median": 0.028354400004900526
+    }
+   },
+   "table_loads": 1,
+   "requests": 30,
+   "ok": true,
+   "peak_mb": 4517.90234375,
+   "wall_seconds": 117.25089819999994
+  },
+  "parquet_mb": 281.0587902069092,
+  "data_dir_mb": 285.7230567932129
+ }
+]
+```
+
+5,000,000, repeat run:
+
+```json
+[
+ {
+  "entities": 50,
+  "alerts_per_entity": 100000,
+  "profile": "uniform",
+  "largest_entity_alerts": 100000,
+  "smallest_entity_alerts": 100000,
+  "alerts": 5000000,
+  "rows": 21365529,
+  "csv_mb": 2248.1162853240967,
+  "generate_seconds": 10.03816260000167,
+  "ingest": {
+   "seconds": 50.477726500001154,
+   "rows": 21365579,
+   "dq_issues": 0,
+   "batch_id": "BATCH-MULTI_CSE-0b0c984c3c75",
+   "ok": true,
+   "peak_mb": 6389.5078125,
+   "wall_seconds": 52.34332799999538
+  },
+  "assess": {
+   "seconds": 112.07707279999886,
+   "findings": 150,
+   "queue": 1500,
+   "ok": true,
+   "peak_mb": 4486.68359375,
+   "wall_seconds": 114.51071109999612
+  },
+  "pages": {
+   "reload_seconds": 50.102575299999444,
+   "pages": {
+    "/portfolio": {
+     "first": 55.27276410000195,
+     "repeat_median": 0.08311390000017127
+    },
+    "/alerts": {
+     "first": 0.7812498999992386,
+     "repeat_median": 0.7565197999938391
+    },
+    "/entity/{entity}": {
+     "first": 0.1943645999999717,
+     "repeat_median": 0.09553670000605052
+    },
+    "/queue": {
+     "first": 0.1368640000000596,
+     "repeat_median": 0.08905360000062501
+    },
+    "/api/v1/entities": {
+     "first": 0.16618620000372175,
+     "repeat_median": 0.027864299998327624
+    }
+   },
+   "table_loads": 1,
+   "requests": 30,
+   "ok": true,
+   "peak_mb": 4518.1953125,
+   "wall_seconds": 116.70182719999866
+  },
+  "parquet_mb": 281.0587577819824,
+  "data_dir_mb": 285.72302436828613
  }
 ]
 ```

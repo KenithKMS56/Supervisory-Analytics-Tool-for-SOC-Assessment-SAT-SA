@@ -17,7 +17,7 @@ run kept in Section 3.2.
 | Component | Minimum (lab / demo dataset) | Suggested for about 5,000,000 alerts |
 |---|---|---|
 | **Processor (CPU)** | 4 cores, x86_64 | 4 cores or more. The assessment runs DuckDB on **one thread** (`PRAGMA threads=1`, for reproducible aggregates), so extra cores do not shorten it. |
-| **Memory (RAM)** | 8 GB | **16 GB suggested**: ingesting 5,000,000 alerts peaked at 6,399 MiB (6.7 GB) and assessing them at 3,800 MiB (Section 3.0), on top of the operating system. 100,000 alerts need under 600 MiB. |
+| **Memory (RAM)** | 8 GB | **16 GB suggested**: ingesting 5,000,000 alerts peaked at 6,398 MiB (6.7 GB) and assessing them at 4,487 MiB (Section 3.0), on top of the operating system. 100,000 alerts need under 600 MiB. |
 | **Storage (Disk)** | 10 GB SSD | SSD with room for the submitted CSVs (2.2 GB at 5,000,000 alerts) plus the data directory (0.3 GB: Parquet, catalog and databases) and reports. A correction adds a new batch rather than rewriting one, so the store grows with every submission. |
 | **Network** | None needed; loopback (`127.0.0.1`) | None needed; loopback, or an isolated supervisory subnet with TLS (`docs/deployment_ops.md` Section 1.3) |
 | **Operating system** | Windows 10/11 or a current Linux | Measured on Windows 11 only. The test suite also runs on Linux with Python 3.11 and 3.13 in CI (passing on every phase branch, 2026-10-20), as does an offline install with no network. |
@@ -75,29 +75,34 @@ dataset.
 The problem statement asks for "analysis of large datasets spanning multiple entities and time
 periods" and gives no figure; 5,000,000 alerts is this project's own target.
 
-### 3.0 Current code (recorded 2026-10-19, after the product brief)
+### 3.0 Current code (recorded 2026-10-20, after the product brief and its performance work)
 
 These are the current figures; 3.1 and 3.2 are kept as history. One development laptop (the
 machine of `docs/benchmarks.md`), synthetic data, **not** the declared 4-vCPU / 8-GiB reference
 machine. Full tables, including ten concurrent readers and repeated submissions:
-`docs/benchmarks.md`, "Product-brief Phase 5".
+`docs/benchmarks.md`, "After the product brief: performance work".
 
-| Entities x alerts | Alerts | Ingest | Ingest peak | Assess | Assess peak | First portfolio page after a run |
-|---|---:|---:|---:|---:|---:|---:|
-| 10 x 10,000 (uniform, skewed, free-text, uneven) | 100,000 | 4.2-17.1 s | 359-518 MiB | 4.6-6.3 s | 210-222 MiB | 1.8 s |
-| 10 x 50,000 | 500,000 | 8.3 s | 872 MiB | 13.6 s | 516 MiB | 3.2 s |
-| 40 x 50,000 | 2,000,000 | 31.6 s | 2,750 MiB | 79.1 s | 1,604 MiB | 11.6 s |
-| 50 x 100,000 | 5,000,000 | 96.9 s | 6,399 MiB | 353.6 s | 3,800 MiB | 45.9 s |
+| Entities x alerts | Alerts | Ingest | Ingest peak | Assess | Assess peak | Ingest + assess | First portfolio page after a run |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 10 x 10,000 (uniform, skewed, free-text, uneven) | 100,000 | 3.5-21.7 s | 337-518 MiB | 3.5-4.9 s | 214-231 MiB | 7.0-25.2 s | 1.3-2.0 s |
+| 10 x 50,000 | 500,000 | 6.4 s | 876 MiB | 9.6 s | 568 MiB | 16.0 s | 3.8 s |
+| 40 x 50,000 | 2,000,000 | 27.2 s | 2,770 MiB | 49.1 s | 1,879 MiB | 76.3 s | 22.1 s |
+| 50 x 100,000 | 5,000,000 | 50.5-51.5 s | 6,398 MiB | 112.1-112.7 s | 4,487 MiB | 162.6-164.2 s | 55.3 s |
 
-- **Supported tier: up to 100,000 alerts per deployment** on this hardware class. There an
-  assessment takes seconds and ten concurrent readers see a p95 of 0.5-0.9 s (up to 1.5 s while
-  another process ingests).
-- **Larger portfolios are measured, not supported.** At 5,000,000 alerts, ingest (96.9 s against
-  46.6 s) and assessment (353.6 s against 124.0 s) are slower than on the code of 3.1: every run
-  now selects record versions, fingerprints its input and records per-rule results and peer
-  cohorts, and several rules' peer queries still scan the whole alert table once per entity.
-- **Memory:** an assessment needs about 256 MiB plus 200 bytes per published row, an import about
-  four times its input; the worker refuses a job that would not fit before starting it.
+- **5,000,000 alerts across 50 entities are ingested and assessed in under 3 minutes** on this
+  laptop (164.2 s and 162.6 s in two runs; 450.5 s at the end of the brief's Phase 5). On the
+  same data the results are identical to the previous code's, value for value
+  (`docs/benchmarks.md`).
+- **Supported tier: up to 100,000 alerts per deployment** until the reference machine is
+  measured. There an assessment takes seconds and ten concurrent readers see a p95 of 0.5-0.8 s
+  (up to 1.5 s while another process ingests). Larger portfolios are measured on this laptop,
+  not promised.
+- **First page after a run:** the web app reloads every table on the first analytics request
+  after a run (55 s at 5,000,000 alerts); later pages load in under a second. Not improved by
+  the performance work: holding tables in entity order made the reload about 16% longer.
+- **Memory:** an assessment needs about 256 MiB plus 240 bytes per published row (measured up to
+  208), an import about four times its input; the worker refuses a job that would not fit
+  before starting it.
 - **Processes:** two web portals and one job worker. Imports and assessments run in the worker,
   so readers keep reading completed runs meanwhile.
 
