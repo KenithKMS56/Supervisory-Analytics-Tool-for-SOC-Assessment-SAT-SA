@@ -29,6 +29,12 @@ legacy batches; none is rewritten.
   (Review Tools → Rule Changes), then an analyst puts it in force.
 - Review-queue labels are "Confirmed concern", "Marked as justified" and "More data needed";
   nothing is presented as a statutory notice.
+- A web upload with a format error (an alert missing `alert_id`, `created_at` or
+  `severity_final`, a repeated `alert_id`, or a severity, status or disposition
+  `config/taxonomy.yaml` does not list) is held for review, and the same API submission is
+  rejected with 422. Problems that are also supervisory signals (closed before created,
+  references to records not submitted, numbering gaps, empty fields) are reported and published
+  as before. Set in the new `config/data_quality.yaml`; without it the same defaults apply.
 
 ## What is new
 
@@ -108,6 +114,15 @@ layout (B08).
   with replay, a worker killed mid-assessment (`docs/drills.md`).
 - *Manuals*: `docs/manuals/administrator.md`, `examiner.md`, `integration.md`. Also
   `docs/connector_compatibility.md`.
+
+**After Phase 5.**
+
+- *Blocking data-quality checks* (owner decision, 2026-10-20): format errors stop publication,
+  supervisory signals stay evidence (`docs/data_contract.md`, "Blocking checks"). New check
+  `unrecognised_value`: a value the taxonomy does not list used to be stored as `unmapped` with
+  no report. API change log 1.3.
+- *Dependency audit*: `pip-audit` on every pinned package found no known vulnerabilities
+  (`docs/dependency_audit.md`).
 
 ## Known limitations
 

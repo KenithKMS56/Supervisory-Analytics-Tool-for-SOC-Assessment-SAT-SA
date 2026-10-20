@@ -125,4 +125,4 @@ indicators for review.
 | Degraded | A rule ran on partial inputs; its result is shown with that warning |
 | Evidence support | How much evidence a result rests on (not a probability) |
 | Exploratory comparison | Too few peers for an established comparison; read it with care |
-| Held submission | An upload with rejected rows, waiting for an analyst to publish or discard it |
+| Held submission | An upload with rejected rows or a format error (`docs/data_contract.md`, "Blocking checks"), waiting for an analyst to publish or discard it |

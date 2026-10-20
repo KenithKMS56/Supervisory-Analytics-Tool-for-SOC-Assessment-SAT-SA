@@ -62,6 +62,8 @@
         <td>{% for reason, d in f.rejected.items() %}{{ d.count }}: {{ reason }}{% if d.rows %} (rows {{ d.rows }}){% endif %}{% if not loop.last %}; {% endif %}{% else %}&mdash;{% endfor %}</td></tr>
     {% endfor %}</tbody>
   </table></div>
+  {% if pv.blocking %}<p id="previewBlocking"><strong>Would be held for review</strong> (blocking data-quality checks, config/data_quality.yaml):</p>
+  <ul>{% for b in pv.blocking %}<li><strong>{{ b.check }}</strong> ({{ b.entity_id }}): {{ b.reason }}</li>{% endfor %}</ul>{% endif %}
   {% if pv.unmapped_files %}<p><strong>Not read</strong> (the mapping does not describe them): {{ pv.unmapped_files | join(", ") }}</p>{% endif %}
   {% if pv.invalid_timestamps %}<p><strong>Unreadable timestamps:</strong> {% for k, n in pv.invalid_timestamps.items() %}{{ k }}: {{ n }}{% if not loop.last %}, {% endif %}{% endfor %}</p>{% endif %}
   <h3 style="font-size: 0.95rem; margin-top: 1rem;">Rules the entity could be assessed on</h3>

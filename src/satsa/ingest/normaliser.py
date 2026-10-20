@@ -5,6 +5,9 @@ from typing import Any
 
 import yaml
 
+# What a non-empty value with no taxonomy entry becomes (reported by the unrecognised_value check).
+UNMAPPED = "unmapped"
+
 
 class TaxonomyNormaliser:
     """Normalises severity, status, and disposition using taxonomy.yaml."""
@@ -44,18 +47,18 @@ class TaxonomyNormaliser:
 
     def normalise_severity(self, raw_val: Any) -> str:
         if raw_val is None:
-            return "unmapped"
+            return UNMAPPED
         key = str(raw_val).lower().strip()
-        return self.severity_map.get(key, "unmapped")
+        return self.severity_map.get(key, UNMAPPED)
 
     def normalise_status(self, raw_val: Any) -> str:
         if raw_val is None:
-            return "unmapped"
+            return UNMAPPED
         key = str(raw_val).lower().strip()
-        return self.status_map.get(key, "unmapped")
+        return self.status_map.get(key, UNMAPPED)
 
     def normalise_disposition(self, raw_val: Any) -> str:
         if raw_val is None:
-            return "unmapped"
+            return UNMAPPED
         key = str(raw_val).lower().strip()
-        return self.disposition_map.get(key, "unmapped")
+        return self.disposition_map.get(key, UNMAPPED)

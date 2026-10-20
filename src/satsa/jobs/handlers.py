@@ -84,6 +84,16 @@ def assessment(ctx: JobContext) -> dict[str, Any]:
     return result
 
 
+def _blocking_summary(res: dict[str, Any]) -> str:
+    """'unrecognised_value: 3 in alert.severity_final (CSE-01); ...' for what blocking checks found."""
+    return "; ".join(
+        f"{b['check']}: {b['count']}"
+        + (f" in {b['table']}.{b['field']}" if b.get("table") and b.get("field") else "")
+        + f" ({b['entity_id']})"
+        for b in res.get("blocking_issues") or []
+    )
+
+
 def describe_ingestion(res: dict[str, Any], target_entity: str | None) -> str:
     """The message an analyst sees for an ingestion result (kept from the synchronous upload)."""
     status = res.get("status")
@@ -102,11 +112,13 @@ def describe_ingestion(res: dict[str, Any], target_entity: str | None) -> str:
             f["summary"] for f in res.get("file_coverage") or [] if f["status"] not in ("ingested", "empty")
         )
         bad_ts = ", ".join(f"{k}: {n}" for k, n in (res.get("invalid_timestamps") or {}).items())
+        blocked = _blocking_summary(res)
         return (
             f"Held for review: batch {res.get('batch_id')} was NOT published because part of it could not be "
             "accepted"
             + (f" ({held_why[:500]})" if held_why else "")
             + (f" (unreadable timestamps: {bad_ts})" if bad_ts else "")
+            + (f" (blocking data-quality checks: {blocked[:500]})" if blocked else "")
             + ". See Data Quality, then publish it as it is or discard it and upload a corrected file "
             "(Held submissions, on the upload page). No assessment was run."
         )
@@ -237,6 +249,8 @@ def import_files(ctx: JobContext) -> dict[str, Any]:
             "degraded": cov.get("degraded", {}),
             "issues": (res.get("dq_issue_list") or [])[:50],
             "issue_count": len(res.get("dq_issue_list") or []),
+            # Problems that would hold the upload (config/data_quality.yaml).
+            "blocking": res.get("blocking_issues") or [],
             "unmapped_files": res.get("unmapped_files", []),
             "invalid_timestamps": res.get("invalid_timestamps", {}),
         }

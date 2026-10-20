@@ -14,7 +14,7 @@ criterion of the brief and uses one of four statuses:
 | **blocked** | Blocked by a missing external resource, named in the row. |
 | **not implemented** | Not done. The row says why, and what deciding or doing it would take. |
 
-Last updated: end of Phase 5 (branch `feat/product-brief-phase5`). Phase 5 is the last phase of the brief's delivery sequence; rows still open say what they need.
+Last updated: after Phase 5 (branch `feat/post-brief-followups`): blocking data-quality checks and the dependency audit. Phase 5 is the last phase of the brief's delivery sequence; rows still open say what they need.
 
 ## §2 Defect register
 
@@ -60,7 +60,7 @@ Last updated: end of Phase 5 (branch `feat/product-brief-phase5`). Phase 5 is th
 | Entity binding; mixed rows rejected | verified | `bound_entity`; B03 test |
 | Privacy processing on every transport | verified | B02 test |
 | Timestamp validation with row details | verified | `invalid_timestamps`; B02 test |
-| Full typed validation of enums, chronology and cross-table references before publication | not implemented | Timestamps are validated before publication (rejected or held). Enum, chronology and cross-table problems are found by the DQ checks at ingest and shown in the job report and in *Check only* before anything is published, but they do not block publication: some (an alert closed before it was created, a closure with no alert) are both data errors and the supervisory signals rules look for. Making them blocking needs a decision, per check, on which is which (an owner decision, not taken here) |
+| Full typed validation of enums, chronology and cross-table references before publication | verified | Owner decision (2026-10-20): format errors block, supervisory signals are evidence. Timestamps, missing required fields, repeated alert ids and severities/statuses/dispositions the taxonomy does not list hold a web upload and reject an API submission; an alert closed before it was created, references to records the submission lacks, numbering gaps and empty fields are reported and published, because they are also what the rules look for. Set per check in `config/data_quality.yaml` (docs/data_contract.md, "Blocking checks"; `tests/test_blocking_checks.py`) |
 | Idempotency keys; replay; conflict on different content | verified | B03 test, `test_first_submission_accepted_repeat_rejected` (updated per brief) |
 | Overlap policy across month, quarter and half labels; corrections as revisions | verified | `reject_overlap`, `revision_of`, `parent_batch_id`; B03 test |
 | Upload and archive limits (size, entries, expanded size, ratio), staging disk | verified | `check_zip_limits`, `_copy_limited`; every request body capped as it arrives (`satsa.web_security.SecurityMiddleware`); disk and memory preflight before an import starts (`tests/test_preflight.py`); bombs by ratio, member count, expanded size and a forged size header, and a chunked body over the cap (`tests/test_security_suite.py`). **No parse-time limit** |
@@ -150,7 +150,7 @@ Last updated: end of Phase 5 (branch `feat/product-brief-phase5`). Phase 5 is th
 | Verified restore into a clean directory, never over a deployment | verified | `satsa restore` checks every hash first and replays a run (`test_a_restored_instance_reproduces_*`, `test_restore_never_overwrites_*`, `test_a_held_batch_can_still_be_decided_*`) |
 | Backup retention | verified | `satsa backup --keep`; `test_prune_keeps_the_newest_backups_only` |
 | Offline bundle with SBOM, licence notices, signed checksum manifest | verified | `satsa offline-bundle --signing-key`, `satsa release keygen / verify`; `tests/test_release_bundle.py` (SBOM matches `uv.lock` and excludes dev tools; tampering, extra and missing files and a wrong key are rejected) |
-| Vulnerability scan of dependencies (pip-audit or similar) | not implemented (not run) | `SATSA_AUDIT=1` makes the wheelhouse build run `pip-audit` on the pinned requirements. It was **not run**: it sends the dependency list to an online advisory service, which needs the owner's go-ahead |
+| Vulnerability scan of dependencies (pip-audit or similar) | verified (2026-10-20, one-off) | With the owner's go-ahead, `pip-audit` 2.10.1 checked every package pinned in `uv.lock` (36 runtime, 56 with development tools) against its online advisory service: **no known vulnerabilities** (docs/dependency_audit.md). It is not run automatically: rerun it before each release (`SATSA_AUDIT=1` in the wheelhouse build) |
 | Compose mounts for data, config and secrets | implemented, not independently validated | `docker-compose.yml` mounts `${SATSA_DATA_DIR:-./data}` and `./config`. **No container was built or run in this phase** |
 | Backup and restore drill on the deployment's real data | blocked | Never run by us, by design (the owner runs it; docs/backup_restore.md SOP) |
 | Offline install into a clean environment | verified (same machine) | wheelhouse built online (37 wheels), installed with `--no-index --require-hashes` into a new venv in 64 s, `pip check` clean, then generate/ingest/assess and the portals' health, readiness and sign-in pages (docs/drills.md section 1) |

@@ -1,0 +1,21 @@
+# Data-quality checks that stop a submission from being published (docs/data_contract.md,
+# "Blocking checks"). When one of them finds a problem:
+#   - a web upload is held: an analyst publishes it as it is or discards it (Upload -> Held
+#     submissions);
+#   - a JSON API submission is rejected with HTTP 422 and nothing is stored;
+#   - `satsa ingest` (policy auto) publishes and reports it, as before;
+#   - Check only says the upload would be held.
+#
+# These are format errors: the records cannot be read reliably. Every other check is reported
+# and kept as evidence, because what it finds is also what the rules look for: an alert closed
+# before it was created (close_before_create), references to alerts or assets the submission
+# does not contain (orphan_foreign_keys), gaps in alert numbering (id_sequence_gap) and largely
+# empty fields (high_null_rate). Blocking those would let a submitter correct the signal away.
+#
+# Checks that may be listed: missing_required_field, duplicate_primary_keys,
+# unrecognised_value, close_before_create, orphan_foreign_keys, id_sequence_gap, high_null_rate.
+# An empty list blocks nothing. Without this file the three below apply.
+blocking_checks:
+  - missing_required_field   # alert_id, entity_id, created_at or severity_final empty
+  - duplicate_primary_keys   # the same alert_id twice in one submission
+  - unrecognised_value       # a severity, status or disposition the taxonomy does not know

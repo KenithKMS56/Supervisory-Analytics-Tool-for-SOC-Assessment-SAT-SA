@@ -144,7 +144,9 @@ that runs with no network at all.
 - The SBOM is built from `uv.lock`, so it describes what the lock pins. It does not scan the
   wheelhouse or the installed environment. Licence text is read from the packages installed on
   the build machine; a package that is not installed there is marked as such, not guessed.
-- No vulnerability scan (pip-audit or similar) runs as part of the release yet.
+- The vulnerability scan is not automatic: it needs the network. Run it before building a
+  release with `SATSA_AUDIT=1` (writes `pip-audit.txt` into the wheelhouse); the last result is
+  in `docs/dependency_audit.md`.
 - Development tools (pytest, ruff, mypy, hypothesis) are not in the wheelhouse: it is built with
   `--no-dev`. To run the test suite offline, build a second wheelhouse with
   `uv export --frozen --only-group dev` and the same `pip download` command.

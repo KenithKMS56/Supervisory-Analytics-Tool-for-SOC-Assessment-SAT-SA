@@ -229,6 +229,7 @@ def ingest_cmd(
             console.print(f"  * {f['summary']}")
         for issue in result.get("dq_issue_list", [])[:20]:
             console.print(f"  * [yellow]{issue['check_name']}[/yellow] ({issue['entity_id']}): {issue['details']}")
+        _print_blocking(result, "A web upload of these files would be held for review; the API would reject them")
         _print_ingest_coverage(result)
         return
     if result.get("status") == "success":
@@ -240,11 +241,21 @@ def ingest_cmd(
         console.print(
             f"  * Data Quality Issues Detected: [yellow]{result.get('dq_issues')}[/yellow]"
         )
+        _print_blocking(result, "Published (the CLI does not hold), but a web upload would have been held")
         _print_ingest_coverage(result)
     else:
         console.print(f"[bold red][!] Ingestion failed/empty:[/bold red] {result.get('message')}")
         if result.get("status") == "rejected":
             raise typer.Exit(code=1)
+
+
+def _print_blocking(result: dict[str, Any], lead: str) -> None:
+    """What the blocking data-quality checks (config/data_quality.yaml) found, if anything."""
+    blocking = result.get("blocking_issues") or []
+    if blocking:
+        console.print(f"[bold yellow][!] {lead}: blocking data-quality checks found problems.[/bold yellow]")
+        for b in blocking[:20]:
+            console.print(f"  * [yellow]{b['check']}[/yellow] ({b['entity_id']}): {b['reason']}")
 
 
 @app.command("replay")

@@ -37,6 +37,34 @@ There is no second write path.
 
 A held batch is invisible to every assessment until it is published.
 
+### Blocking checks
+
+Some data-quality checks stop publication exactly as a rejected row does: under `if_clean` the
+batch is held, under `strict` it is rejected with HTTP 422 and nothing is stored, under `auto`
+it is published and the problem reported, and *Check only* says the upload would be held. Which
+checks block is set in `config/data_quality.yaml` (`blocking_checks`). Shipped setting: format
+errors only.
+
+| Check | Finds | Shipped |
+|---|---|---|
+| `missing_required_field` | an alert with no `alert_id`, `entity_id`, `created_at` or `severity_final` | **blocks** |
+| `duplicate_primary_keys` | the same `alert_id` twice in one submission | **blocks** |
+| `unrecognised_value` | a `severity_orig`, `severity_final`, `status` or `disposition` that `config/taxonomy.yaml` does not list (it would be stored as `unmapped` and read as no value) | **blocks** |
+| `close_before_create` | an alert closed before it was created | evidence |
+| `orphan_foreign_keys` | a closure, event, escalation, case link or alert referring to an alert, case or asset the submission does not contain | evidence |
+| `id_sequence_gap` | jumps in sequential alert numbering | evidence |
+| `high_null_rate` | key alert fields empty in more than 15% of alerts | evidence |
+
+*Evidence* checks are reported and published: what they find is also what the rules look for
+(back-dated closures, withheld or deleted alerts), and blocking them would let a submitter
+correct the signal away. A file naming a check that cannot block is refused, so a typo never
+turns blocking off silently. Without the file, the shipped setting applies.
+
+A blocking problem under `strict` is one `errors` entry with `check`, `table`, `field` (for the
+two field-level checks, else `null`), `count`, `records` (up to five sample record ids),
+`reason` and `row: null`; `error_count` is the sum of `count`. Every ingest result also carries
+`blocking_issues`, the same entries.
+
 ## Entity binding
 
 A submission bound to an entity takes its entity from the API batch's `entity_id`, or from
@@ -135,6 +163,12 @@ Member names are validated before anything is extracted.
 
 ## API change log
 
+- **1.3 (after Phase 5).** A submission with a problem found by a blocking data-quality check
+  (`config/data_quality.yaml`) is rejected with `422` like one with rejected rows ("Blocking
+  checks" above). Such `errors` entries add `check`, `count` and `records`; `row` is `null`. A
+  submission that was accepted before can now be refused if its alerts lack `created_at` or
+  `severity_final`, repeat an `alert_id`, or use a severity, status or disposition the taxonomy
+  does not list.
 - **1.2 (Phase 5).** No change to request or response fields.
   - Every request body is capped as it arrives: `/upload` at the upload limit plus 1 MiB of
     form framing, every other request at `SATSA_MAX_API_BODY_MB` (default 64). A body without
