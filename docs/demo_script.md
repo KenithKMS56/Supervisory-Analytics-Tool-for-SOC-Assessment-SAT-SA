@@ -11,10 +11,11 @@ The entity names, ranks and figures below come from the default synthetic portfo
 ## Pre-Demo Setup (before start)
 Prepare the data and start the examiner portal (port 8001; port 8000 is the NCIIPC administration portal):
 ```bash
+export SATSA_DEMO=1        # demo mode: set before the data directory is created (README, Method 2)
 satsa generate-data && satsa ingest && satsa run
 satsa serve --host 127.0.0.1 --port 8001
 ```
-Open `http://127.0.0.1:8001` and sign in with an examiner account. Seeded accounts must set a new passphrase on first login, so do this before the audience arrives.
+Open `http://127.0.0.1:8001` and sign in as `examiner` (`ChangeMe-Examiner#2026`). Seeded accounts must set a new passphrase on first login, so do this before the audience arrives.
 
 ---
 
@@ -41,7 +42,7 @@ Open `http://127.0.0.1:8001` and sign in with an examiner account. Seeded accoun
 1. **Action:** Click on finding **EG01 (Fast High-Severity Closure)** under **CSE-03** (`/finding/...`).
 2. **Presenter Script:**
    > *"Each finding explains itself. Here is the finding card for EG01 on CSE-03.
-   > It shows the plain-language rationale, why the control matters, the parameters and peer comparison used, the confidence and limitations, and a suggested examiner check.
+   > It shows the plain-language rationale, why the control matters, the parameters and peer comparison used, the evidence support and limitations, and a suggested examiner check.
    > CSE-03 closed 195 of 488 human-handled High and Critical alerts (40%) faster than the peer 5th-percentile close time of about 30 minutes, with at most one workflow event. The evidence table lists those alert IDs, so the examiner knows exactly which records to request."*
 
 ---

@@ -362,8 +362,14 @@ For an air-gapped machine, install from a wheelhouse instead: [`docs/offline_ins
    uv run pytest
    ```
 
-4. **Launch the demo in 4 commands:**
+4. **Launch the demo in 4 commands.** Set `SATSA_DEMO=1` first, in the same terminal, and use a
+   data directory that does not exist yet (here `data/`, in a fresh clone). The deployment's mode
+   is fixed when its database is first created: without `SATSA_DEMO=1` it is a production
+   deployment, which has no accounts until first-run setup (`docs/first_run_setup.md`), so the
+   sign-in page would have no account to accept.
    ```bash
+   export SATSA_DEMO=1              # Windows PowerShell: $env:SATSA_DEMO = "1"
+
    # 1. Generate synthetic SOC data with ground-truth anomalies
    uv run satsa generate-data --output-dir data/generated --seed 42 --alerts 1500
 
@@ -377,7 +383,13 @@ For an air-gapped machine, install from a wheelhouse instead: [`docs/offline_ins
    uv run satsa serve --host 127.0.0.1 --port 8001
    ```
 
-5. **Open your browser:** Navigate to [http://127.0.0.1:8001](http://127.0.0.1:8001).
+5. **Open your browser:** Navigate to [http://127.0.0.1:8001](http://127.0.0.1:8001) and sign in
+   as `examiner` / `ChangeMe-Examiner#2026` or `analyst` / `ChangeMe-Analyst#2026` (Method 1's
+   table); each asks for a new passphrase the first time. Uploads and assessments started from
+   the web pages run as jobs: start the worker in a second terminal (same `SATSA_DEMO=1`) with
+   `uv run satsa worker`, or start everything at once with `uv run python entrypoint.py`.
+   Install under a short path on Windows (or enable long paths): a deep directory can exceed
+   Windows' 260-character path limit when Parquet files are written.
 
 ---
 
@@ -391,7 +403,8 @@ pip install --upgrade pip
 pip install -e . --group dev     # dev tools are a dependency group (pip >= 25.1)
 pytest
 ```
-Then run the four commands of Method 2 without `uv run`.
+Then run the four commands of Method 2 without `uv run`, with `SATSA_DEMO=1` set as described
+there.
 
 ---
 

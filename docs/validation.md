@@ -282,6 +282,11 @@ the synthetic data's noise; it does not say they are right for real data.
 
 ## 5. Shadow-Pilot Validation Mode
 
+Two tools serve the problem statement's validation requirement (Section 8: validation "against
+findings derived from expert manual review"). This section's adapter compares SAT-SA with
+**past** examination workpapers. Section 6 runs a **prospective**, blinded pilot. Neither has been
+run on real data: they need authorised SOC submissions and expert reviewers.
+
 The integrated `ShadowPilotAdapter` allows supervisory teams to validate SAT-SA against historical
 manual examination workpapers -- **real evidence**, unlike Sections 2 and 2A which are both
 synthetic. This is the recommended way to obtain an actual real-world accuracy estimate before
@@ -371,3 +376,26 @@ EG10, EG04, EG06, NS03, NS04 and NS08 have marker IDs that are not queue records
 
 **What still requires real data.** Actual historical NCIIPC/CSE examiner workpapers. Until
 SAT-SA is run against those, this section and Sections 2 and 2A are synthetic only.
+
+## 6. Prospective Independent Pilot (`satsa pilot`)
+
+`docs/shadow_pilot_runbook.md` Part B is the procedure; `src/satsa/validate/pilot.py` the
+implementation (migration v9).
+
+1. **Freeze** the protocol before any label is seen (`satsa pilot freeze`): the thresholds and the
+   configuration hash, the review sample, and a seeded split of entities into a calibration set
+   and a held-out set. Only the held-out set is used for the reported figures; a run under other
+   thresholds is excluded.
+2. **Label blind:** examiners review assigned tasks without scores or risk bands. A second,
+   independent examiner reviews a replica of the same entities in their own order
+   (`satsa pilot replicate`). Review times are recorded from when a task is opened.
+3. **Adjudicate:** a third examiner settles disagreements (`satsa pilot adjudicate`).
+4. **Evaluate** (`satsa pilot evaluate`): precision, recall and the baseline comparison, with
+   Wilson intervals and an entity-cluster bootstrap (records of one entity are not independent),
+   and inter-rater agreement as Cohen's kappa. Unanswered or unresolved labels are reported and
+   **never counted as negatives**. A report from a demonstration deployment is labelled a
+   synthetic implementation check.
+
+`tests/test_pilot.py` checks every figure against hand arithmetic on recorded judgements. Whether
+SAT-SA is "comparable to or better than current manual sampling approaches" (problem statement,
+Section 8) is unmeasured until this pilot runs on real submissions.

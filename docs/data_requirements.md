@@ -72,7 +72,8 @@ file is not refused for how it was saved. What it does, and what it reports:
 A clean canonical CSV (UTF-8, comma, rectangular) is read exactly as before; the added cost on a
 2,000,000-row file is about 0.05 s. The notes appear in `satsa ingest` output, in the upload page's
 message and in the ingest result (`file_sanitising`). Exact-duplicate rows are **not** removed: a
-duplicated record is a data-quality signal, reported by the `duplicate_primary_keys` check.
+duplicated record is a data-quality problem, reported by the `duplicate_primary_keys` check, which
+holds a web upload and rejects an API submission (`config/data_quality.yaml`).
 
 Sanitising never decides what a column means. Mapping columns to canonical fields is the job of
 the canonical layout or of a source mapping (below); a mapping can also use the value parsers
@@ -106,6 +107,8 @@ notes.csv: not recognised (neither its name nor its key columns match a table of
 | A file whose name and key columns match no table of the template | no | `file_not_recognised` (DQ warning) |
 | A file a source mapping does not describe | no | `file_not_mapped` (DQ warning) |
 | A file that cannot be read at all | no | `file_unreadable` (DQ error) |
+| An alert without `alert_id`, `created_at` or `severity_final`; the same `alert_id` twice; a severity, status or disposition `config/taxonomy.yaml` does not list | web upload: held until an analyst publishes or discards it; API: rejected (422), nothing stored; CLI: yes | `missing_required_field`, `duplicate_primary_keys`, `unrecognised_value` (blocking checks, `docs/data_contract.md`) |
+| An alert closed before it was created; a reference to an alert, case or asset not in the submission; gaps in alert numbering; largely empty fields | yes: these are also what the rules look for | `close_before_create`, `orphan_foreign_keys`, `id_sequence_gap`, `high_null_rate` (reported, not blocking) |
 
 A rejected row's other cells are **not** kept for review. They may hold names, comments or
 addresses that SAT-SA only stores pseudonymised or redacted, and a raw copy would bypass that.
