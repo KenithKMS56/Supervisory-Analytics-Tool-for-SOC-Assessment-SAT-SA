@@ -9,15 +9,22 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from satsa.admin.routes import AdminAuthRequired, AdminPasswordChangeRequired
+from satsa.admin.routes import (
+    AdminAuthRequired,
+    AdminMfaEnrolmentRequired,
+    AdminMfaRequired,
+    AdminPasswordChangeRequired,
+)
 from satsa.admin.routes import router as admin_router
 from satsa.netguard import install_egress_guard, uninstall_egress_guard
 from satsa.store.sqlite import SQLiteStore
+from satsa.web_security import CROSS_SITE_REFUSED, cross_site_reason
 
 _ADMIN_DIR = Path(__file__).resolve().parent
 _STATIC_DIR = _ADMIN_DIR / "static"
@@ -60,6 +67,15 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="admin_static
 app.include_router(admin_router)
 
 
+@app.middleware("http")
+async def refuse_cross_site_requests(request: Request, call_next: Any) -> Response:
+    """CSRF defence (satsa.web_security): state-changing requests only from this portal's pages."""
+    if cross_site_reason(request.method, request.headers, str(request.base_url)) is not None:
+        return JSONResponse({"detail": CROSS_SITE_REFUSED}, status_code=403)
+    response: Response = await call_next(request)
+    return response
+
+
 @app.exception_handler(AdminAuthRequired)
 async def admin_auth_required_handler(request: Request, exc: AdminAuthRequired) -> Response:
     """Unauthenticated: browser page loads go to /login; API calls and mutations get 401."""
@@ -79,6 +95,22 @@ async def admin_password_change_required_handler(
         {"detail": "A new passphrase must be set at /change-password before this account can be used."},
         status_code=403,
     )
+
+
+@app.exception_handler(AdminMfaRequired)
+async def admin_mfa_required_handler(request: Request, exc: AdminMfaRequired) -> Response:
+    """The second factor of this session has not been proved yet."""
+    if request.method == "GET" and not request.url.path.startswith("/api/"):
+        return RedirectResponse(url="/login/mfa", status_code=303)
+    return JSONResponse({"detail": "Enter your second-factor code at /login/mfa first."}, status_code=403)
+
+
+@app.exception_handler(AdminMfaEnrolmentRequired)
+async def admin_mfa_enrolment_handler(request: Request, exc: AdminMfaEnrolmentRequired) -> Response:
+    """Administrators must enrol a second factor before using the portal."""
+    if request.method == "GET" and not request.url.path.startswith("/api/"):
+        return RedirectResponse(url="/mfa/setup", status_code=303)
+    return JSONResponse({"detail": "Enrol a second factor at /mfa/setup first."}, status_code=403)
 
 
 @app.exception_handler(404)

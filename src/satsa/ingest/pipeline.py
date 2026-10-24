@@ -30,6 +30,7 @@ from satsa.ingest.sanitise import (
     read_header,
     report_for,
 )
+from satsa.keys import current_key, keyring_path
 from satsa.models.outputs import DQIssue
 from satsa.rules.registry import RULE_ALERT_FIELDS, rule_coverage
 from satsa.scoring.selection import period_bounds
@@ -512,12 +513,20 @@ class IngestionPipeline:
         duckdb_store: DuckDBStore,
         sqlite_store: SQLiteStore,
         taxonomy_path: Path | str = "config/taxonomy.yaml",
-        salt_file: Path | str = ".satsa_salt",
+        salt_file: Path | str | None = None,
     ):
+        """Without `salt_file`, pseudonyms use the deployment key kept with the data
+        (satsa.keys, `data/secrets/`); a test may pass its own key file instead."""
         self.duckdb_store = duckdb_store
         self.sqlite_store = sqlite_store
         self.normaliser = TaxonomyNormaliser(taxonomy_path)
-        self.pseudonymiser = Pseudonymiser(salt_file)
+        if salt_file is None:
+            key = current_key(duckdb_store.data_dir)
+            self.pseudonymiser = Pseudonymiser(keyring_path(duckdb_store.data_dir), key=key.key)
+            self.pseudonym_key_id: str | None = key.key_id
+        else:
+            self.pseudonymiser = Pseudonymiser(salt_file)
+            self.pseudonym_key_id = None
         self.redactor = Redactor()
 
     @classmethod
@@ -755,8 +764,12 @@ class IngestionPipeline:
         revision_of: str | None = None,
         reject_overlap: bool = False,
         declared_empty: Iterable[str] = (),
+        batch_id: str | None = None,
     ) -> dict[str, Any]:
         """Ingest all CSV, TSV, Excel and JSON tables from directory, validate DQ, and store as Parquet.
+
+        `batch_id` names the batch (a job derives it from its own id, so a retried attempt can
+        find what an earlier one published); it must not exist yet.
 
         Rows whose `entity_id` fails satsa.security.ENTITY_ID_RE are dropped
         (never written, never evaluated) and reported as an `invalid_entity_id`
@@ -1542,8 +1555,11 @@ class IngestionPipeline:
         batch, _manifest_dict = ManifestBuilder.build_manifest(
             entity_id=batch_owner, files=list(dict.fromkeys(processed_files)), row_counts=row_counts
         )
-        batch_id = batch.batch_id
-        if catalog.batch(batch_id) is not None:  # the same files submitted again: a new batch
+        requested_batch_id = batch_id
+        batch_id = requested_batch_id or batch.batch_id
+        if requested_batch_id is not None and catalog.batch(requested_batch_id) is not None:
+            raise PublicationError(f"batch {requested_batch_id} already exists")
+        if requested_batch_id is None and catalog.batch(batch_id) is not None:  # the same files again: a new batch
             batch_id = f"{batch_id}-{hashlib.sha256(f'{batch_id}:{content_hash}:{catalog.max_pub_seq()}'.encode()).hexdigest()[:6]}"
             n = 0
             while catalog.batch(batch_id if n == 0 else f"{batch_id}{n}") is not None:
@@ -1570,6 +1586,7 @@ class IngestionPipeline:
                     parent_batch_id=revision_of,
                     submitted_by=submitted_by,
                     mapping_version=getattr(mapping, "version", None) if mapping is not None else None,
+                    pseudonym_key_id=self.pseudonym_key_id,
                     batch_id=batch_id,
                 ) as writer,
             ):

@@ -139,6 +139,49 @@ satsa serve --port 8000
 - Navigate to `http://127.0.0.1:8000` in local browser (loopback is the default bind address; see Section 1.3).
 - Examiner views portfolio heatmap, inspects entity profiles, reviews finding cards, and marks feedback.
 
+### SOP-05: The job worker
+
+Uploads, re-assessments after rule tuning or an entity change, assessments requested through
+the API (`run_assessment_now`), and demo seeding run as **durable jobs** in a worker process,
+not inside the web request.
+
+```bash
+satsa worker                 # run jobs until stopped (Ctrl+C / SIGTERM)
+satsa worker --once          # run what is queued, then exit
+satsa jobs list              # recent jobs and live workers
+satsa jobs cancel JOB-...    # cancel a queued job; a running one stops at its next stage
+```
+
+- **Starting it.** `entrypoint.py` (the container) starts exactly one worker next to the two
+  portals. On a native install, start `satsa worker` in the deployment directory, the same
+  directory the portals run in.
+- **Single writer.** One worker is the deployment's single analytical writer. Two are safe,
+  because claims are atomic and publication takes the catalog's writer lock, but they gain
+  nothing.
+- **What users see.** An upload goes to its job page (`/jobs/<id>`). The page shows the state
+  (queued, running, succeeded, failed, cancelled), the current stage, attempts and heartbeat,
+  then the outcome. It refreshes itself while the job runs. There is no percentage, because
+  none would be measured. If no worker has reported for 60 seconds, the page says so.
+- **Restarts.**
+  - Jobs live in `data/satsa.db` (table `jobs`) and uploaded files in `data/jobs/<id>/input/`,
+    so restarting the portals or the worker loses nothing.
+  - A running job holds a lease that its worker renews every lease/4 seconds (lease 120 s by
+    default).
+  - If the worker dies, the next worker finds the expired lease and requeues the job (imports
+    and assessments, up to 3 attempts) or fails it with a `WorkerLost` error (demo seeding,
+    which is not retried automatically).
+- **No duplicates on retry.**
+  - An assessment job's run id is `RUN-<job id>`. A retry after the run was published returns
+    that run instead of publishing a second one.
+  - An import job's batch id is `BATCH-<job id>-a<attempt>`. A retry continues from a batch an
+    earlier attempt published or held instead of ingesting the files again.
+- **Disk preflight.** An import refuses to start (`InsufficientDisk`) unless the data volume
+  has three times the upload's size free, plus `SATSA_MIN_FREE_DISK_MB` (default 512).
+- **Still synchronous** (kept small by design):
+  - the JSON submission API's validation and publication (capped by the request size);
+  - held-batch publish and discard;
+  - the rule-tuning *preview*, which is a dry run and writes nothing.
+
 ---
 
 ## 3. Signed Rule-Pack Updates
@@ -201,14 +244,65 @@ satsa audit verify --db-path data/satsa.db --chain admin   # Admin Portal chain
   the trail is tamper-evident, not tamper-proof.
 
 ### Backup & Disaster Recovery
-To back up the complete supervisory state:
-```bash
-# 1. Snapshot SQLite database safely using SQLite online backup
-sqlite3 data/satsa.db ".backup backup/satsa_$(date +%Y%m%d).db"
 
-# 2. Archive the Parquet submission directory
-tar -czf backup/parquet_$(date +%Y%m%d).tar.gz data/parquet/
+Use `satsa backup` and `satsa restore`. See docs/backup_restore.md for the full procedure.
+
+Copying `data/` by hand is not a backup:
+- copying a live SQLite file leaves out what is still in its write-ahead log;
+- the two databases and the published Parquet files must come from the same moment.
+
+```bash
+satsa backup --dest /mnt/backup-disk --encrypt --keep 7
+satsa restore /mnt/backup-disk/satsa-backup-<time>.satsa-backup --target /srv/satsa-restored --replay RUN-...
 ```
+
+### SOP-06: Health and readiness
+
+- `GET /healthz` on either portal is liveness: the process answers.
+- `GET /readyz` on SAT-SA is readiness. It checks:
+  - the database (`quick_check`);
+  - the schema version;
+  - the catalog;
+  - free disk on the data volume (`SATSA_MIN_FREE_DISK_MB`, default 512).
+
+  It answers 503 if any check fails. It also reports whether a worker is alive and how many jobs
+  are queued. A missing worker does not make it 503, because reads still work.
+- The container healthcheck uses `/healthz`.
+- From the shell: `satsa ops ready` (exit status 1 when not ready).
+
+### SOP-07: Retention
+
+```bash
+satsa ops retention --dry-run                      # what would go
+satsa ops retention --backups-dir /mnt/backup-disk
+```
+
+Retention deletes only:
+- the uploaded files of finished jobs older than the configured number of days;
+- local backups beyond the configured number.
+
+The settings are made in first-run setup (docs/first_run_setup.md). Published submissions, runs,
+findings, decisions and the audit log are never deleted by retention. Every deletion is audited
+(`retention_applied`). Run it from a scheduler, for example daily.
+
+### SOP-08: Diagnostics for support
+
+```bash
+satsa ops diagnostics --out diag.zip
+```
+
+The package contains:
+- versions and schema migrations;
+- table row counts;
+- job states and error types;
+- worker heartbeats;
+- recent run ids and their fingerprints;
+- configuration file hashes;
+- disk space and readiness.
+
+It contains no submitted data, keys, tokens, passphrase hashes or usernames. Actors appear only
+as hashes valid within that one package. Nothing is uploaded anywhere: review the package, then
+hand it over.
 
 ---
 

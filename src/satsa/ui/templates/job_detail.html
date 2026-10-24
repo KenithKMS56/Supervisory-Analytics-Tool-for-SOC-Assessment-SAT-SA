@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Job {{ job.job_id }}{% endblock %}
+
+{% block head %}{% if job.state in ("queued", "running") %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>Job <code>{{ job.job_id }}</code></h1>
+    <p>{{ job.kind }} job submitted by {{ job.created_by }} at {{ job.created_at[:19] }} UTC.
+      {% if job.state in ("queued", "running") %}This page refreshes itself until the job finishes.{% endif %}</p>
+  </div>
+  <div class="header-actions">
+    {% if job.state in ("queued", "running") and can_cancel and not job.cancel_requested %}
+    <form method="post" action="/jobs/{{ job.job_id }}/cancel">
+      <button type="submit" class="btn btn-secondary">Cancel job</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if job.state in ("queued", "running") %}{% include "_worker_status.html" %}{% endif %}
+
+<div class="card" style="margin-bottom: 1.5rem;">
+  <div class="table-responsive">
+    <table>
+      <tbody>
+        <tr><th scope="row">State</th><td>{% include "_job_state.html" %}</td></tr>
+        <tr><th scope="row">Stage</th><td>{{ job.stage or "" }}</td></tr>
+        <tr><th scope="row">Attempts</th><td>{{ job.attempts }} of {{ job.max_attempts }}</td></tr>
+        <tr><th scope="row">Started (UTC)</th><td>{{ (job.started_at or "not yet")[:19] }}</td></tr>
+        <tr><th scope="row">Last heartbeat (UTC)</th><td>{{ (job.heartbeat_at or "none")[:19] }}</td></tr>
+        <tr><th scope="row">Finished (UTC)</th><td>{{ (job.finished_at or "")[:19] }}</td></tr>
+        {% for key, value in shown_params %}
+        <tr><th scope="row">{{ key }}</th><td>{{ value }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if job.result %}
+<div class="card" role="status" style="margin-bottom: 1.5rem;">
+  <div class="card-title"><span>Result</span></div>
+  <p id="jobMessage">{{ job.result.message }}</p>
+  <ul>
+    {% if job.result.run_id %}<li>Assessment run: <code>{{ job.result.run_id }}</code> &mdash; <a href="/portfolio">open the portfolio</a></li>{% endif %}
+    {% if job.result.batch_id %}<li>Batch: <code>{{ job.result.batch_id }}</code>{% if job.result.ingestion_status == "held" %} &mdash; held: <a href="/upload">publish or discard it on the upload page</a>{% endif %}</li>{% endif %}
+  </ul>
+</div>
+{% endif %}
+
+{% if job.error %}
+<div class="card" role="alert" style="margin-bottom: 1.5rem; border-left: 4px solid var(--risk-crit);">
+  <div class="card-title"><span>{% if job.state == "cancelled" %}Cancelled{% else %}Error{% endif %}</span></div>
+  <p id="jobMessage">{{ job.error.message }}</p>
+  {% if job.error.type %}<p style="color: var(--text-secondary);">Type: {{ job.error.type }}{% if job.error.stage %}, at stage "{{ job.error.stage }}"{% endif %}</p>{% endif %}
+</div>
+{% endif %}
+
+<p><a href="/jobs">All jobs</a> &middot; <a href="/upload">Upload</a></p>
+{% endblock %}

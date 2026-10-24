@@ -12,7 +12,6 @@ import csv
 import io
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import unquote_plus
 
 import pytest
 
@@ -177,6 +176,13 @@ def test_an_upload_of_an_xsiam_export_without_a_target_entity_is_refused():
     r = client.post(
         "/upload", files={"files": ("cases.csv", _export(), "text/csv")}, follow_redirects=False
     )
-    assert r.status_code == 303
-    message = unquote_plus(r.headers["location"])
+    # The upload is queued; the import job refuses it before anything is stored.
+    assert r.status_code == 303 and r.headers["location"].startswith("/jobs/JOB-")
+    job_id = r.headers["location"].rsplit("/", 1)[1]
+    from satsa.jobs.worker import run_jobs
+
+    (done,) = run_jobs(job_id)
+    assert done["state"] == "failed", done
+    message = done["error"]["message"]
     assert "cortex_xsiam export" in message and "choose a target entity" in message
+    assert "choose a target entity" in client.get(f"/jobs/{job_id}").text

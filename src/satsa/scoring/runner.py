@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+from collections.abc import Iterable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -44,7 +45,7 @@ from satsa.scoring.fingerprint import (
 from satsa.scoring.prioritiser import ReviewPrioritiser
 from satsa.scoring.scorer import ScoringEngine
 from satsa.scoring.selection import ALL_SUBMITTED, AssessmentWindow, apply_window, window_for_period
-from satsa.security import is_valid_entity_id
+from satsa.security import is_valid_entity_id, is_valid_run_id
 from satsa.store.catalog import DECLARED_EMPTY, REJECTED
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
@@ -345,8 +346,16 @@ class AssessmentRunner:
         reference_date: datetime | None = None,
         window: AssessmentWindow | None = None,
         max_pub_seq: int | None = None,
+        run_id: str | None = None,
+        excluded_entities: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         """Run full evaluation pipeline.
+
+        Retired entities (SQLiteStore.retire_entity) are not assessed; the run records which
+        were left out, and `excluded_entities` replays that list instead of the current one.
+
+        `run_id` makes the run idempotent (satsa.jobs): if a run with that id was already
+        published, it is returned instead of being assessed again.
 
         What is assessed (satsa.scoring.selection): `window` if given, else the window the
         `period` label names (`2026`, `2026-Q1`, `2026-H1`, `2026-03`). A label that names no
@@ -371,6 +380,16 @@ class AssessmentRunner:
         partial run (and is recorded in the audit log as `run_failed`).
         """
         label = period or ALL_SUBMITTED_LABEL
+        if run_id is not None and not dry_run:
+            if not is_valid_run_id(run_id):
+                raise ValueError(f"invalid run id {run_id!r}")
+            done = self.sqlite_store.conn.execute(
+                "SELECT run_id, (SELECT count(*) FROM findings f WHERE f.run_id = r.run_id) AS n "
+                "FROM runs r WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if done is not None:
+                return {"status": "success", "run_id": done["run_id"], "findings_count": done["n"],
+                        "already_published": True}
         if window is None:
             window = window_for_period(period, max_pub_seq)
         selection_report: dict[str, Any] = {}
@@ -391,7 +410,9 @@ class AssessmentRunner:
         # is never handed to any rule (rules bind entity_id as a query parameter,
         # but a malformed ID must not reach a query at all).
         all_entities = [Entity(**row) for row in df_entities.iter_rows(named=True)]
-        entities = [e for e in all_entities if is_valid_entity_id(e.entity_id)]
+        retired = set(excluded_entities) if excluded_entities is not None else self.sqlite_store.retired_entities()
+        excluded = sorted(e.entity_id for e in all_entities if e.entity_id in retired)
+        entities = [e for e in all_entities if is_valid_entity_id(e.entity_id) and e.entity_id not in retired]
         skipped_entity_ids = sorted(
             repr(e.entity_id) for e in all_entities if not is_valid_entity_id(e.entity_id)
         )
@@ -408,7 +429,7 @@ class AssessmentRunner:
         # the same wall-clock second, e.g. when seeding several historical
         # periods back-to-back (see satsa.scoring.history).
         uniq_suffix = hashlib.sha256(f"{cfg_hash}:{label}:{now.isoformat()}".encode()).hexdigest()[:8]
-        run_id = f"RUN-{now.strftime('%Y%m%d%H%M%S%f')}-{uniq_suffix}"
+        run_id = run_id or f"RUN-{now.strftime('%Y%m%d%H%M%S%f')}-{uniq_suffix}"
 
         all_findings: list[Finding] = []
         all_evidences: list[FindingEvidence] = []
@@ -490,6 +511,9 @@ class AssessmentRunner:
             **window.as_dict(),
             "reference_date": as_of.isoformat() if as_of else None,
             "applicability_decisions": sorted(d["decision_id"] for d in decisions.values()),
+            # Only when some entity was left out, so runs recorded before retirement existed
+            # keep their identity.
+            **({"retired_entities": excluded} if excluded else {}),
         }
         fingerprint = analytical_fingerprint(snapshot, data_fp, selection, environment)
 

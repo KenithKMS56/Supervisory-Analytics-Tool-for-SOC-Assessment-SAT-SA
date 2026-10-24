@@ -313,6 +313,20 @@ def migrate_cmd(
             console.print(f"    {problem}")
         raise typer.Exit(code=1)
     console.print("[bold green][+] Every published file is present and matches its recorded hash.[/bold green]")
+    _report_pseudonym_key(data_dir)
+
+
+def _report_pseudonym_key(data_dir: str) -> None:
+    """Move a legacy .satsa_salt into the keyring (satsa.keys), or say why it cannot."""
+    from satsa.keys import PseudonymKeyMissing, current_key, status
+
+    try:
+        key = current_key(data_dir)
+    except PseudonymKeyMissing as exc:
+        console.print(f"[bold red][!] Pseudonymisation key: {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+    origin = status(data_dir)["versions"][-1]["origin"]
+    console.print(f"[bold blue]Pseudonymisation key[/bold blue] {key.key_id} ({origin})")
 
 
 @app.command("verify-data")
@@ -742,11 +756,11 @@ def validate_cmd(
         if shadow_res.get("status") == "success":
             sqlite_store.save_shadow_result(results["run_id"], "cli", Path(shadow_csv).name, shadow_res)
             if adjudication_csv:
-                import csv
+                from satsa.csv_safe import SafeDictWriter
 
                 sheet = adjudication_sheet(sqlite_store, shadow_res)
                 with open(adjudication_csv, "w", encoding="utf-8", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=ADJUDICATION_COLUMNS)
+                    writer = SafeDictWriter(f, fieldnames=ADJUDICATION_COLUMNS)
                     writer.writeheader()
                     writer.writerows(sheet)
                 console.print(
@@ -1015,6 +1029,9 @@ def offline_bundle_cmd(
         "--wheelhouse",
         help="Wheelhouse from scripts/build_wheelhouse.sh to include (default: ./wheelhouse if present)",
     ),
+    signing_key: str | None = typer.Option(
+        None, "--signing-key", help="Ed25519 release key (satsa release keygen) to sign SHA256SUMS"
+    ),
 ) -> None:
     """Package SAT-SA for air-gapped installation: sources, configs, wheelhouse, containerfiles, and scripts."""
     from satsa.bundle.packager import BundlePathTooLongError, OfflinePackager, WheelhouseError
@@ -1022,8 +1039,8 @@ def offline_bundle_cmd(
     console.print("[bold blue]Building SAT-SA offline deployment bundle...[/bold blue]")
     packager = OfflinePackager(dist_dir=output_dir, wheelhouse=wheelhouse)
     try:
-        archive = packager.create_bundle(output_tar=True)
-    except (WheelhouseError, BundlePathTooLongError) as exc:
+        archive = packager.create_bundle(output_tar=True, signing_key=signing_key)
+    except (WheelhouseError, BundlePathTooLongError, TypeError, ValueError) as exc:
         console.print(f"[bold red][!] {exc}[/bold red]")
         raise typer.Exit(code=1) from None
     console.print(
@@ -1036,6 +1053,10 @@ def offline_bundle_cmd(
             "is rebuilt with one (scripts/build_wheelhouse.sh, docs/offline_install.md).[/bold yellow]"
         )
     console.print("  * Deployment instructions: [dim]README_OFFLINE.md inside bundle[/dim]")
+    if signing_key is None:
+        console.print("[yellow]  * SHA256SUMS is not signed (pass --signing-key to sign it)[/yellow]")
+    else:
+        console.print("  * SHA256SUMS signed; verify with: satsa release verify <bundle dir> --public-key <key>")
 
 
 @app.command("benchmark")
@@ -1392,6 +1413,450 @@ def audit_checkpoint_cmd(
         )
     else:
         typer.echo(text, nl=False)
+
+
+
+def _audit_key_change(data_dir: str, action: str, key_id: str) -> None:
+    import getpass
+
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(Path(data_dir) / "satsa.db")
+    try:
+        store.append_audit(action=action, actor=f"cli:{getpass.getuser()}", details={"key_id": key_id})
+    finally:
+        store.close()
+
+
+keys_app = typer.Typer(help="Pseudonymisation keys kept in data/secrets/ (docs/key_management.md)")
+app.add_typer(keys_app, name="keys")
+
+
+@keys_app.command("status")
+def keys_status(data_dir: str = typer.Option("data", "--data-dir")) -> None:
+    """Show the key versions (ids and dates only, never key material)."""
+    from satsa.keys import status
+
+    console.print_json(data=status(data_dir))
+
+
+@keys_app.command("init")
+def keys_init(
+    data_dir: str = typer.Option("data", "--data-dir"),
+    new_key_breaks_linkage: bool = typer.Option(
+        False, "--new-key-breaks-linkage",
+        help="Create a new key although existing data used a key that is lost. Pseudonyms will not link.",
+    ),
+) -> None:
+    """Create the keyring (importing a legacy .satsa_salt if present)."""
+    from satsa.keys import PseudonymKeyMissing, current_key, init_new_key_breaking_linkage
+
+    try:
+        key = current_key(data_dir)
+    except PseudonymKeyMissing as exc:
+        if not new_key_breaks_linkage:
+            console.print(f"[bold red][!] {exc}[/bold red]")
+            raise typer.Exit(code=1) from exc
+        key = init_new_key_breaking_linkage(data_dir)
+        _audit_key_change(data_dir, "pseudonym_key_created_breaking_linkage", key.key_id)
+        console.print("[bold yellow][!] New key created: pseudonyms from now on do not match earlier ones.[/bold yellow]")
+    console.print(f"Current key: {key.key_id}")
+
+
+@keys_app.command("rotate")
+def keys_rotate(
+    data_dir: str = typer.Option("data", "--data-dir"),
+    confirm: bool = typer.Option(False, "--i-understand-pseudonyms-will-not-link",
+                                 help="Required: pseudonyms made after rotation differ from earlier ones."),
+) -> None:
+    """Add a new key version for new submissions; earlier versions are kept."""
+    from satsa.keys import rotate
+
+    if not confirm:
+        console.print("[bold red]Refusing: pass --i-understand-pseudonyms-will-not-link.[/bold red]")
+        raise typer.Exit(code=2)
+    key = rotate(data_dir)
+    _audit_key_change(data_dir, "pseudonym_key_rotated", key.key_id)
+    console.print(f"Current key is now {key.key_id}. Batches record the key they used.")
+
+
+
+@app.command("worker")
+def worker_cmd(
+    db_path: str = typer.Option("data/satsa.db", "--db-path"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+    once: bool = typer.Option(False, "--once", help="Run the queued jobs, then exit"),
+    lease_seconds: int = typer.Option(120, "--lease-seconds", help="How long a job stays leased without a heartbeat"),
+    poll_seconds: float = typer.Option(2.0, "--poll-seconds"),
+) -> None:
+    """Run the local job worker: imports, assessments and demo seeding (docs/deployment_ops.md)."""
+    import signal
+    import threading
+
+    from satsa.jobs.worker import Worker
+    from satsa.netguard import install_egress_guard
+
+    # Same best-effort, loopback-only egress guard as the portals (satsa.netguard).
+    install_egress_guard()
+    worker = Worker(db_path, data_dir, lease_seconds=lease_seconds)
+    try:
+        if once:
+            done = worker.run_until_idle()
+            for job in done:
+                console.print(f"{job['job_id']} {job['kind']}: {job['state']}")
+            return
+        stop = threading.Event()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda *_: stop.set())
+        console.print(f"[bold blue]Worker {worker.worker_id}[/bold blue] waiting for jobs (Ctrl+C stops it)")
+        worker.run_forever(stop, poll_seconds)
+    finally:
+        worker.close()
+
+
+jobs_app = typer.Typer(help="Inspect and cancel durable jobs")
+app.add_typer(jobs_app, name="jobs")
+
+
+@jobs_app.command("list")
+def jobs_list(db_path: str = typer.Option("data/satsa.db", "--db-path"), limit: int = 20) -> None:
+    """Recent jobs, newest first."""
+    from satsa.jobs.queue import JobQueue
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        queue = JobQueue(store)
+        for job in queue.recent(limit):
+            console.print(f"{job['job_id']}  {job['kind']:<10} {job['state']:<9} {job['stage'] or ''}")
+        workers = queue.live_workers()
+        console.print(f"Live workers: {', '.join(w['worker_id'] for w in workers) or 'none'}")
+    finally:
+        store.close()
+
+
+@jobs_app.command("cancel")
+def jobs_cancel(job_id: str, db_path: str = typer.Option("data/satsa.db", "--db-path")) -> None:
+    """Cancel a queued job, or ask a running one to stop at its next stage."""
+    from satsa.jobs.queue import JobQueue
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        job = JobQueue(store).cancel(job_id)
+    finally:
+        store.close()
+    if job is None:
+        console.print(f"[bold red]No job {job_id}[/bold red]")
+        raise typer.Exit(code=1)
+    console.print(f"{job_id}: {job['state']}{' (cancel requested)' if job['cancel_requested'] else ''}")
+
+
+
+@app.command("setup")
+def setup_cmd(
+    admin_username: str = typer.Option(..., "--admin-username", help="First administrator of the Admin Portal"),
+    deployment_name: str = typer.Option(..., "--deployment-name"),
+    timezone: str = typer.Option("Asia/Kolkata", "--timezone", help="IANA time zone name"),
+    job_inputs_days: int = typer.Option(30, "--keep-job-inputs-days"),
+    backups_keep: int = typer.Option(7, "--keep-backups"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+) -> None:
+    """First-run setup from the shell, instead of the Admin Portal's /setup page.
+
+    The passphrase is read from the SATSA_SETUP_PASSPHRASE environment variable or prompted for
+    (never a command-line argument, which would land in shell history). Shell access to the data
+    directory stands in for the one-time token."""
+    import os
+
+    from satsa.deployment import SetupError, complete_setup
+    from satsa.store.sqlite import SQLiteStore
+
+    passphrase = os.environ.get("SATSA_SETUP_PASSPHRASE") or typer.prompt(
+        "Administrator passphrase", hide_input=True, confirmation_prompt=True
+    )
+    store = SQLiteStore(Path(data_dir) / "satsa.db")
+    try:
+        complete_setup(store, data_dir, token=None, admin_username=admin_username, passphrase=passphrase,
+                       confirm=passphrase, deployment_name=deployment_name, timezone=timezone,
+                       job_inputs_days=job_inputs_days, backups_keep=backups_keep,
+                       actor=f"cli:{admin_username}", require_token=False)
+    except SetupError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+    finally:
+        store.close()
+    console.print(f"[bold green][+] Set up. Sign in to the Admin Portal (:8000) as {admin_username}.[/bold green]")
+
+
+deployment_app = typer.Typer(help="Deployment mode and settings (docs/first_run_setup.md)")
+app.add_typer(deployment_app, name="deployment")
+
+
+@deployment_app.command("show")
+def deployment_show(data_dir: str = typer.Option("data", "--data-dir")) -> None:
+    """Mode, name, time zone, retention and setup state (no secrets)."""
+    from satsa.deployment import settings, setup_pending
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(Path(data_dir) / "satsa.db")
+    try:
+        shown = {k: v for k, v in settings(store).items() if k != "setup_token_sha256"}
+        shown["setup_pending"] = str(setup_pending(store))
+    finally:
+        store.close()
+    console.print_json(data=shown)
+
+
+
+credentials_app = typer.Typer(help="Service credentials for the submission API (docs/api_credentials.md)")
+app.add_typer(credentials_app, name="service-credential")
+
+
+@credentials_app.command("create")
+def credential_create(
+    name: str = typer.Option(..., "--name", help="Who or what uses it, e.g. 'CSE-01 Splunk connector'"),
+    entity: list[str] = typer.Option(..., "--entity", help="An entity it may submit for (repeatable)"),
+    expires_days: int = typer.Option(90, "--expires-days", help="Lifetime, 1-365 days"),
+    db_path: str = typer.Option("data/satsa.db", "--db-path"),
+) -> None:
+    """Issue a credential. The token is printed once and cannot be shown again."""
+    import getpass
+
+    from satsa.auth.service_credentials import CredentialError, issue
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        token, record = issue(store, name=name, entities=entity, expires_days=expires_days,
+                              created_by=f"cli:{getpass.getuser()}")
+    except CredentialError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+    finally:
+        store.close()
+    console.print(f"Credential {record['credential_id']} ({record['name']}) for {', '.join(record['entities'])}, "
+                  f"expires {record['expires_at']}.")
+    console.print("Token (shown once; store it in the client's secret store):")
+    print(token)
+
+
+@credentials_app.command("list")
+def credential_list(db_path: str = typer.Option("data/satsa.db", "--db-path")) -> None:
+    """Every credential with its scope, expiry, revocation and last use (never the secret)."""
+    from satsa.auth.service_credentials import listing
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        console.print_json(data=listing(store))
+    finally:
+        store.close()
+
+
+@credentials_app.command("revoke")
+def credential_revoke(credential_id: str, db_path: str = typer.Option("data/satsa.db", "--db-path")) -> None:
+    """Revoke a credential; it stops working on its next request."""
+    import getpass
+
+    from satsa.auth.service_credentials import revoke
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        done = revoke(store, credential_id, f"cli:{getpass.getuser()}")
+    finally:
+        store.close()
+    if not done:
+        console.print(f"[bold red]No active credential {credential_id}[/bold red]")
+        raise typer.Exit(code=1)
+    console.print(f"Revoked {credential_id}.")
+
+
+
+entity_app = typer.Typer(help="Retire or reinstate entities (nothing is ever erased)")
+app.add_typer(entity_app, name="entity")
+
+
+@entity_app.command("retire")
+def entity_retire(entity_id: str, reason: str = typer.Option(..., "--reason"),
+                  db_path: str = typer.Option("data/satsa.db", "--db-path")) -> None:
+    """Leave an entity out of future assessments; its submissions and history are kept."""
+    import getpass
+
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        done = store.retire_entity(entity_id.strip().upper(), f"cli:{getpass.getuser()}", reason)
+    finally:
+        store.close()
+    console.print(f"{entity_id}: {'retired' if done else 'already retired'}. The next assessment leaves it out.")
+
+
+@entity_app.command("reinstate")
+def entity_reinstate(entity_id: str, db_path: str = typer.Option("data/satsa.db", "--db-path")) -> None:
+    """Undo a retirement: the entity is assessed again from the next run."""
+    import getpass
+
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(db_path)
+    try:
+        done = store.reinstate_entity(entity_id.strip().upper(), f"cli:{getpass.getuser()}")
+    finally:
+        store.close()
+    if not done:
+        console.print(f"[bold red]{entity_id} is not retired[/bold red]")
+        raise typer.Exit(code=1)
+    console.print(f"{entity_id} reinstated.")
+
+
+
+def _backup_passphrase(encrypt: bool, confirm: bool) -> str | None:
+    import os
+
+    if not encrypt:
+        return None
+    return os.environ.get("SATSA_BACKUP_PASSPHRASE") or typer.prompt(
+        "Backup passphrase", hide_input=True, confirmation_prompt=confirm
+    )
+
+
+@app.command("backup")
+def backup_cmd(
+    dest: str = typer.Option(..., "--dest", help="Directory to write the backup into (ideally another disk)"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+    config_dir: str = typer.Option("config", "--config-dir"),
+    encrypt: bool = typer.Option(False, "--encrypt", help="One AES-256-GCM file; passphrase from SATSA_BACKUP_PASSPHRASE or a prompt"),
+    keep: int = typer.Option(0, "--keep", help="Afterwards keep only the newest N backups in --dest (0: keep all)"),
+) -> None:
+    """Consistent backup of databases, published data, held batches, keys and configuration (docs/backup_restore.md)."""
+    from satsa.backup import BackupError, create_backup, prune_backups
+
+    try:
+        out = create_backup(data_dir, dest, config_dir=config_dir, passphrase=_backup_passphrase(encrypt, True))
+    except BackupError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[bold green][+] Backup written:[/bold green] {out}")
+    if keep:
+        for removed in prune_backups(dest, keep):
+            console.print(f"    removed old backup {removed.name}")
+
+
+@app.command("restore")
+def restore_cmd(
+    source: str = typer.Argument(..., help="A backup directory or .satsa-backup file"),
+    target: str = typer.Option(..., "--target", help="A new, empty directory (the restored deployment root)"),
+    replay: str = typer.Option("", "--replay", help="Also replay this run in the restored instance"),
+) -> None:
+    """Verify a backup, restore it into an empty directory, and optionally prove a run reproduces."""
+    from satsa.backup import BackupError, restore_backup
+
+    passphrase = _backup_passphrase(Path(source).is_file(), False)
+    try:
+        report = restore_backup(source, target, passphrase=passphrase)
+    except BackupError as exc:
+        console.print(f"[bold red][!] Restore refused: {exc}[/bold red]")
+        raise typer.Exit(code=1) from exc
+    console.print_json(data=report)
+    if replay:
+        from satsa.scoring.replay import replay_run
+        from satsa.store.sqlite import SQLiteStore
+
+        store = SQLiteStore(Path(target) / "data" / "satsa.db")
+        try:
+            result = replay_run(replay, Path(target) / "data", store)
+        finally:
+            store.close()
+        ok = result["results_match"] and result["fingerprint_match"]
+        console.print(f"Replay of {replay}: {'reproduced' if ok else 'DIFFERS'} {result['differences'] or ''}")
+        if not ok:
+            raise typer.Exit(code=1)
+
+
+ops_app = typer.Typer(help="Readiness, retention and diagnostics (docs/deployment_ops.md)")
+app.add_typer(ops_app, name="ops")
+
+
+@ops_app.command("ready")
+def ops_ready(data_dir: str = typer.Option("data", "--data-dir")) -> None:
+    """Readiness checks; exit status 1 when not ready."""
+    from satsa.ops import readiness
+
+    report = readiness(data_dir)
+    console.print_json(data=report)
+    if not report["ready"]:
+        raise typer.Exit(code=1)
+
+
+@ops_app.command("retention")
+def ops_retention(
+    data_dir: str = typer.Option("data", "--data-dir"),
+    backups_dir: str = typer.Option("", "--backups-dir", help="Also prune backups here to the configured number"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+) -> None:
+    """Apply the retention settings: old job inputs and surplus backups. Never assessment evidence."""
+    import getpass
+
+    from satsa.ops import apply_retention
+
+    console.print_json(data=apply_retention(data_dir, backups_dir=backups_dir or None,
+                                            actor=f"cli:{getpass.getuser()}", dry_run=dry_run))
+
+
+@ops_app.command("diagnostics")
+def ops_diagnostics(
+    out: str = typer.Option(..., "--out", help="Zip file to write"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+) -> None:
+    """Write a redacted support package (no data, secrets or usernames) for review before sharing."""
+    from satsa.ops import diagnostics_bundle
+
+    console.print(f"Diagnostics package: {diagnostics_bundle(out, data_dir)} (review it before sharing)")
+
+
+release_app = typer.Typer(help="Release signing and verification of offline bundles (docs/offline_install.md)")
+app.add_typer(release_app, name="release")
+
+
+@release_app.command("keygen")
+def release_keygen(out: str = typer.Option(..., "--out", help="Directory for the key pair")) -> None:
+    """Create an Ed25519 release key pair. Keep the private key offline; publish the public key."""
+    from satsa.bundle.release import generate_keypair, public_key_fingerprint
+
+    Path(out).mkdir(parents=True, exist_ok=True)
+    try:
+        private, public = generate_keypair(out)
+    except FileExistsError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    console.print(f"Private key: {private} (keep offline)")
+    console.print(f"Public key: {public}")
+    console.print(f"Fingerprint: {public_key_fingerprint(public.read_bytes())} (publish it out of band)")
+
+
+@release_app.command("verify")
+def release_verify(
+    bundle: str = typer.Argument(..., help="Extracted bundle directory"),
+    public_key: str | None = typer.Option(
+        None, "--public-key", help="Release public key obtained separately (never the one inside the bundle)"
+    ),
+) -> None:
+    """Check the signature, every file hash, and that no file was added or removed."""
+    from satsa.bundle.release import ReleaseVerificationError, public_key_fingerprint, verify
+
+    try:
+        result = verify(bundle, public_key)
+    except ReleaseVerificationError as exc:
+        console.print(f"[bold red][!] Verification failed: {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    console.print(f"[green]{result['files']} files match SHA256SUMS[/green]")
+    if result["signature_verified"] and public_key is not None:
+        console.print(f"[green]Signature valid for key {public_key_fingerprint(Path(public_key).read_bytes())}[/green]")
+    else:
+        console.print("[yellow]Signature not checked: pass --public-key[/yellow]")
 
 
 if __name__ == "__main__":

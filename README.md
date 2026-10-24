@@ -33,7 +33,7 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is bu
 1. **Authoritative Identity & Governance Layer:**
    Centralized administrative control plane where users cannot self-register or select their own role, organisation, or scoped CSE. All identities are authoritatively provisioned by NCIIPC administrators before credentials are issued.
 2. **Offline Operation & Data Minimisation:**
-   Binds to loopback (`127.0.0.1`) by default. No CDN dependencies or external script calls; Apache ECharts is vendored. SAT-SA makes no outbound network calls, and as **best-effort defence in depth** each portal installs an in-process egress guard (`satsa/netguard.py`) that refuses Python socket connections to anything but loopback. It does not cover native code that bypasses Python sockets and does not block DNS lookups; the host firewall and the air gap remain the real controls. Ingested analyst identities are pseudonymised with HMAC-SHA256 under a local secret salt (`.satsa_salt`; anyone holding the salt can re-derive a known name's pseudonym), and IP addresses, e-mail addresses and host names are masked by deterministic regexes.
+   Binds to loopback (`127.0.0.1`) by default. No CDN dependencies or external script calls; Apache ECharts is vendored. SAT-SA makes no outbound network calls, and as **best-effort defence in depth** each portal installs an in-process egress guard (`satsa/netguard.py`) that refuses Python socket connections to anything but loopback. It does not cover native code that bypasses Python sockets and does not block DNS lookups; the host firewall and the air gap remain the real controls. Ingested analyst identities are pseudonymised with HMAC-SHA256 under a versioned local key kept with the data (`data/secrets/pseudonym_keys.json`, see `docs/key_management.md`; anyone holding the key can re-derive a known name's pseudonym), and IP addresses, e-mail addresses and host names are masked by deterministic regexes.
 3. **Cryptographic Tamper-Evidence:**
    Every batch upload, schema validation, assessment run, rule configuration change, administrative provisioning action, and human examiner disposition is recorded into append-only SQLite logs hash-chained (SHA3-256 for new entries; legacy SHA-256 entries still verify). Editing, inserting, deleting or reordering an entry in the middle of the chain breaks verification; removal of the newest entries or a full recomputation is only caught against an off-box checkpoint, signed with Ed25519 by `satsa audit checkpoint --sign` (DECISIONS.md ADR-005, ADR-008). Tamper-evident, not tamper-proof.
 4. **Columnar Analytics, Measured at Scale:**
@@ -288,7 +288,19 @@ Runs both portals (Admin Portal and SAT-SA, shared RBAC and activity feed) witho
    - **NCIIPC Admin Portal**: [http://localhost:8000](http://localhost:8000)
    - **SAT-SA Supervisory Tool**: [http://localhost:8001](http://localhost:8001)
 
-3. **Default Seeded Credentials:**
+3. **First run.** A new deployment is a **production** deployment. It starts empty, with no
+   accounts and no data. The platform console prints a one-time setup token (also written to
+   `data/secrets/setup_token`). Open the Admin Portal, which sends you to `/setup`, and enter the
+   token there. Setup creates the first administrator and records the deployment name, time zone
+   and retention. That administrator then creates the analyst and examiner accounts. Headless
+   alternative: `satsa setup --admin-username ... --deployment-name ...`. See
+   `docs/first_run_setup.md`.
+
+   **Demonstration deployment.** Start with `SATSA_DEMO=1` on a separate data directory, for
+   example `SATSA_DEMO=1 SATSA_DATA_DIR=./demo-data docker compose -p satsa-demo up -d`. A demo
+   deployment loads synthetic data, labels every page as a demonstration, and has these accounts
+   with published passphrases. A production deployment never has them:
+
    | Username | Assigned Role | Default Passphrase | Accessible Interfaces |
    | :--- | :--- | :--- | :--- |
    | `nciipc_admin` | NCIIPC Super Administrator | `ChangeMe-NCIIPC#2026` | Admin Portal (`:8000`) only |

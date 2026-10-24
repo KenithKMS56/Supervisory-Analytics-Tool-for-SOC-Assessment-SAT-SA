@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from satsa.api.routes import app
 from satsa.auth.identities import hash_passphrase, verify_passphrase
+from satsa.jobs.worker import run_jobs
 from satsa.store.sqlite import SQLiteStore
 
 client = TestClient(app)
@@ -86,7 +87,10 @@ def test_role_appropriate_access_succeeds():
             "/tuning/save", data={"EG01__fast_share_threshold": "0.18"}, follow_redirects=True
         )
         assert resp.status_code == 200
-        assert "Parameters updated and re-calibrated!" in resp.text
+        assert "Parameters updated!" in resp.text
+        job_id = resp.text.split("queued as job ", 1)[1].split(" ", 1)[0]
+        (job,) = run_jobs(job_id)
+        assert job["state"] == "succeeded" and job["created_by"] == "analyst", job
     finally:
         # Restore the exact original config content, not a guessed default --
         # /tuning/save's Form defaults would otherwise silently overwrite

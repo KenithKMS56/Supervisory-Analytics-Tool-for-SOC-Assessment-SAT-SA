@@ -71,6 +71,58 @@ recorded". They are never reclassified after the fact.
   parameters that produced a result. Legacy runs have no snapshot, and pages say so instead
   of showing the current configuration as if it applied.
 
+### v3: durable jobs and worker heartbeats (Phase 2)
+
+- New table `jobs`: state, stage, parameters, input fingerprint, attempts, lease and heartbeat,
+  cancellation flag, result or structured error.
+  - A unique partial index keeps at most one queued or running job per input fingerprint.
+- New table `worker_heartbeats`: which worker processes are alive and what they run.
+- Both tables are new and empty. No existing row changes.
+- To undo: the previous release ignores both tables. Drop them, or restore the pre-v3 backup.
+- Jobs still queued when downgrading are not run by the previous release. Their uploaded files
+  stay in `data/jobs/` and can be uploaded again.
+
+### v4: deployment settings and mode (Phase 2)
+
+- New key-value table `deployment_settings`: mode (`production` or `demo`), how the mode was
+  chosen, deployment name, time zone, retention, and setup state.
+- A database created before v4 is recorded as `production`, with `mode_origin` saying so. It
+  gets `setup_completed_at = "before deployment modes"`, because its accounts already exist.
+  Nothing else changes, and existing accounts keep their passphrases.
+- Behaviour change in the same release:
+  - `seed_default_admin` no longer re-promotes and re-activates the `admin` account on every
+    start.
+  - Production databases are no longer seeded with demonstration accounts.
+  - Neither change touches existing rows.
+- To undo: the previous release ignores the table.
+
+### v5: service credentials, session idle timeout, entity retirement (Phase 2)
+
+- New table `service_credentials`: name, verifier, scopes, entity scope, created, expires,
+  revoked, last used and use count (docs/api_credentials.md).
+- New nullable column `last_seen_at` on `sessions` and `admin_sessions`. Existing sessions count
+  idle time from their creation, so a session older than the idle timeout ends at its next use.
+- New table `entity_retirements`. The "Delete" action on the upload page now retires an entity
+  instead of deleting it:
+  - **Before:** it erased the entity's findings and scores from every run and removed its Parquet
+    files.
+  - **Now:** nothing is erased. The entity is left out of future runs, and each run records the
+    excluded ids in `selection.retired_entities`, so replay reproduces it.
+  - **To undo a retirement:** `satsa entity reinstate <id>`.
+- To undo the migration: the previous release ignores the new table and columns.
+
+### v6: administrator MFA (Phase 2)
+
+- New tables:
+  - `mfa_factors`: TOTP secret, enrolment, last step used;
+  - `mfa_recovery_codes`: SHA-256 hashes and when each was used.
+- New nullable column `admin_sessions.mfa_verified_at`.
+- Behaviour change: in production deployments (`SATSA_ADMIN_MFA` unset), administrators must
+  enrol a second factor at their next sign-in before the Admin Portal opens.
+- Existing administrator sessions have no verification, so they are sent to enrolment too.
+- To undo: the previous release ignores the tables. Or set `SATSA_ADMIN_MFA=optional` to stop
+  enforcing MFA without removing the factors.
+
 ## Publication catalog (`catalog.db`)
 
 ### v1: publication catalog
@@ -79,6 +131,25 @@ Two tables. `batches` holds one row per submission with state, entity, source, t
 declared period, content hash, idempotency key, parent batch, submitter, and received and
 published times. `batch_tables` records each published file with its SHA-256 and row count,
 and each table a batch declared `declared_empty` or `rejected`.
+
+### v2: pseudonymisation key per batch (Phase 2)
+
+Adds the nullable column `batches.pseudonym_key_id`. It holds the id of the key a batch was
+pseudonymised with (docs/key_management.md). Batches published before v2 keep `NULL`, which
+means "not recorded". This is additive: no existing row changes.
+
+### Pseudonymisation key moved into `data/secrets/` (Phase 2)
+
+This is not a schema change, but it is a change to deployment state. The first ingestion or
+`satsa migrate` imports a legacy `.satsa_salt` from the working directory into
+`data/secrets/pseudonym_keys.json` as key version 1, byte for byte. The legacy file is left in
+place.
+
+To undo: delete `data/secrets/pseudonym_keys.json`. The previous release reads `.satsa_salt`
+again.
+
+If data exists but neither file does, ingestion stops instead of generating a key. See
+docs/key_management.md.
 
 ### Adopting Parquet files written before the catalog
 
@@ -125,6 +196,7 @@ published file. It prints the versions applied and the backup paths.
 | The migrated database is wrong | Stop SAT-SA. Replace `data/satsa.db` (or `catalog.db`) with `data/backups/<db>-pre-v<N>-<time>.db`, delete its `-wal` and `-shm` files, and run the previous release. |
 | Legacy Parquet adoption must be undone | Stop SAT-SA. Delete `data/parquet` and `data/catalog.db`, then copy `data/backups/legacy-parquet-<time>/` back to `data/parquet/`. |
 | A writer crashed mid-submission | Nothing to do. Staged files are discarded and orphan batch files are moved to `data/quarantine/<batch>/` the next time anything publishes, or with `satsa recover`. Readers never saw them. |
+| `PseudonymKeyMissing` at ingestion or migration | `data/secrets/` was not restored or `.satsa_salt` was lost. Restore it from a backup (docs/key_management.md). Do not create a new key unless the old one is truly gone. |
 | A published file is missing or altered | `satsa verify-data` lists it. The loader skips a missing or unreadable file with a logged warning and does not drop the rest of the table. Restore the file from a backup; its SHA-256 is in `batch_tables`. |
 
 ## Developer rules for a new migration

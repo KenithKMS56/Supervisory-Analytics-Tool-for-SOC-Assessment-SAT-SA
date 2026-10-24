@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}Jobs{% endblock %}
+
+{% block head %}{% if any_active %}<meta http-equiv="refresh" content="5">{% endif %}{% endblock %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>Jobs</h1>
+    <p>Imports, assessments and demo seeding run in the background worker. A job keeps its state across restarts of the web app and of the worker.</p>
+  </div>
+</div>
+
+{% include "_worker_status.html" %}
+
+<div class="card">
+  <div class="card-title"><span>Recent jobs ({{ jobs|length }})</span></div>
+  {% if not jobs %}
+    <p style="color: var(--text-secondary);">No jobs yet. Uploads, rule tuning and entity changes create them.</p>
+  {% else %}
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr><th>Job</th><th>Kind</th><th>State</th><th>Stage</th><th>Attempts</th><th>Submitted by</th><th>Submitted (UTC)</th><th>Finished (UTC)</th></tr>
+      </thead>
+      <tbody>
+        {% for job in jobs %}
+        <tr>
+          <td><a href="/jobs/{{ job.job_id }}"><code>{{ job.job_id }}</code></a></td>
+          <td>{{ job.kind }}</td>
+          <td>{% include "_job_state.html" %}</td>
+          <td>{{ job.stage or "" }}</td>
+          <td>{{ job.attempts }} of {{ job.max_attempts }}</td>
+          <td>{{ job.created_by }}</td>
+          <td>{{ job.created_at[:19] }}</td>
+          <td>{{ (job.finished_at or "")[:19] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

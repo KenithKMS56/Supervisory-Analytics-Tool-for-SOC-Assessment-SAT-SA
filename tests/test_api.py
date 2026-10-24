@@ -1,8 +1,11 @@
 """Test offline UI views and REST API endpoints."""
 
+import re
+
 from fastapi.testclient import TestClient
 
 from satsa.api.routes import app
+from satsa.jobs.worker import run_jobs
 
 client = TestClient(app)
 
@@ -126,7 +129,7 @@ def test_ui_upload_view():
     assert resp.status_code == 200
     assert "Periodic Submission & Ingestion Wizard" in resp.text
     assert "Quick Demo Launcher" in resp.text
-    assert "Run Full Assessment Pipeline" in resp.text
+    assert "Load Demonstration Data" in resp.text  # the suite runs as a demo deployment
 
 
 def test_ui_blind_review():
@@ -172,7 +175,12 @@ def test_ui_tuning_view_and_save():
             follow_redirects=True,
         )
         assert save_resp.status_code == 200
-        assert "Parameters updated and re-calibrated!" in save_resp.text
+        assert "Parameters updated!" in save_resp.text
+        # The re-assessment is a job (satsa.jobs): it runs in the worker with the saved values.
+        job_id = re.search(r"queued as job (JOB-[A-Za-z0-9_-]+)", save_resp.text).group(1)
+        (job,) = run_jobs(job_id)
+        assert job["state"] == "succeeded", job
+        assert job["result"]["run_id"] == f"RUN-{job_id}" and job["result"]["findings_count"] > 0
     finally:
         config_path.write_text(orig_content, encoding="utf-8")
 

@@ -114,7 +114,23 @@ def _real_ids() -> dict[str, str]:
         "entity_id": finding["entity_id"],
         "template_name": "alerts.csv",
         "username": "examiner",
+        "job_id": _sweep_job_id(),
     }
+
+
+def _sweep_job_id() -> str:
+    """A real job for the {job_id} pages: queued for the sweep and cancelled, so it never runs."""
+    from satsa.jobs.queue import JobQueue, fingerprint
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        queue = JobQueue(store)
+        job = queue.enqueue("assessment", {"period": "2026-Q1", "reason": "page sweep"}, "analyst",
+                            input_fingerprint=fingerprint("assessment", {"sweep": __name__}))
+        queue.cancel(job["job_id"])
+        return str(job["job_id"])
+    finally:
+        store.close()
 
 
 def _run_id_of(finding_id: str) -> str:
@@ -200,7 +216,9 @@ def test_every_get_route_is_offline_and_healthy(socket_guard, monkeypatch):
 # ---------------------------------------------------------------- static scan
 
 ASSET_ROOTS = [Path("src/satsa/ui"), Path("src/satsa/admin")]
-VENDORED = {"echarts.min.js"}
+# Upstream minified libraries, kept byte-identical to their published release (checksums in
+# their VERSION file). /docs disables the only network call Swagger UI makes (the validator).
+VENDORED = {"echarts.min.js", "swagger-ui-bundle.js", "swagger-ui.css"}
 URL_PATTERNS = [
     re.compile(r"""(?:src|href|action)\s*=\s*["']\s*(https?://[^"'\s>]+)""", re.IGNORECASE),
     re.compile(r"""url\(\s*["']?\s*(https?://[^)"'\s]+)""", re.IGNORECASE),

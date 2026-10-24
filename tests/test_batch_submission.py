@@ -8,12 +8,12 @@ to accept the same entity/period twice (which would turn it into a feed).
 import shutil
 import uuid
 from pathlib import Path
-from urllib.parse import unquote_plus
 
 import pytest
 from fastapi.testclient import TestClient
 
 from satsa.api.routes import app
+from satsa.jobs.worker import run_jobs
 
 
 @pytest.fixture
@@ -112,5 +112,10 @@ def test_upload_without_entity_id_is_rejected(analyst):
         "/upload", files={"files": ("alerts.csv", csv, "text/csv")}, follow_redirects=False
     )
     assert r.status_code == 303
-    assert "no entity_id" in unquote_plus(r.headers["location"])
+    # The upload is an import job (satsa.jobs); the refusal is its outcome.
+    job_id = r.headers["location"].rsplit("/", 1)[1]
+    (job,) = run_jobs(job_id)
+    assert job["state"] == "failed"
+    assert "no entity_id" in job["error"]["message"]
+    assert "no entity_id" in analyst.get(f"/jobs/{job_id}").text
     assert (alert_root.stat().st_mtime_ns if alert_root.exists() else None) == before

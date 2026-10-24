@@ -3,6 +3,7 @@
 Coordinates concurrent startup of:
 - NCIIPC Administration Portal (port 8000)
 - SAT-SA Supervisory Tool (port 8001)
+- the job worker (`satsa worker`), which runs imports and assessments
 
 Both portals share the exact same underlying SQLite database (in WAL mode),
 DuckDB Parquet storage, and the admin activity feed.
@@ -26,7 +27,7 @@ SATSA_PORT = 8001
 
 
 def healthcheck() -> int:
-    """Exit status 0 when both portals answer /splash, over whichever scheme is configured."""
+    """Exit status 0 when both portals answer /healthz, over whichever scheme is configured."""
     import ssl
     import urllib.request
 
@@ -38,7 +39,7 @@ def healthcheck() -> int:
     context = ssl._create_unverified_context() if config.tls else None
     try:
         for port in (ADMIN_PORT, SATSA_PORT):
-            url = f"{config.scheme}://127.0.0.1:{port}/splash"
+            url = f"{config.scheme}://127.0.0.1:{port}/healthz"
             with urllib.request.urlopen(url, timeout=3, context=context) as resp:
                 if resp.status != 200:
                     return 1
@@ -69,49 +70,17 @@ def main() -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Initialize SQLite store and seed default administrative credentials
+    # 1. Open (and migrate) the shared database, then prepare the deployment for its mode
+    #    (satsa.deployment): production starts empty and is set up with a one-time token; demo
+    #    seeds published accounts and loads synthetic data through a job.
     try:
-        from satsa.store.sqlite import SQLiteStore
+        from satsa.deployment import DemoIsolationError, prepare_deployment
 
-        store = SQLiteStore("data/satsa.db")
-        store.seed_default_organisations_and_cses()
-        store.seed_default_admin()
-        for username in store.flag_unrotated_default_accounts():
-            print(f"[!] Account '{username}' still uses its published default passphrase: "
-                  "a new one must be set at first login.")
-
-        # Check if database has baseline assessment runs; if completely empty, run baseline seed
-        cur = store.conn.cursor()
-        cur.execute("SELECT count(*) FROM findings")
-        findings_count = cur.fetchone()[0]
-
-        if findings_count == 0:
-            print("[+] Fresh volume detected. Seeding baseline supervisory demonstration dataset...")
-            try:
-                import tempfile
-
-                from satsa.ingest.pipeline import IngestionPipeline
-                from satsa.scoring.history import seed_historical_periods
-                from satsa.scoring.runner import AssessmentRunner
-                from satsa.store.duckdb import DuckDBStore
-                from satsa.synth.generator import SyntheticDataGenerator
-
-                duckdb_store = DuckDBStore("data")
-                gen = SyntheticDataGenerator(seed=42, base_alerts_per_entity=1500)
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    csv_dir, _ = gen.save_dataset(Path(tmpdir))
-                    pipeline = IngestionPipeline(duckdb_store, store)
-                    _ = pipeline.ingest_directory(csv_dir)
-                    runner = AssessmentRunner(duckdb_store, store)
-                    _ = runner.run_assessment(period="2026-Q1", actor="system")
-                duckdb_store.close()
-                seed_historical_periods("data", store, n_periods=3, actor="system")
-                print("[+] Baseline assessment dataset seeded successfully.")
-            except Exception as seed_err:  # noqa: BLE001 - the portals must start even if the demo seed fails
-                print(f"[!] Notice: Baseline seed deferred: {seed_err}")
-
-        store.close()
-        print("[+] Shared identity and assessment database verified: data/satsa.db")
+        for line in prepare_deployment("data"):
+            print(line)
+    except DemoIsolationError as exc:
+        print(f"[!] Refusing to start: {exc}")
+        sys.exit(2)
     except Exception as exc:  # noqa: BLE001 - reported; the portals report their own storage errors
         print(f"[!] Storage initialization warning: {exc}")
 
@@ -134,32 +103,34 @@ def main() -> None:
         env=child_env,
     )
 
+    # 4. Launch the job worker: imports and assessments run here, not in web requests (satsa.jobs).
+    # Exactly one: it is the deployment's single analytical writer.
+    print("[+] Launching the job worker...")
+    worker_proc = subprocess.Popen([sys.executable, "-m", "satsa.cli", "worker"], env=child_env)
+    processes = {"NCIIPC Admin Portal": admin_proc, "SAT-SA Portal": satsa_proc, "Job worker": worker_proc}
+
     def handle_shutdown(signum, frame):
         print("\n[!] Received shutdown signal. Stopping platform services...")
-        admin_proc.terminate()
-        satsa_proc.terminate()
-        try:
-            admin_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            admin_proc.kill()
-        try:
-            satsa_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            satsa_proc.kill()
+        for proc in processes.values():
+            proc.terminate()
+        for proc in processes.values():
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
         print("[+] Platform services stopped cleanly.")
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
-    # 4. Monitor health of child processes
+    # 5. Monitor health of child processes. A job the worker was running when it died is
+    # requeued (or failed) from its expired lease by the next worker, so nothing is lost.
     while True:
-        if admin_proc.poll() is not None:
-            print("[!] NCIIPC Admin Portal terminated unexpectedly.")
-            handle_shutdown(None, None)
-        if satsa_proc.poll() is not None:
-            print("[!] SAT-SA Portal terminated unexpectedly.")
-            handle_shutdown(None, None)
+        for name, proc in processes.items():
+            if proc.poll() is not None:
+                print(f"[!] {name} terminated unexpectedly.")
+                handle_shutdown(None, None)
         time.sleep(1)
 
 

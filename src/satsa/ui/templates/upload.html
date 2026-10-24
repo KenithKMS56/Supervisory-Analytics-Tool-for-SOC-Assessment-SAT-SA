@@ -323,11 +323,15 @@
             <td><span class="badge" style="background: var(--bg-hover);">{{ ent.sector }}</span></td>
             <td style="color: var(--text-secondary); font-size: 0.85rem;">{{ ent.size_band }}</td>
             <td style="text-align: right;">
-              <form method="post" action="/upload/delete-entity/{{ ent.entity_id }}" style="margin: 0; display: inline;" onsubmit="return confirm('Permanently delete entity {{ ent.entity_id }} and all its data? This will recalculate the portfolio.');">
+              {% if ent.entity_id in (retired_entities or []) %}
+              <span class="badge" title="Left out of assessments; its submissions and history are kept">Retired</span>
+              {% else %}
+              <form method="post" action="/upload/delete-entity/{{ ent.entity_id }}" style="margin: 0; display: inline;" onsubmit="return confirm('Retire entity {{ ent.entity_id }}? It is left out of future assessments; its submissions, runs and findings are kept.');">
                 <button type="submit" class="btn btn-danger" style="padding: 0.25rem 0.6rem; font-size: 0.74rem;">
-                  Delete
+                  Retire
                 </button>
               </form>
+              {% endif %}
             </td>
           </tr>
           {% endfor %}
@@ -365,22 +369,24 @@
       </table>
     </div>
 
-    <!-- Quick Demo Launcher -->
+    {% if deployment(request).get("mode") == "demo" %}
+    <!-- Quick Demo Launcher (demonstration deployments only) -->
     <div style="margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border-color);">
       <div style="font-weight: 700; margin-bottom: 0.5rem; color: var(--text-primary); font-size: 0.9rem;">Quick Demo Launcher</div>
       <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;">
-        <span style="font-size: 0.82rem; color: var(--text-muted);">Re-evaluate canonical 10-CSE benchmark dataset or re-execute scoring across all entities:</span>
+        <span style="font-size: 0.82rem; color: var(--text-muted);">Reload the synthetic 10-CSE demonstration dataset and assess it (runs as a job):</span>
         <form method="post" action="/upload/trigger-demo">
           <button type="submit" class="btn btn-secondary" style="font-size: 0.82rem;">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M23 4v6h-6M1 20v-6h6"/>
               <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
             </svg>
-            Run Full Assessment Pipeline
+            Load Demonstration Data
           </button>
         </form>
       </div>
     </div>
+    {% endif %}
   </div>
 </div>
 

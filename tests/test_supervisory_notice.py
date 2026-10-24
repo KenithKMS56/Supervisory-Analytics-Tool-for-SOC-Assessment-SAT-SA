@@ -49,7 +49,22 @@ def ids():
     ).fetchone()
     store.close()
     assert row, "bootstrapped data required (satsa generate-data / ingest / run)"
-    return dict(row)
+    return {**dict(row), "job_id": _sweep_job_id()}
+
+
+def _sweep_job_id() -> str:
+    """A real job for the {job_id} pages: queued for the sweep and cancelled, so it never runs."""
+    from satsa.jobs.queue import JobQueue, fingerprint
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        queue = JobQueue(store)
+        job = queue.enqueue("assessment", {"period": "2026-Q1", "reason": "page sweep"}, "analyst",
+                            input_fingerprint=fingerprint("assessment", {"sweep": __name__}))
+        queue.cancel(job["job_id"])
+        return str(job["job_id"])
+    finally:
+        store.close()
 
 
 def test_the_two_wordings():
@@ -66,6 +81,8 @@ def _html_pages() -> list[str]:
             continue
         if path.startswith(("/api/", "/reports/", "/templates/", "/docs", "/openapi", "/tuning/export-pack")):
             continue
+        if path in ("/healthz", "/readyz"):
+            continue  # JSON probes for the container runtime, not pages
         pages.append(path)
     return sorted(set(pages))
 
@@ -77,7 +94,8 @@ def test_every_page_of_the_web_app_carries_the_notice(clients, ids):
     checked = 0
     for role, client in clients.items():
         for page in pages:
-            url = page.replace("{entity_id}", ids["entity_id"]).replace("{finding_id}", ids["finding_id"])
+            url = (page.replace("{entity_id}", ids["entity_id"]).replace("{finding_id}", ids["finding_id"])
+                   .replace("{job_id}", ids["job_id"]))
             response = client.get(url)
             if response.status_code == 403:
                 continue  # not this role's page
@@ -155,7 +173,8 @@ def test_no_page_claims_a_legal_basis_the_project_cannot_cite(clients, ids):
     attributed requirements to a rule and a section that do not say them."""
     for role, client in clients.items():
         for page in _html_pages():
-            url = page.replace("{entity_id}", ids["entity_id"]).replace("{finding_id}", ids["finding_id"])
+            url = (page.replace("{entity_id}", ids["entity_id"]).replace("{finding_id}", ids["finding_id"])
+                   .replace("{job_id}", ids["job_id"]))
             response = client.get(url)
             if response.status_code != 200:
                 continue

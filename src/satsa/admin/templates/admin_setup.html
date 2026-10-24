@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>First-run setup | NCIIPC Administration Portal</title>
+  <link rel="stylesheet" href="/static/admin.css">
+  <style>
+    .setup-wrapper { min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 2rem 1rem; }
+    .setup-card { width: 100%; max-width: 620px; background: var(--admin-surface); border: 1px solid var(--admin-border);
+                  border-radius: var(--radius-lg); padding: 2rem 1.75rem; }
+    .setup-card h1 { font-size: 1.4rem; margin: 0 0 0.5rem; }
+    .setup-card fieldset { border: 1px solid var(--admin-border); border-radius: var(--radius-md, 8px); padding: 1rem; margin: 0 0 1.25rem; }
+    .setup-card legend { font-weight: 600; padding: 0 0.4rem; }
+    .setup-card .form-group { margin-bottom: 1rem; }
+    .setup-card .hint { font-size: 0.78rem; color: var(--admin-text-muted); margin-top: 0.25rem; }
+    .setup-card .form-input { width: 100%; }
+  </style>
+</head>
+<body>
+<div class="setup-wrapper">
+  <main class="setup-card">
+    <h1>First-run setup</h1>
+    <p>This is a new <strong>production</strong> deployment. It has no accounts and no data. Create the first
+      administrator and record the deployment's settings. The administrator then creates analyst and
+      examiner accounts under <em>Users</em>. Sample or real data is imported later, deliberately, through SAT-SA's upload page.</p>
+
+    {% if error %}
+    <div class="admin-alert admin-alert-error" role="alert"><div>{{ error }}</div></div>
+    {% endif %}
+
+    {% if network_warning %}
+    <div class="admin-alert admin-alert-error" role="alert"><div>{{ network_warning }}</div></div>
+    {% endif %}
+
+    <form method="post" action="/setup" autocomplete="off">
+      <fieldset>
+        <legend>One-time setup token</legend>
+        <div class="form-group">
+          <label for="token" class="form-label">Token</label>
+          <input id="token" name="token" type="password" class="form-input" required aria-describedby="token-hint">
+          <div class="hint" id="token-hint">Printed on the platform console at start and stored in
+            <code>data/secrets/setup_token</code> on the server. It stops working once setup is done.</div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>First administrator</legend>
+        <div class="form-group">
+          <label for="username" class="form-label">Username</label>
+          <input id="username" name="username" class="form-input" required minlength="3" maxlength="64"
+                 pattern="[A-Za-z0-9_.\-]{3,64}" value="{{ values.username or '' }}">
+        </div>
+        <div class="form-group">
+          <label for="password" class="form-label">Passphrase</label>
+          <input id="password" name="password" type="password" class="form-input" required minlength="{{ min_passphrase }}"
+                 aria-describedby="pw-hint" autocomplete="new-password">
+          <div class="hint" id="pw-hint">At least {{ min_passphrase }} characters.</div>
+        </div>
+        <div class="form-group">
+          <label for="confirm_password" class="form-label">Confirm passphrase</label>
+          <input id="confirm_password" name="confirm_password" type="password" class="form-input" required autocomplete="new-password">
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Deployment</legend>
+        <div class="form-group">
+          <label for="deployment_name" class="form-label">Deployment name</label>
+          <input id="deployment_name" name="deployment_name" class="form-input" required minlength="2" maxlength="120"
+                 value="{{ values.deployment_name or '' }}">
+        </div>
+        <div class="form-group">
+          <label for="timezone" class="form-label">Time zone (IANA name)</label>
+          <input id="timezone" name="timezone" class="form-input" required list="tz-list" value="{{ values.timezone or 'Asia/Kolkata' }}">
+          <datalist id="tz-list">{% for tz in timezones %}<option value="{{ tz }}">{% endfor %}</datalist>
+          <div class="hint">Shown with timestamps; stored data stays in UTC.</div>
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Storage and retention</legend>
+        <p class="hint">Data, published submissions, keys and backups live in <code>{{ data_dir }}</code>.
+          Assessment evidence is never deleted by retention.</p>
+        <div class="form-group">
+          <label for="job_inputs_days" class="form-label">Keep uploaded files of failed or held imports for (days)</label>
+          <input id="job_inputs_days" name="job_inputs_days" type="number" min="1" max="3650" class="form-input"
+                 value="{{ values.job_inputs_days or 30 }}">
+        </div>
+        <div class="form-group">
+          <label for="backups_keep" class="form-label">Number of local backups to keep</label>
+          <input id="backups_keep" name="backups_keep" type="number" min="1" max="1000" class="form-input"
+                 value="{{ values.backups_keep or 7 }}">
+        </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Network exposure and TLS</legend>
+        <p>{{ network_status }}</p>
+        <p class="hint">TLS is configured outside the application (SATSA_TLS_CERT / SATSA_TLS_KEY, docs/deployment_ops.md section 1.3).</p>
+      </fieldset>
+
+      <button type="submit" class="btn-admin btn-admin-primary">Create administrator and finish setup</button>
+    </form>
+  </main>
+</div>
+</body>
+</html>

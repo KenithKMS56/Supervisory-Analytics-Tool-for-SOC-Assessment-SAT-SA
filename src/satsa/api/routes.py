@@ -20,6 +20,7 @@ from typing import Annotated, Any
 import polars as pl
 import yaml
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -28,6 +29,7 @@ from pydantic import BaseModel, Field
 from satsa import FINDING_NOTICE, SUPERVISORY_NOTICE
 from satsa.admin.rbac import SATSA_OPERATOR_ROLES, is_analyst, is_examiner
 from satsa.auth.identities import MIN_PASSPHRASE_LENGTH, passphrase_policy_error
+from satsa.auth.service_credentials import authenticate as authenticate_service
 from satsa.auth.session import (
     SESSION_COOKIE_NAME,
     Identity,
@@ -37,8 +39,12 @@ from satsa.auth.session import (
     require_role,
 )
 from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
+from satsa.csv_safe import SafeWriter
 from satsa.explain.finding_card import WHY_IT_MATTERS, FindingCard
-from satsa.ingest.pipeline import IngestionPipeline, detect_source_mapping
+from satsa.ingest.pipeline import IngestionPipeline
+from satsa.ingest.uploads import MAX_UPLOAD_BYTES, _copy_limited, check_zip_limits
+from satsa.jobs.handlers import IMPORT_INPUT, job_dir
+from satsa.jobs.queue import JobQueue, fingerprint, new_job_id
 from satsa.models.canonical import Entity
 from satsa.models.outputs import EXAMINER_DECISIONS, ExaminerFeedback
 from satsa.netguard import install_egress_guard, uninstall_egress_guard
@@ -49,7 +55,6 @@ from satsa.report.naming import entity_pdf_name, finding_pdf_name, portfolio_pdf
 from satsa.rules.negative_space import REVIEW_PERIOD_MONTHS_RANGE
 from satsa.rules.registry import RuleRegistry
 from satsa.scoring.control_priorities import rank_controls, rank_processes
-from satsa.scoring.history import seed_historical_periods
 from satsa.scoring.runner import AssessmentRunner
 from satsa.scoring.scorer import ScoringEngine, band_tier, blind_review_concordance
 from satsa.scoring.selection import period_bounds
@@ -57,13 +62,12 @@ from satsa.security import (
     is_valid_entity_id,
     is_valid_finding_id,
     is_valid_run_id,
-    safe_archive_member,
     safe_join,
 )
 from satsa.store.catalog import PublicationError
 from satsa.store.duckdb import DuckDBStore, analytics_cache
 from satsa.store.sqlite import SQLiteStore
-from satsa.synth.generator import SyntheticDataGenerator
+from satsa.web_security import CROSS_SITE_REFUSED, cross_site_reason
 
 # Roles permitted for each protected action category, matching
 # docs/functional_design.md Section 2 (User Personas & Permissions). SAT-SA has
@@ -106,7 +110,9 @@ app = FastAPI(
     title="SAT-SA Supervisory API",
     description="Supervisory Analytics Tool for SOC Assessment (NCIIPC)",
     version="0.1.0",
-    docs_url="/docs",
+    # /docs is served below from local Swagger UI assets (B07): FastAPI's default page loads them
+    # from a CDN, which leaves it blank on an air-gapped network.
+    docs_url=None,
     redoc_url=None,
     lifespan=_lifespan,
 )
@@ -129,21 +135,49 @@ templates.env.globals["is_analyst"] = is_analyst
 templates.env.globals["is_examiner"] = is_examiner
 
 
+def _deployment_settings(_request: Request | None = None) -> dict[str, str]:
+    """The deployment's settings (mode, name ...) for page chrome such as the demo banner."""
+    from satsa.deployment import settings
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        return settings(store)
+    finally:
+        store.close()
+
+
+templates.env.globals["deployment"] = _deployment_settings
+
+
 # Paths anyone may reach without a session. Everything else requires one; the
 # route's own dependency then enforces the specific role (see the RBAC table
 # in tests/test_rbac_matrix.py, which must list every route).
-PUBLIC_PATHS = {"/", "/login", "/logout", "/splash", "/api/session/status", "/openapi.json"}
+PUBLIC_PATHS = {"/", "/login", "/logout", "/splash", "/api/session/status", "/healthz", "/readyz"}
 # The only gated paths open to a session that still owes a passphrase change.
 PASSWORD_CHANGE_PATH = "/change-password"
 PASSWORD_CHANGE_REQUIRED = "A new passphrase must be set at /change-password before this account can be used."
-PUBLIC_PREFIXES = ("/static/", "/docs")
+PUBLIC_PREFIXES = ("/static/",)
 # Non-page GET endpoints (JSON APIs and file downloads): an anonymous request
 # gets 401 rather than a login redirect.
-NON_PAGE_PREFIXES = ("/api/", "/reports/", "/templates/", "/tuning/export-pack")
+NON_PAGE_PREFIXES = ("/api/", "/reports/", "/templates/", "/tuning/export-pack", "/openapi.json")
 NOT_SATSA_OPERATOR = (
     "This account is not a SAT-SA operator account (analyst or examiner). "
     "NCIIPC administrators use the Admin Portal at :8000."
 )
+
+
+# Paths that accept a service credential instead of a session (docs/api_credentials.md), and the
+# cap on their request bodies (SATSA_MAX_API_BODY_MB, default 64).
+SERVICE_CREDENTIAL_PATHS = {"/api/v1/submissions"}
+MAX_API_BODY_BYTES = int(os.environ.get("SATSA_MAX_API_BODY_MB", "64")) * 1024 * 1024
+
+
+def require_submitter(request: Request) -> Identity:
+    """An analyst session, or a service credential with the `submit` scope (set by the middleware)."""
+    principal = getattr(request.state, "service_principal", None)
+    if principal is not None:
+        return Identity(username=principal.actor, role="service")
+    return require_role(*INGEST_RUN_ROLES)(request)
 
 
 def _is_public_path(path: str) -> bool:
@@ -162,6 +196,24 @@ async def enforce_auth_middleware(request: Request, call_next):
     path = request.url.path
     if _is_public_path(path):
         return await call_next(request)
+
+    # Machine integration (satsa.auth.service_credentials): a Bearer service credential on the
+    # submission API, checked on every request so revocation and expiry apply at once.
+    if path in SERVICE_CREDENTIAL_PATHS:
+        length = request.headers.get("content-length")
+        if length is not None and (not length.isdigit() or int(length) > MAX_API_BODY_BYTES):
+            return JSONResponse({"detail": f"The request body is larger than {MAX_API_BODY_BYTES // (1024 * 1024)} MiB."},
+                                status_code=413)
+        if request.headers.get("authorization"):
+            store = SQLiteStore("data/satsa.db")
+            try:
+                principal = authenticate_service(store, request.headers.get("authorization"))
+            finally:
+                store.close()
+            if principal is None:
+                return JSONResponse({"detail": "Invalid, expired or revoked service credential."}, status_code=401)
+            request.state.service_principal = principal
+            return await call_next(request)
 
     identity = get_current_identity(request)
     if identity is None:
@@ -184,6 +236,165 @@ async def enforce_auth_middleware(request: Request, call_next):
             return RedirectResponse(url=PASSWORD_CHANGE_PATH, status_code=303)
         return JSONResponse({"detail": PASSWORD_CHANGE_REQUIRED}, status_code=403)
 
+    return await call_next(request)
+
+
+WORKER_WINDOW_SECONDS = 60
+
+
+@app.get("/healthz", include_in_schema=False)
+def healthz() -> dict[str, str]:
+    """Liveness: the process answers. No dependencies are checked."""
+    return {"status": "ok"}
+
+
+@app.get("/readyz", include_in_schema=False)
+def readyz() -> Response:
+    """Readiness (satsa.ops.readiness): database, schema, catalog and disk; worker reported.
+    503 when not ready. Holds no data and no secrets, so it is public, like /healthz."""
+    from satsa.ops import readiness
+
+    report = readiness("data")
+    return JSONResponse(report, status_code=200 if report["ready"] else 503)
+
+
+def enqueue_job(
+    kind: str,
+    params: dict[str, Any],
+    identity: Identity,
+    *,
+    input_fingerprint: str | None = None,
+    max_attempts: int = 3,
+) -> dict[str, Any]:
+    """Queue a job (satsa.jobs) on behalf of `identity` and audit it. An identical job that is
+    still queued or running is returned instead of a duplicate."""
+    store = get_sqlite_store()
+    try:
+        job = JobQueue(store).enqueue(kind, {**params, "role": identity.role}, identity.username,
+                                      input_fingerprint=input_fingerprint, max_attempts=max_attempts)
+        if not job["deduplicated"]:
+            store.append_audit(action="job_queued", actor=identity.username,
+                               details={"job_id": job["job_id"], "kind": kind, **params})
+    finally:
+        store.close()
+    return job
+
+
+def enqueue_assessment(
+    period: str | None, identity: Identity, reason: str, entity_label: str = "PORTFOLIO"
+) -> dict[str, Any]:
+    """Queue an assessment of `period`. Its fingerprint is the period, the current configuration
+    and the published data, so the same request twice collapses while one is pending."""
+    from satsa.store.catalog import published_sequence
+
+    params = {"period": period, "reason": reason, "entity_label": entity_label}
+    fp = fingerprint("assessment", {"period": period},
+                     extra=f"{_current_config_hashes()[:1]}:{published_sequence('data')}")
+    return enqueue_job("assessment", params, identity, input_fingerprint=fp)
+
+
+SWAGGER_ASSETS = "/static/vendor/swagger-ui"
+
+
+@app.get("/docs", include_in_schema=False)
+def api_docs(identity: Identity = Depends(require_authenticated)) -> HTMLResponse:
+    """Interactive API reference, rendered from vendored Swagger UI assets (see their VERSION file).
+
+    The validator badge is switched off: Swagger UI would otherwise send the schema to
+    validator.swagger.io from the browser."""
+    return get_swagger_ui_html(
+        openapi_url=app.openapi_url or "/openapi.json",
+        title=f"{app.title} - API reference",
+        swagger_js_url=f"{SWAGGER_ASSETS}/swagger-ui-bundle.js",
+        swagger_css_url=f"{SWAGGER_ASSETS}/swagger-ui.css",
+        swagger_favicon_url="/static/0xzenith-logo.png",
+        swagger_ui_parameters={"validatorUrl": None},
+    )
+
+
+JOB_ID_RE = re.compile(r"^JOB-[A-Za-z0-9_-]{1,64}$")
+SHOWN_JOB_PARAMS = {"period": "Period", "target_entity": "Target entity", "files": "Files",
+                    "reason": "Reason", "entity_label": "Entity"}
+
+
+def _job_or_404(queue: JobQueue, job_id: str) -> dict[str, Any]:
+    job = queue.get(job_id) if JOB_ID_RE.match(job_id) else None
+    if job is None:
+        raise HTTPException(status_code=404, detail="No such job.")
+    return job
+
+
+@app.get("/jobs", response_class=HTMLResponse)
+def view_jobs(request: Request, identity: Identity = Depends(require_role(*SUPERVISORY_READ_ROLES))) -> Response:
+    """Recent jobs of the deployment (portfolio-wide, like runs; examiners can read, not cancel)."""
+    store = get_sqlite_store()
+    try:
+        queue = JobQueue(store)
+        jobs = queue.recent(100)
+        workers = queue.live_workers(WORKER_WINDOW_SECONDS)
+    finally:
+        store.close()
+    return templates.TemplateResponse(
+        request=request, name="jobs.html",
+        context={"active_tab": "jobs", "jobs": jobs, "workers": workers, "worker_window": WORKER_WINDOW_SECONDS,
+                 "any_active": any(j["state"] in ("queued", "running") for j in jobs)},
+    )
+
+
+@app.get("/jobs/{job_id}", response_class=HTMLResponse)
+def view_job(request: Request, job_id: str,
+             identity: Identity = Depends(require_role(*SUPERVISORY_READ_ROLES))) -> Response:
+    store = get_sqlite_store()
+    try:
+        queue = JobQueue(store)
+        job = _job_or_404(queue, job_id)
+        workers = queue.live_workers(WORKER_WINDOW_SECONDS)
+    finally:
+        store.close()
+    shown = [(label, ", ".join(v) if isinstance(v, list) else v)
+             for key, label in SHOWN_JOB_PARAMS.items() if (v := job["params"].get(key))]
+    return templates.TemplateResponse(
+        request=request, name="job_detail.html",
+        context={"active_tab": "jobs", "job": job, "workers": workers, "worker_window": WORKER_WINDOW_SECONDS,
+                 "shown_params": shown, "can_cancel": is_analyst(identity.role)},
+    )
+
+
+@app.get("/api/v1/jobs/{job_id}")
+def api_job(job_id: str, identity: Identity = Depends(require_role(*SUPERVISORY_READ_ROLES))) -> dict[str, Any]:
+    """A job's state, stage, attempts, result or structured error."""
+    store = get_sqlite_store()
+    try:
+        job = _job_or_404(JobQueue(store), job_id)
+    finally:
+        store.close()
+    job["params"] = {k: v for k, v in job["params"].items() if k != "role"}
+    return {k: v for k, v in job.items() if k not in ("lease_owner", "input_fingerprint")}
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, identity: Identity = Depends(require_role(*INGEST_RUN_ROLES))) -> Response:
+    """Cancel a queued job, or ask a running one to stop at its next stage."""
+    store = get_sqlite_store()
+    try:
+        queue = JobQueue(store)
+        _job_or_404(queue, job_id)
+        job = queue.cancel(job_id)
+        store.append_audit(action="job_cancel_requested", actor=identity.username,
+                           details={"job_id": job_id, "state": (job or {}).get("state")})
+    finally:
+        store.close()
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@app.middleware("http")
+async def refuse_cross_site_requests(request: Request, call_next):
+    """CSRF defence (satsa.web_security): a state-changing request must come from this portal's
+    own pages. Registered after the authentication middleware, so it runs before it."""
+    reason = cross_site_reason(request.method, request.headers, str(request.base_url))
+    if reason is not None:
+        logger.warning("Refused cross-site %s %s: %s", request.method, request.url.path, reason)
+        return JSONResponse({"detail": CROSS_SITE_REFUSED}, status_code=403)
     return await call_next(request)
 
 
@@ -1473,7 +1684,7 @@ async def api_export_queue_csv() -> Response:
     sqlite_store.close()
 
     output = io.StringIO()
-    writer = csv.writer(output)
+    writer = SafeWriter(output)
     if rows:
         writer.writerow([*rows[0].keys(), "supervisory_notice"])
         for r in rows:
@@ -1629,8 +1840,17 @@ async def view_upload(request: Request, message: str = "") -> Response:
             "all_entities": all_entities,
             "submissions": submissions,
             "held_batches": held_batches,
+            "retired_entities": _retired_entities(),
         },
     )
+
+
+def _retired_entities() -> set[str]:
+    store = get_sqlite_store()
+    try:
+        return store.retired_entities()
+    finally:
+        store.close()
 
 
 BATCH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -1657,7 +1877,7 @@ def _held_batch_decision(batch_id: str, actor: str, publish: bool) -> str:
         duckdb_store.close()
         sqlite_store.close()
     return (
-        f"Batch {batch_id} published. Run an assessment to include it."
+        f"Batch {batch_id} published."
         if publish
         else f"Batch {batch_id} discarded; nothing of it was stored."
     )
@@ -1665,8 +1885,20 @@ def _held_batch_decision(batch_id: str, actor: str, publish: bool) -> str:
 
 @app.post("/batches/{batch_id}/publish")
 def publish_held_batch(batch_id: str, identity: Identity = Depends(require_role(*INGEST_RUN_ROLES))) -> Response:
-    """Publish a submission that was held for review, as it is (its rejected rows stay out)."""
+    """Publish a submission that was held for review, as it is (its rejected rows stay out), and
+    queue an assessment that includes it."""
     msg = _held_batch_decision(batch_id, identity.username, publish=True)
+    if not msg.startswith("Error"):
+        duckdb_store = DuckDBStore("data")
+        sqlite_store = get_sqlite_store()
+        try:
+            batch = duckdb_store.catalog.batch(batch_id) or {}
+            period = batch.get("period_label") or _latest_period(sqlite_store)
+        finally:
+            duckdb_store.close()
+            sqlite_store.close()
+        job = enqueue_assessment(period, identity, f"held batch {batch_id} published")
+        msg += f" Assessment queued as job {job['job_id']} (see Jobs)."
     return RedirectResponse(url=f"/upload?message={msg}", status_code=303)
 
 
@@ -1777,14 +2009,14 @@ def handle_add_entity(
         },
     )
 
-    # 4. Run assessment to establish baseline
-    runner = AssessmentRunner(duckdb_store, sqlite_store)
-    run_res = runner.run_assessment(period=_latest_period(sqlite_store), actor=identity.username)
-
+    # 4. Queue an assessment to establish the baseline
+    period = _latest_period(sqlite_store)
     duckdb_store.close()
     sqlite_store.close()
+    job = enqueue_assessment(period, identity, f"entity {clean_id} registered", clean_id)
 
-    msg = f"Entity {clean_id} successfully registered! Sector: {resolved_sector} | Assessment Run: {run_res.get('run_id')}"
+    msg = (f"Entity {clean_id} successfully registered! Sector: {resolved_sector} | "
+           f"Assessment queued as job {job['job_id']}")
     return RedirectResponse(url=f"/upload?message={msg}", status_code=303)
 
 
@@ -1792,51 +2024,25 @@ def handle_add_entity(
 async def handle_delete_entity(
     entity_id: str, identity: Identity = Depends(require_role(*INGEST_RUN_ROLES))
 ) -> Response:
-    """Permanently delete an entity, its data partitions, and recalculate portfolio."""
+    """Retire an entity: leave it out of future assessments and queue a re-assessment.
+
+    Nothing is erased. Its published submissions, past runs, findings, scores and review history
+    stay (brief section 10: ordinary deletion must not silently erase historical evidence); a
+    retirement can be undone with `satsa entity reinstate`. Until Phase 2 this route deleted the
+    entity's findings and scores from every run and removed its Parquet partitions."""
     clean_id = require_valid_entity_id(entity_id.strip().upper())
-    duckdb_store, sqlite_store = get_write_stores()
-
-    # 1. Delete from SQLite
-    cur = sqlite_store.conn.cursor()
-    cur.execute("DELETE FROM entities WHERE entity_id = ?", (clean_id,))
-    cur.execute("DELETE FROM entity_scores WHERE entity_id = ?", (clean_id,))
-    cur.execute("DELETE FROM findings WHERE entity_id = ?", (clean_id,))
-    cur.execute("DELETE FROM domain_scores WHERE entity_id = ?", (clean_id,))
-    cur.execute("DELETE FROM review_queue WHERE entity_id = ?", (clean_id,))
-    cur.execute("DELETE FROM submitted_tables WHERE entity_id = ?", (clean_id,))
-    sqlite_store.conn.commit()
-
-    # 2. Delete from DuckDB parquet files: only the exact `entity_id=<id>`
-    # partition directory under each table (no glob patterns, so an ID can
-    # never match another entity's partitions), confined to the parquet root.
-    parquet_root = duckdb_store.parquet_dir
-    partition_name = f"entity_id={clean_id}"
-    if parquet_root.is_dir():
-        for table_dir in parquet_root.iterdir():
-            if not table_dir.is_dir():
-                continue
-            part = safe_join(parquet_root, f"{table_dir.name}/{partition_name}")
-            if part.is_dir() and part.name == partition_name:
-                shutil.rmtree(part, ignore_errors=True)
-
-    # 3. Audit log
-    sqlite_store.append_audit(
-        action="delete_entity",
-        actor=identity.username,
-        details={"entity_id": clean_id},
-    )
-
-    # 4. Trigger assessment run to re-score remaining entities
-    runner = AssessmentRunner(duckdb_store, sqlite_store)
-    runner.run_assessment(period=_latest_period(sqlite_store), actor=identity.username)
-
-    duckdb_store.close()
-    sqlite_store.close()
-
-    return RedirectResponse(
-        url=f"/upload?message=Entity+{clean_id}+has+been+permanently+deleted+and+portfolio+recalculated.",
-        status_code=303,
-    )
+    sqlite_store = get_sqlite_store()
+    try:
+        retired = sqlite_store.retire_entity(clean_id, identity.username, "retired from the upload page")
+        period = _latest_period(sqlite_store)
+    finally:
+        sqlite_store.close()
+    if not retired:
+        return RedirectResponse(url=f"/upload?message=Error:+{clean_id}+is+already+retired.", status_code=303)
+    job = enqueue_assessment(period, identity, f"entity {clean_id} retired")
+    msg = (f"Entity {clean_id} retired: it is left out of future assessments; its submissions, runs and "
+           f"findings are kept. Re-assessment queued as job {job['job_id']}.")
+    return RedirectResponse(url=f"/upload?message={msg}", status_code=303)
 
 
 @app.get("/templates/{template_name}", dependencies=[Depends(require_role(*ANALYST_ROLES))])
@@ -1910,44 +2116,6 @@ TEMPLATE_CSV_CONTENT: dict[str, str] = {
 }
 
 
-# Upload limits (docs/data_contract.md, "Limits"). Configurable for large deployments.
-MAX_UPLOAD_BYTES = int(os.environ.get("SATSA_MAX_UPLOAD_MB", "1024")) * 1024 * 1024
-MAX_ZIP_ENTRIES = int(os.environ.get("SATSA_MAX_ZIP_ENTRIES", "2000"))
-MAX_ZIP_UNCOMPRESSED_BYTES = int(os.environ.get("SATSA_MAX_ZIP_UNCOMPRESSED_MB", "4096")) * 1024 * 1024
-MAX_ZIP_RATIO = 200  # a member compressed more than this is treated as a decompression bomb
-
-
-def check_zip_limits(z: zipfile.ZipFile) -> None:
-    """Refuse an archive that is too large, has too many members or a suspicious compression ratio
-    before anything is extracted (ValueError explains which limit)."""
-    infos = z.infolist()
-    if len(infos) > MAX_ZIP_ENTRIES:
-        raise ValueError(f"the archive has {len(infos)} members; the limit is {MAX_ZIP_ENTRIES}")
-    total = 0
-    for info in infos:
-        safe_archive_member(info.filename)
-        total += info.file_size
-        if info.compress_size and info.file_size / info.compress_size > MAX_ZIP_RATIO and info.file_size > 1024 * 1024:
-            raise ValueError(f"archive member {info.filename!r} expands more than {MAX_ZIP_RATIO}x; refused")
-    if total > MAX_ZIP_UNCOMPRESSED_BYTES:
-        raise ValueError(
-            f"the archive expands to {total // (1024 * 1024)} MiB; the limit is "
-            f"{MAX_ZIP_UNCOMPRESSED_BYTES // (1024 * 1024)} MiB"
-        )
-
-
-def _copy_limited(source: Any, dest: Path, budget: int) -> int:
-    """Copy an upload to disk, refusing it once the request's byte budget is spent."""
-    written = 0
-    with open(dest, "wb") as out:
-        while chunk := source.read(1024 * 1024):
-            written += len(chunk)
-            if written > budget:
-                raise ValueError(f"the upload is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)} MiB")
-            out.write(chunk)
-    return written
-
-
 @app.post("/upload")
 def handle_upload(
     files: list[UploadFile] = File(...),
@@ -1955,11 +2123,14 @@ def handle_upload(
     period: Annotated[str, Form()] = "",
     identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
 ) -> Response:
-    """Ingest a file submission through the ingestion service.
+    """Receive a file submission and queue it as an import job (satsa.jobs).
 
-    A target entity binds the submission: rows naming another entity are rejected. A clean
-    submission is published and assessed; one with rejected rows, unreadable files or values is
-    held unpublished until an analyst publishes or discards it (below)."""
+    The request only checks the form, the upload size and archive limits, and saves the files
+    under data/jobs/<job>/input. The worker then validates and ingests them through the
+    ingestion service: a target entity binds the submission (rows naming another entity are
+    rejected); a clean submission is published and assessed; one with rejected rows, unreadable
+    files or values is held unpublished until an analyst publishes or discards it. The browser
+    is sent to the job's page, which shows the outcome when the worker is done."""
     target_clean = target_entity.strip() or None
     if target_clean is not None and not is_valid_entity_id(target_clean):
         return RedirectResponse(
@@ -1970,180 +2141,67 @@ def handle_upload(
         return RedirectResponse(
             url="/upload?message=Error:+period+must+look+like+2026-Q1,+2026-H2+or+2026-03", status_code=303
         )
-    duckdb_store, sqlite_store = get_write_stores()
-    pipeline = IngestionPipeline(duckdb_store, sqlite_store)
-
+    job_id = new_job_id()
+    workdir = job_dir("data", job_id)
+    inbox = workdir / IMPORT_INPUT
+    inbox.mkdir(parents=True)
+    digest = hashlib.sha256()
+    names: list[str] = []
     try:
-        sqlite_store.record_live_event(
-            "ASSESSMENT_UPLOAD",
-            actor=identity.username,
-            role=identity.role,
-            entity_id=target_clean,
-            details={"file_count": len(files), "filenames": [uf.filename for uf in files]},
+        budget = MAX_UPLOAD_BYTES
+        for uf in files:
+            # Only the base name of the client-supplied filename is used, so a
+            # name like "../../x.csv" cannot write outside the job's directory.
+            safe_name = Path((uf.filename or "").replace("\\", "/")).name or "upload.csv"
+            if safe_name in names:
+                safe_name = f"{len(names)}-{safe_name}"
+            names.append(safe_name)
+            dest = inbox / safe_name
+            budget -= _copy_limited(uf.file, dest, budget)
+            digest.update(safe_name.encode() + hashlib.sha256(dest.read_bytes()).digest())
+            # Archive limits and member paths are checked now, before the job is queued, and
+            # again by the job before it extracts anything.
+            if dest.suffix.lower() == ".zip":
+                with zipfile.ZipFile(dest, "r") as z:
+                    check_zip_limits(z)
+    except (ValueError, OSError, zipfile.BadZipFile) as e:
+        shutil.rmtree(workdir, ignore_errors=True)
+        return RedirectResponse(url=f"/upload?message=Ingestion error: {e}", status_code=303)
+
+    sqlite_store = get_sqlite_store()
+    try:
+        params = {"target_entity": target_clean, "period": period_clean, "files": names,
+                  "default_period": _latest_period(sqlite_store)}
+        job = JobQueue(sqlite_store).enqueue(
+            "import", {**params, "role": identity.role}, identity.username,
+            input_fingerprint=fingerprint("import", params, extra=digest.hexdigest()), job_id=job_id,
         )
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_path = Path(tmpdir)
-            budget = MAX_UPLOAD_BYTES
-            for uf in files:
-                # Only the base name of the client-supplied filename is used, so a
-                # name like "../../x.csv" cannot write outside the temp directory.
-                safe_name = Path((uf.filename or "").replace("\\", "/")).name or "upload.csv"
-                dest = tmp_path / safe_name
-                budget -= _copy_limited(uf.file, dest, budget)
-                # If ZIP, validate every member path and the archive's limits before unpacking anything.
-                if dest.suffix.lower() == ".zip":
-                    with zipfile.ZipFile(dest, "r") as z:
-                        check_zip_limits(z)
-                        z.extractall(tmp_path)
-
-            # A product export (e.g. a Cortex XSIAM case list) is recognised by its own columns
-            # and translated by its mapping; anything else is read in the canonical layout.
-            mapping = detect_source_mapping(tmp_path, MAPPINGS_DIR)
-            if mapping is not None and not (target_clean or mapping.entity_id):
-                res: dict[str, Any] = {
-                    "status": "error",
-                    "message": (
-                        f"This is a {mapping.source} export, which does not say which CSE it "
-                        "belongs to: choose a target entity and upload it again."
-                    ),
-                }
-            else:
-                res = pipeline.ingest_directory(
-                    tmp_path,
-                    default_entity_id=target_clean,
-                    mapping=mapping,
-                    bound_entity=target_clean,
-                    period=period_clean,
-                    transport="upload",
-                    submitted_by=identity.username,
-                    policy="if_clean",
-                )
-                if mapping is not None:
-                    res["detected_source"] = mapping.source
-
-            if res.get("status") == "empty":
-                msg = "Warning: No supported CSV, TSV, Excel (.xlsx) or JSON files could be parsed from upload."
-            elif res.get("status") == "held":
-                held_why = "; ".join(
-                    f["summary"] for f in res.get("file_coverage") or [] if f["status"] not in ("ingested", "empty")
-                )
-                bad_ts = ", ".join(f"{k}: {n}" for k, n in (res.get("invalid_timestamps") or {}).items())
-                msg = (
-                    f"Held for review: batch {res.get('batch_id')} was NOT published because part of it could not be "
-                    "accepted"
-                    + (f" ({held_why[:500]})" if held_why else "")
-                    + (f" (unreadable timestamps: {bad_ts})" if bad_ts else "")
-                    + ". See Data Quality, then publish it as it is or discard it and upload a corrected file "
-                    "(Held submissions, below). No assessment was run."
-                )
-            elif res.get("status") == "error":
-                reason = str(res.get("message", "Failed to ingest batch"))
-                msg = f"Error: {reason[:800]}{'...' if len(reason) > 800 else ''}"
-            elif res.get("status") == "partial":
-                # Do not assess on a half-stored submission: a missing table reads as a SOC defect.
-                msg = (
-                    "Error: these tables could not be stored: "
-                    f"{', '.join(res.get('failed_tables', []))}. No assessment was run; see Data Quality, "
-                    "fix the files and upload again."
-                )
-            else:
-                # Trigger assessment run: for the submission's period, else the one the dashboard is on
-                upload_period = period_clean or _latest_period(sqlite_store)
-                sqlite_store.record_live_event(
-                    "ASSESSMENT_STARTED",
-                    actor=identity.username,
-                    role=identity.role,
-                    entity_id=target_clean or "PORTFOLIO",
-                    details={"period": upload_period},
-                )
-                runner = AssessmentRunner(duckdb_store, sqlite_store)
-                run_res = runner.run_assessment(period=upload_period, actor=identity.username)
-                sqlite_store.record_live_event(
-                    "ASSESSMENT_COMPLETED",
-                    actor=identity.username,
-                    role=identity.role,
-                    entity_id=target_clean or "PORTFOLIO",
-                    details={"period": upload_period, "findings_count": run_res.get("findings_count", 0)},
-                )
-
-                detected = ", ".join(res.get("entities", [])) or target_entity or "Auto"
-                row_str = " | ".join(f"{k}: {v}" for k, v in res.get("row_counts", {}).items())
-                msg = (
-                    f"Batch ingested successfully! [{row_str}] | Entities: {detected} | "
-                    f"Assessment: {run_res.get('findings_count', 0)} findings flagged."
-                )
-                if res.get("detected_source"):
-                    msg += f" | Recognised as a {res['detected_source']} export by its columns."
-                tidied = res.get("file_sanitising") or []
-                if tidied:
-                    notes = "; ".join(f"{f['file']}: {', '.join(f['notes'])}" for f in tidied)
-                    msg += f" | Read notes: {notes[:400]}{'...' if len(notes) > 400 else ''}"
-                not_whole = [
-                    f["summary"]
-                    for f in res.get("file_coverage") or []
-                    if f["status"] not in ("ingested", "empty")
-                ]
-                if not_whole:
-                    notes = "; ".join(not_whole)
-                    msg += (
-                        f" | Not fully ingested (see Data Quality): {notes[:600]}"
-                        f"{'...' if len(notes) > 600 else ''}"
-                    )
-                skipped = res.get("unattributed_rows") or {}
-                if skipped:
-                    counts = ", ".join(f"{t}: {n}" for t, n in sorted(skipped.items()))
-                    msg += (
-                        f" | Warning: rows with no entity_id were not stored [{counts}]; "
-                        "add an entity_id column or choose a target entity."
-                    )
-    except (ValueError, KeyError, OSError, RuntimeError) as e:
-        msg = f"Ingestion error: {e}"
+        if job["deduplicated"]:
+            shutil.rmtree(workdir, ignore_errors=True)
+        else:
+            sqlite_store.append_audit(action="job_queued", actor=identity.username,
+                                      details={"job_id": job_id, "kind": "import", "files": names})
+            sqlite_store.record_live_event(
+                "ASSESSMENT_UPLOAD", actor=identity.username, role=identity.role, entity_id=target_clean,
+                details={"file_count": len(files), "filenames": names, "job_id": job_id},
+            )
     finally:
-        duckdb_store.close()
         sqlite_store.close()
-
-    return RedirectResponse(url=f"/upload?message={msg}", status_code=303)
+    return RedirectResponse(url=f"/jobs/{job['job_id']}", status_code=303)
 
 
 @app.post("/upload/trigger-demo")
 def handle_trigger_demo(
     identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
 ) -> Response:
-    """One-click demo re-seed and assessment execution.
+    """Queue the demonstration dataset: synthetic data, its assessment and three historical
+    periods (see satsa.jobs.handlers.demo_seed). The browser goes to the job's page.
 
-    Also seeds genuine multi-period historical runs (see
-    satsa.scoring.history.seed_historical_periods) so the portfolio trend
-    chart has real, non-fabricated historical data to plot immediately
-    after the demo re-seed.
-    """
-    duckdb_store, sqlite_store = get_write_stores()
-    sqlite_store.record_live_event(
-        "ASSESSMENT_STARTED",
-        actor=identity.username,
-        role=identity.role,
-        entity_id="DEMO_PORTFOLIO",
-        details={"period": "2026-Q1", "mode": "demo_seed"},
-    )
-    gen = SyntheticDataGenerator(seed=42, base_alerts_per_entity=1500)
-    with tempfile.TemporaryDirectory() as tmpdir:
-        csv_dir, _ = gen.save_dataset(Path(tmpdir))
-        pipeline = IngestionPipeline(duckdb_store, sqlite_store)
-        _ = pipeline.ingest_directory(csv_dir)
-        runner = AssessmentRunner(duckdb_store, sqlite_store)
-        run_res = runner.run_assessment(period="2026-Q1", actor=identity.username)
-
-    duckdb_store.close()
-
-    seed_historical_periods("data", sqlite_store, n_periods=3, actor=identity.username)
-    sqlite_store.record_live_event(
-        "ASSESSMENT_COMPLETED",
-        actor=identity.username,
-        role=identity.role,
-        entity_id="DEMO_PORTFOLIO",
-        details={"period": "2026-Q1", "findings_count": run_res.get("findings_count", 0)},
-    )
-    sqlite_store.close()
-    return RedirectResponse(url="/", status_code=303)
+    Demonstration deployments only: synthetic data never enters a production deployment."""
+    if _deployment_settings().get("mode") != "demo":
+        raise HTTPException(status_code=403, detail="Demonstration data can only be loaded in a demo deployment.")
+    job = enqueue_job("demo_seed", {}, identity, max_attempts=1)
+    return RedirectResponse(url=f"/jobs/{job['job_id']}", status_code=303)
 
 
 @app.get("/blind-review", response_class=HTMLResponse, dependencies=[Depends(require_authenticated)])
@@ -2564,22 +2622,26 @@ async def handle_tuning_save(
     if changes:
         _write_rules_config(cfg)
 
-    # Re-evaluate with the (possibly) updated thresholds, for the selected period
-    duckdb_store, sqlite_store = get_write_stores()
-    period = _selected_period(form, sqlite_store)
-    runner = AssessmentRunner(duckdb_store, sqlite_store)
-    res = runner.run_assessment(period=period, actor=identity.username)
-    sqlite_store.append_audit(
-        action="tuning_save",
-        actor=identity.username,
-        details={"changes": changes, "run_id": res.get("run_id"), "period": period},
-    )
-    duckdb_store.close()
-    sqlite_store.close()
+    # Re-evaluate with the (possibly) updated thresholds, for the selected period, in the worker
+    sqlite_store = get_sqlite_store()
+    try:
+        period = _selected_period(form, sqlite_store)
+    finally:
+        sqlite_store.close()
+    job = enqueue_assessment(period, identity, "rule parameters saved")
+    sqlite_store = get_sqlite_store()
+    try:
+        sqlite_store.append_audit(
+            action="tuning_save",
+            actor=identity.username,
+            details={"changes": changes, "job_id": job["job_id"], "period": period},
+        )
+    finally:
+        sqlite_store.close()
 
     msg = (
-        f"Parameters updated and re-calibrated! Period: {period} | New Run ID: {res.get('run_id')} | "
-        f"Findings: {res.get('findings_count')}"
+        f"Parameters updated! Period: {period} | Re-assessment queued as job {job['job_id']} "
+        "(see Jobs for its findings)"
     )
     return RedirectResponse(url=f"/tuning?message={msg}", status_code=303)
 
@@ -3022,7 +3084,8 @@ class BatchSubmissionPayload(BaseModel):
 @app.post("/api/v1/submissions", tags=["Periodic Batch Submission"])
 async def api_batch_submission(
     payload: BatchSubmissionPayload,
-    identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
+    request: Request,
+    identity: Identity = Depends(require_submitter),
 ) -> dict[str, Any]:
     """
     Submit ONE periodic batch (a CSE's records for a supervisory review period) as JSON -- the
@@ -3042,13 +3105,28 @@ async def api_batch_submission(
       submission (`2026-02` inside `2026-Q1`), is rejected with HTTP 409. A correction names
       the batch it corrects in `revision_of`; it then replaces the earlier records by key.
 
-    Requires an authenticated analyst session (POST /login first and
-    retain the session cookie).
+    Machine clients authenticate with a service credential (`Authorization: Bearer
+    satsa_sc_...`, docs/api_credentials.md), which may submit only for the entities it was
+    issued for. An analyst's browser session is also accepted.
     """
     clean_id = payload.entity_id.strip().upper()
     if not clean_id:
         raise HTTPException(status_code=400, detail="entity_id is required")
     require_valid_entity_id(clean_id)
+    principal = getattr(request.state, "service_principal", None)
+    if principal is not None:
+        store = get_sqlite_store()
+        try:
+            allowed = principal.may_submit_for(clean_id)
+            store.append_audit(
+                action="service_credential_used" if allowed else "service_credential_refused",
+                actor=principal.actor,
+                details={"credential_id": principal.credential_id, "entity_id": clean_id, "period": payload.period},
+            )
+        finally:
+            store.close()
+        if not allowed:
+            raise HTTPException(status_code=403, detail=f"This credential may not submit for {clean_id}.")
     sections = {name: getattr(payload, name) for name in SUBMISSION_SECTIONS}
     for rows in sections.values():
         for row in rows:
@@ -3115,7 +3193,7 @@ async def api_batch_submission(
         ingested_counts = {
             name: counts.get(table, 0) for name, table in SUBMISSION_SECTIONS.items() if sections[name]
         }
-        run_id = None
+        assessment_job: str | None = None
         replay = bool(res.get("idempotent_replay"))
         if not replay:
             sqlite_store.append_audit(
@@ -3131,8 +3209,8 @@ async def api_batch_submission(
                 },
             )
             if payload.run_assessment_now and any(ingested_counts.values()):
-                runner = AssessmentRunner(duckdb_store, sqlite_store)
-                run_id = runner.run_assessment(period=payload.period, actor=identity.username).get("run_id")
+                assessment_job = enqueue_assessment(payload.period, identity, f"API batch {res.get('batch_id')}",
+                                                    clean_id)["job_id"]
     finally:
         duckdb_store.close()
         sqlite_store.close()
@@ -3145,7 +3223,11 @@ async def api_batch_submission(
         "batch_id": res.get("batch_id"),
         "ingested_counts": ingested_counts,
         "declared_empty": payload.declared_empty,
-        "assessment_run_id": run_id,
+        # Assessments run in the worker (satsa.jobs): the run id is on the job once it succeeds
+        # (GET /api/v1/jobs/{assessment_job_id}). `assessment_run_id` stays for compatibility
+        # and is always null from API 1.1 on.
+        "assessment_run_id": None,
+        "assessment_job_id": assessment_job,
         "message": (
             "This batch was already received; nothing new was stored."
             if replay

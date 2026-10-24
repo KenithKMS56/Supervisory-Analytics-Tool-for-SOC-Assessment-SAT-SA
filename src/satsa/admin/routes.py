@@ -30,6 +30,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from satsa.admin.rbac import can_access_admin_portal
+from satsa.auth import mfa
 from satsa.auth.identities import (
     LOGIN_LOCKOUT_MINUTES,
     LOGIN_MAX_FAILURES,
@@ -37,14 +38,26 @@ from satsa.auth.identities import (
     passphrase_policy_error,
     verify_passphrase,
 )
+from satsa.deployment import SetupError, complete_setup, setup_pending
+from satsa.deployment import settings as deployment_settings
 from satsa.security import is_valid_username
 from satsa.store.sqlite import LIVE_EVENTS_MAX_LIMIT, SQLiteStore
+from satsa.web_security import cross_site_reason
 
 # Setup Jinja2 template environment for admin portal
 _ADMIN_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(_ADMIN_DIR / "templates"))
 
 router = APIRouter()
+
+
+def _deployment(request: Request) -> dict[str, str]:
+    """The deployment's settings (mode, name ...) for page chrome such as the demo banner."""
+    store = getattr(request.app.state, "store", None)
+    return deployment_settings(store) if store is not None else {}
+
+
+templates.env.globals["deployment"] = _deployment
 
 ADMIN_COOKIE_NAME = "nciipc_admin_session"
 
@@ -70,6 +83,24 @@ class AdminPasswordChangeRequired(Exception):
     """
 
 
+class AdminMfaRequired(Exception):
+    """The account has a second factor and this session has not proved it yet (-> /login/mfa)."""
+
+
+class AdminMfaEnrolmentRequired(Exception):
+    """MFA is required for administrators and this account has no factor yet (-> /mfa/setup)."""
+
+
+def _mfa_gate(request: Request, user: dict[str, Any], *, allow_enrolment: bool = False) -> None:
+    """Second-factor policy (satsa.auth.mfa) for an authenticated administrator."""
+    store = get_store(request)
+    if mfa.enrolled(store, user["username"]):
+        if not user.get("_mfa_verified"):
+            raise AdminMfaRequired()
+    elif not allow_enrolment and mfa.policy(store) == "required":
+        raise AdminMfaEnrolmentRequired()
+
+
 def get_session_user(request: Request) -> dict[str, Any] | None:
     """Resolve the identity behind the admin session cookie (any role), or None."""
     token = request.cookies.get(ADMIN_COOKIE_NAME)
@@ -83,6 +114,7 @@ def get_session_user(request: Request) -> dict[str, Any] | None:
     if not user or user.get("is_blocked") or user.get("status") == "BLOCKED":
         store.delete_admin_session(token)
         return None
+    user["_mfa_verified"] = bool(session.get("mfa_verified_at"))
     return user
 
 
@@ -94,7 +126,10 @@ def get_current_operator(request: Request) -> dict[str, Any] | None:
     user = get_session_user(request)
     if user and can_access_admin_portal(user.get("role", "")):
         if user.get("force_password_change"):
+            if mfa.enrolled(get_store(request), user["username"]) and not user.get("_mfa_verified"):
+                raise AdminMfaRequired()
             raise AdminPasswordChangeRequired()
+        _mfa_gate(request, user)
         return user
     return None
 
@@ -115,12 +150,16 @@ def require_admin_operator(request: Request) -> dict[str, Any]:
             detail="The NCIIPC Administration Portal requires an administrator role.",
         )
     if user.get("force_password_change"):
+        if mfa.enrolled(get_store(request), user["username"]) and not user.get("_mfa_verified"):
+            raise AdminMfaRequired()
         raise AdminPasswordChangeRequired()
+    _mfa_gate(request, user)
     return user
 
 
 def require_admin_session(request: Request) -> dict[str, Any]:
-    """Like require_admin_operator, but open to an administrator who owes a passphrase change."""
+    """Like require_admin_operator, but open to an administrator who owes a passphrase change
+    or has not enrolled a second factor yet. A factor that exists must still be proved."""
     user = get_session_user(request)
     if user is None:
         raise AdminAuthRequired()
@@ -129,6 +168,7 @@ def require_admin_session(request: Request) -> dict[str, Any]:
             status_code=status.HTTP_403_FORBIDDEN,
             detail="The NCIIPC Administration Portal requires an administrator role.",
         )
+    _mfa_gate(request, user, allow_enrolment=True)
     return user
 
 
@@ -145,16 +185,91 @@ def require_valid_username(username: str) -> None:
 
 @router.get("/login", response_class=HTMLResponse)
 async def admin_login_page(request: Request, error: str | None = None) -> Any:
-    """Render the admin login page or redirect if already authenticated."""
+    """Render the admin login page or redirect if already authenticated (or to first-run setup)."""
     operator = get_current_operator(request)
     if operator:
         return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    if setup_pending(get_store(request)):
+        return RedirectResponse(url="/setup", status_code=status.HTTP_303_SEE_OTHER)
 
     return templates.TemplateResponse(
         request=request,
         name="admin_login.html",
         context={"request": request, "error": error},
     )
+
+
+# ---- First-run setup (satsa.deployment): open only while a production deployment has no administrator.
+
+SETUP_TARGET = "first-run-setup"
+COMMON_TIMEZONES = ("Asia/Kolkata", "UTC", "Asia/Dubai", "Asia/Singapore", "Europe/London", "America/New_York")
+
+
+def _setup_page(request: Request, error: str | None = None, values: dict[str, Any] | None = None,
+                status_code: int = 200) -> Any:
+    from satsa.serving import ServingConfigError, exposure_warning, serving_config
+
+    try:
+        config = serving_config()
+        warning = exposure_warning(config) if not config.tls else None
+        network = (
+            f"The portals listen on {config.host} over {config.scheme.upper()}"
+            + (" (this machine only)." if not config.external else " (reachable from other machines).")
+        )
+    except ServingConfigError as exc:
+        warning, network = str(exc), "The TLS configuration is incomplete."
+    return templates.TemplateResponse(
+        request=request,
+        name="admin_setup.html",
+        context={"request": request, "error": error, "values": values or {}, "network_status": network,
+                 "network_warning": warning, "timezones": COMMON_TIMEZONES, "min_passphrase": MIN_PASSPHRASE_LENGTH,
+                 "data_dir": str(Path("data").resolve())},
+        status_code=status_code,
+    )
+
+
+@router.get("/setup", response_class=HTMLResponse)
+async def admin_setup_page(request: Request) -> Any:
+    if not setup_pending(get_store(request)):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _setup_page(request)
+
+
+@router.post("/setup")
+async def admin_setup_post(
+    request: Request,
+    token: str = Form(""),
+    username: str = Form(""),
+    password: str = Form(""),
+    confirm_password: str = Form(""),
+    deployment_name: str = Form(""),
+    timezone: str = Form(""),
+    job_inputs_days: int = Form(30),
+    backups_keep: int = Form(7),
+) -> Any:
+    """Create the first administrator with the one-time token, then send them to the login page."""
+    store = get_store(request)
+    if not setup_pending(store):
+        raise HTTPException(status_code=404, detail="Not Found")
+    values = {"username": username, "deployment_name": deployment_name, "timezone": timezone,
+              "job_inputs_days": job_inputs_days, "backups_keep": backups_keep}
+    failures = store.count_recent_login_failures(
+        SETUP_TARGET, LOGIN_LOCKOUT_MINUTES, table="admin_audit_log",
+        fail_action="SETUP_FAILED", success_action="FIRST_RUN_SETUP",
+    )
+    if failures >= LOGIN_MAX_FAILURES:
+        return _setup_page(request, f"Too many failed attempts. Try again in {LOGIN_LOCKOUT_MINUTES} minutes.",
+                           values, status_code=429)
+    try:
+        complete_setup(store, "data", token=token, admin_username=username, passphrase=password,
+                       confirm=confirm_password, deployment_name=deployment_name, timezone=timezone,
+                       job_inputs_days=job_inputs_days, backups_keep=backups_keep, actor=username.strip())
+    except SetupError as exc:
+        store.append_admin_audit("SETUP_FAILED", SETUP_TARGET, target=SETUP_TARGET, details={"reason": str(exc)})
+        return _setup_page(request, str(exc), values, status_code=400)
+    store.append_admin_audit("FIRST_RUN_SETUP", SETUP_TARGET, target=username.strip(),
+                             details={"deployment_name": deployment_name.strip(), "timezone": timezone.strip()})
+    return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
 
 
 ADMIN_LOGIN_FAILED_MESSAGE = "Invalid administrative credentials."
@@ -228,9 +343,15 @@ async def admin_login_post(
         details={"role": role, "password_change_required": must_change},
     )
 
-    resp = RedirectResponse(
-        url="/change-password" if must_change else "/", status_code=status.HTTP_303_SEE_OTHER
-    )
+    if mfa.enrolled(store, username_clean):
+        next_url = "/login/mfa"
+    elif must_change:
+        next_url = "/change-password"
+    elif mfa.policy(store) == "required":
+        next_url = "/mfa/setup"
+    else:
+        next_url = "/"
+    resp = RedirectResponse(url=next_url, status_code=status.HTTP_303_SEE_OTHER)
     resp.set_cookie(
         key=ADMIN_COOKIE_NAME,
         value=token,
@@ -243,6 +364,116 @@ async def admin_login_post(
         max_age=8 * 3600,
     )
     return resp
+
+
+# ---- Second factor (satsa.auth.mfa) ----------------------------------------------------------
+
+MFA_LOCKOUT_FAILURES = 5
+
+
+def _mfa_page(request: Request, name: str, **context: Any) -> Any:
+    status_code = context.pop("status_code", 200)
+    return templates.TemplateResponse(request=request, name=name, context={"request": request, **context},
+                                      status_code=status_code)
+
+
+@router.get("/login/mfa", response_class=HTMLResponse)
+async def admin_mfa_page(request: Request) -> Any:
+    """The second step of signing in: a code from the authenticator, or a recovery code."""
+    user = get_session_user(request)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    if not mfa.enrolled(get_store(request), user["username"]) or user.get("_mfa_verified"):
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    return _mfa_page(request, "admin_mfa.html", error=None)
+
+
+@router.post("/login/mfa")
+async def admin_mfa_post(request: Request, code: str = Form("")) -> Any:
+    store = get_store(request)
+    user = get_session_user(request)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+    username = user["username"]
+    if not mfa.enrolled(store, username) or user.get("_mfa_verified"):
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    method = mfa.verify(store, username, code)
+    if method is None:
+        store.append_admin_audit("ADMIN_MFA_FAIL", username, target=username, details={})
+        failures = store.count_recent_login_failures(
+            username, LOGIN_LOCKOUT_MINUTES, table="admin_audit_log",
+            fail_action="ADMIN_MFA_FAIL", success_action="ADMIN_MFA_OK",
+        )
+        if failures >= MFA_LOCKOUT_FAILURES:
+            store.delete_admin_session(request.cookies.get(ADMIN_COOKIE_NAME, ""))
+            resp = RedirectResponse(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+            resp.delete_cookie(ADMIN_COOKIE_NAME)
+            return resp
+        return _mfa_page(request, "admin_mfa.html", error="That code is not valid.",
+                         status_code=status.HTTP_401_UNAUTHORIZED)
+    mfa.mark_session_verified(store, request.cookies.get(ADMIN_COOKIE_NAME, ""))
+    store.append_admin_audit("ADMIN_MFA_OK", username, target=username,
+                             details={"method": method, "recovery_codes_left": mfa.remaining_recovery_codes(store, username)})
+    target = "/change-password" if user.get("force_password_change") else "/"
+    return RedirectResponse(url=target, status_code=status.HTTP_303_SEE_OTHER)
+
+
+def _pending_secret(store: SQLiteStore, username: str) -> tuple[str, str]:
+    row = store.conn.execute(
+        "SELECT secret_b32 FROM mfa_factors WHERE username = ? AND confirmed_at IS NULL", (username,)
+    ).fetchone()
+    if row is None:
+        return mfa.begin_enrolment(store, username)
+    from urllib.parse import quote
+
+    secret = row["secret_b32"]
+    return secret, (f"otpauth://totp/{quote(mfa.ISSUER)}:{quote(username)}?secret={secret}"
+                    f"&issuer={quote(mfa.ISSUER)}&algorithm=SHA1&digits={mfa.DIGITS}&period={mfa.STEP_SECONDS}")
+
+
+@router.get("/mfa/setup", response_class=HTMLResponse)
+async def admin_mfa_setup_page(request: Request, user: dict[str, Any] = Depends(require_admin_session)) -> Any:
+    store = get_store(request)
+    if user.get("force_password_change"):
+        raise AdminPasswordChangeRequired()
+    if mfa.enrolled(store, user["username"]):
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    secret, uri = _pending_secret(store, user["username"])
+    return _mfa_page(request, "admin_mfa_setup.html", secret=secret, uri=uri, codes=None, error=None,
+                     required=mfa.policy(store) == "required")
+
+
+@router.post("/mfa/setup")
+async def admin_mfa_setup_post(
+    request: Request, code: str = Form(""), user: dict[str, Any] = Depends(require_admin_session)
+) -> Any:
+    store = get_store(request)
+    if user.get("force_password_change"):
+        raise AdminPasswordChangeRequired()
+    if mfa.enrolled(store, user["username"]):
+        return RedirectResponse(url="/", status_code=status.HTTP_303_SEE_OTHER)
+    codes = mfa.confirm_enrolment(store, user["username"], code)
+    if codes is None:
+        secret, uri = _pending_secret(store, user["username"])
+        return _mfa_page(request, "admin_mfa_setup.html", secret=secret, uri=uri, codes=None,
+                         error="That code is not valid. Check the device's clock and try the next code.",
+                         required=mfa.policy(store) == "required", status_code=status.HTTP_400_BAD_REQUEST)
+    mfa.mark_session_verified(store, request.cookies.get(ADMIN_COOKIE_NAME, ""))
+    return _mfa_page(request, "admin_mfa_setup.html", secret=None, uri=None, codes=codes, error=None, required=False)
+
+
+@router.post("/users/{username}/mfa-reset")
+async def admin_user_mfa_reset(
+    request: Request, username: str, operator: dict[str, Any] = Depends(require_admin_operator)
+) -> Any:
+    """Remove another administrator's second factor (lost device). Audited; they must enrol again."""
+    require_valid_username(username)
+    if username == operator["username"]:
+        return RedirectResponse(url="/users?error=Another+administrator+must+reset+your+second+factor.",
+                                status_code=status.HTTP_303_SEE_OTHER)
+    done = mfa.reset(get_store(request), username, operator["username"])
+    msg = f"Second+factor+of+{username}+removed" if done else f"{username}+has+no+second+factor"
+    return RedirectResponse(url=f"/users?message={msg}", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/change-password", response_class=HTMLResponse)
@@ -329,6 +560,12 @@ async def admin_logout_post(request: Request) -> Any:
 # =========================================================================
 # Splash Screen & Dashboard Overview
 # =========================================================================
+
+
+@router.get("/healthz", include_in_schema=False)
+async def admin_healthz() -> dict[str, str]:
+    """Liveness of the Admin Portal process."""
+    return {"status": "ok"}
 
 
 @router.get("/splash", response_class=HTMLResponse)
@@ -475,7 +712,7 @@ async def admin_user_create_post(
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    if len(password) < 8:
+    if len(password) < MIN_PASSPHRASE_LENGTH:
         return templates.TemplateResponse(
             request=request,
             name="admin_user_create.html",
@@ -485,7 +722,7 @@ async def admin_user_create_post(
                 "active_tab": "users",
                 "organisations": store.list_organisations(),
                 "cses": store.list_cses(),
-                "error": "Passphrase must be at least 8 characters.",
+                "error": f"Passphrase must be at least {MIN_PASSPHRASE_LENGTH} characters.",
             },
             status_code=status.HTTP_400_BAD_REQUEST,
         )
@@ -784,7 +1021,7 @@ async def admin_user_reset_post(
     if not user:
         return RedirectResponse(url="/users?error=User+not+found", status_code=status.HTTP_303_SEE_OTHER)
 
-    if len(new_password) < 8:
+    if len(new_password) < MIN_PASSPHRASE_LENGTH:
         return templates.TemplateResponse(
             request=request,
             name="admin_user_reset.html",
@@ -793,7 +1030,7 @@ async def admin_user_reset_post(
                 "operator": operator,
                 "active_tab": "users",
                 "user": user,
-                "error": "Passphrase must be at least 8 characters.",
+                "error": f"Passphrase must be at least {MIN_PASSPHRASE_LENGTH} characters.",
             },
             status_code=status.HTTP_400_BAD_REQUEST,
         )
@@ -1018,6 +1255,11 @@ async def admin_activity_recent(
 async def admin_activity_websocket(websocket: WebSocket) -> None:
     """Admin activity feed over WebSocket: pushes new SAT-SA operator events (admin session required)."""
     store: SQLiteStore = websocket.app.state.store
+    # Browsers send Origin on every WebSocket handshake and SameSite does not apply to it, so a
+    # page on another site could otherwise open this feed with the administrator's cookie.
+    if cross_site_reason("GET", websocket.headers, str(websocket.url), websocket=True) is not None:
+        await websocket.close(code=1008)
+        return
     # Same authorization as every other admin route: a valid, unblocked admin
     # session with an administrator role. Otherwise refuse the handshake
     # (policy violation, 1008) before any event is sent.
@@ -1030,6 +1272,8 @@ async def admin_activity_websocket(websocket: WebSocket) -> None:
         or user.get("status") == "BLOCKED"
         or not can_access_admin_portal(user.get("role", ""))
         or user.get("force_password_change")
+        or (mfa.enrolled(store, user["username"]) and not (session or {}).get("mfa_verified_at"))
+        or (not mfa.enrolled(store, user["username"]) and mfa.policy(store) == "required")
     ):
         await websocket.close(code=1008)
         return

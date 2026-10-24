@@ -206,5 +206,9 @@ def test_mutating_request_is_seen_by_the_next_read(workspace):
         follow_redirects=False,
     )
     assert added.status_code == 303, added.text[:300]
+    # The assessment that includes the new entity is a queued job (docs/product_brief.md section 9).
+    from satsa.jobs.worker import run_pending_jobs
+
+    assert [j["state"] for j in run_pending_jobs()] == ["succeeded"]
     after = {e["entity_id"] for e in client.get("/api/v1/entities").json()}
     assert "CSE-NEW" in after and loads() >= 2

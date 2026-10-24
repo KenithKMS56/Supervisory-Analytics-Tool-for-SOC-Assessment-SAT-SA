@@ -217,6 +217,16 @@
     </div>
 
   </form>
+
+  <form method="post" action="/users/{{ user.username }}/mfa-reset" class="form-body"
+        onsubmit="return confirm('Remove the second factor of {{ user.username }}? They must enrol a new one at their next sign-in.');">
+    <div class="form-section">
+      <div class="form-section-header">Second factor</div>
+      <p style="font-size: 0.85rem;">If this administrator lost their authenticator device and recovery codes, remove the
+        factor here. The reset is audited. You cannot reset your own.</p>
+      <button type="submit" class="btn-admin">Reset second factor</button>
+    </div>
+  </form>
 </div>
 
 <script>
