@@ -46,7 +46,7 @@ Statuses:
 | V12.4.1 | Uploads stored outside the web root | verified | `data/jobs/<id>/input`, never served |
 | V13.1.3 | API URLs do not expose sensitive information | verified | Service tokens travel in a header, never in a URL |
 | V13.2.1 | Methods restricted | verified | Route matrix |
-| V14.2.1 | Dependencies up to date / audited | **not implemented** | No `pip-audit` run in this phase (Phase 5) |
+| V14.2.1 | Dependencies up to date / audited | **partial** | `pip-audit` on every pinned package, 2026-10-20: no known vulnerabilities (docs/dependency_audit.md). Not automated: it needs the network, so it is rerun by hand before a release |
 | V14.3.2 | No debug modes in production | verified | `/docs` needs a session; no debug server |
 | V14.5.3 | Origin header validated | verified | `satsa.web_security` |
 | V14.4.3 | Content-Security-Policy | partial | Sent on every response of both portals: `default-src`, `connect-src`, `form-action` and `base-uri` limited to the portal, `object-src 'none'`, `frame-ancestors 'none'`. **Gap:** `script-src` and `style-src` keep `'unsafe-inline'` until the inline scripts and handlers move into files |

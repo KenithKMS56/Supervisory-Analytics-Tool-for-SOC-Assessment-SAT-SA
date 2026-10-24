@@ -66,7 +66,7 @@ bytes received, with or without a `Content-Length`):
 | 403 | Entity outside the credential's scope | Use the entity's own credential |
 | 409 | Same idempotency key with different content, or the period overlaps a published batch | For a correction, set `revision_of` to the batch being corrected |
 | 413 | Body too large | Split the period, or ask for a higher cap |
-| 422 | Validation failed; **nothing was stored** | Fix every entry in `errors` (`table`, `field`, `row`, `value`, `reason`) and resend |
+| 422 | Validation failed; **nothing was stored** | Fix every entry in `errors` (`table`, `field`, `row`, `value`, `reason`; for a blocking data-quality check also `check`, `count` and sample `records`) and resend |
 
 The API is versioned in `docs/data_contract.md` ("API change log"). A field is never removed or
 reinterpreted without a new version and a stated migration path.
@@ -77,8 +77,11 @@ Analysts upload CSV, TSV, Excel, JSON or a ZIP of them on the **Upload** page (`
 choosing the **target entity** and the **period**. The upload is an import job:
 
 - a clean submission is published and assessed;
-- one with rejected rows, unreadable files or unreadable values is **held**. The analyst sees
-  why, and publishes it as is (the rejected rows stay out) or discards it.
+- one with rejected rows, unreadable files or unreadable values, or a problem a blocking
+  data-quality check finds (a missing required field, a repeated alert id, a severity, status or
+  disposition the taxonomy does not list: `docs/data_contract.md`, "Blocking checks"), is
+  **held**. The analyst sees why, and publishes it as is (the rejected rows stay out) or
+  discards it.
 
 Tick **Check only** to see what a submission would give before sending it for real (per file:
 rows that would be stored, filtered or rejected; the data-quality issues; which rules the

@@ -10,6 +10,7 @@ from typing import Any
 import duckdb
 import polars as pl
 
+from satsa.config_cache import load_yaml
 from satsa.ingest.adapters import SourceAdapter
 from satsa.ingest.columnar import ColumnarResult, normalise_frame
 from satsa.ingest.dq_checks import FrameDQ
@@ -76,6 +77,46 @@ ENTITY_REASONS = (NO_ENTITY, BAD_ENTITY, OTHER_ENTITY)
 # - preview: everything is read, mapped and validated and the report is returned, but nothing is
 #   published or recorded as submitted; the staged files are removed (upload "check only").
 POLICIES = ("auto", "strict", "if_clean", "preview")
+
+# Data-quality checks run before publication that config/data_quality.yaml may make blocking: a
+# problem one of them finds holds an `if_clean` submission and rejects a `strict` one, exactly as
+# a rejected row does. Without the file, the format errors below block.
+BLOCKABLE_CHECKS = frozenset(
+    {
+        "missing_required_field",
+        "duplicate_primary_keys",
+        "unrecognised_value",
+        "close_before_create",
+        "orphan_foreign_keys",
+        "id_sequence_gap",
+        "high_null_rate",
+    }
+)
+DEFAULT_BLOCKING_CHECKS = frozenset({"missing_required_field", "duplicate_primary_keys", "unrecognised_value"})
+
+
+def load_blocking_checks(path: Path | str) -> frozenset[str]:
+    """The `blocking_checks` of a data-quality config file; the defaults if it does not exist.
+
+    ValueError for a file that names a check SAT-SA does not have, so a typo can never quietly
+    turn blocking off.
+    """
+    p = Path(path)
+    if not p.exists():
+        return DEFAULT_BLOCKING_CHECKS
+    config = load_yaml(p) or {}
+    names = config.get("blocking_checks") if isinstance(config, dict) else None
+    if names is None:
+        return DEFAULT_BLOCKING_CHECKS
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise ValueError(f"{p}: blocking_checks must be a list of check names.")
+    unknown = sorted(set(names) - BLOCKABLE_CHECKS)
+    if unknown:
+        raise ValueError(
+            f"{p}: blocking_checks names {', '.join(unknown)}, which cannot block publication "
+            f"(choose from {', '.join(sorted(BLOCKABLE_CHECKS))})."
+        )
+    return frozenset(names)
 
 # Largest number of error entries a rejected submission reports (the count is always exact).
 MAX_ERRORS = 200
@@ -518,12 +559,18 @@ class IngestionPipeline:
         sqlite_store: SQLiteStore,
         taxonomy_path: Path | str = "config/taxonomy.yaml",
         salt_file: Path | str | None = None,
+        data_quality_path: Path | str | None = None,
     ):
         """Without `salt_file`, pseudonyms use the deployment key kept with the data
-        (satsa.keys, `data/secrets/`); a test may pass its own key file instead."""
+        (satsa.keys, `data/secrets/`); a test may pass its own key file instead. The blocking
+        data-quality checks are read from `data_quality_path`, by default data_quality.yaml
+        next to the taxonomy."""
         self.duckdb_store = duckdb_store
         self.sqlite_store = sqlite_store
         self.normaliser = TaxonomyNormaliser(taxonomy_path)
+        self.blocking_checks = load_blocking_checks(
+            data_quality_path if data_quality_path is not None else Path(taxonomy_path).with_name("data_quality.yaml")
+        )
         if salt_file is None:
             key = current_key(duckdb_store.data_dir)
             self.pseudonymiser = Pseudonymiser(keyring_path(duckdb_store.data_dir), key=key.key)
@@ -1481,6 +1528,12 @@ class IngestionPipeline:
                 )
                 all_dq_issues.extend(null_issues)
 
+                all_dq_issues.extend(
+                    FrameDQ.check_unrecognised_values(
+                        ent_alerts, ["severity_orig", "severity_final", "status", "disposition"], ent_id, "alert"
+                    )
+                )
+
             ent_asset_frame = entity_frame("asset", ent_id)
             ent_assets = FrameDQ.truthy_ids(ent_asset_frame, "asset_id") if ent_asset_frame is not None else no_ids
             if ent_assets.len() and ent_alerts is not None:
@@ -1516,6 +1569,37 @@ class IngestionPipeline:
                         ent_links, ent_case_ids, "case_id", ent_id, "case_alert_link", "case"
                     )
                 )
+
+        # Problems a blocking check found (config/data_quality.yaml): they stop publication like a
+        # rejected row. Nothing has been staged yet, so a strict submission is refused here.
+        blocking = [d for d in all_dq_issues if d.check_name in self.blocking_checks]
+        blocking_report = [
+            {
+                "entity_id": d.entity_id,
+                "check": d.check_name,
+                # Every blockable check but the reference check reads the alert table; the two
+                # field-level checks end their issue id with the field.
+                "table": None if d.check_name == "orphan_foreign_keys" else "alert",
+                "field": d.issue_id.rsplit("-", 1)[1]
+                if d.check_name in ("missing_required_field", "unrecognised_value") else None,
+                "count": d.count,
+                "records": d.sample_records,
+                "reason": d.details,
+            }
+            for d in blocking
+        ]
+        if policy == "strict" and blocking:
+            total = sum(d.count for d in blocking)
+            return {
+                "status": "rejected",
+                "message": (
+                    f"The submission was not stored: {total} problem(s) found by blocking data-quality checks "
+                    f"({', '.join(sorted({d.check_name for d in blocking}))}). Nothing was published."
+                ),
+                "errors": [{**e, "row": None} for e in blocking_report][:MAX_ERRORS],
+                "error_count": total,
+                "file_coverage": file_coverage,
+            }
 
         field_coverage: dict[str, dict[str, Any]] = {
             _store_table(name): {
@@ -1621,8 +1705,16 @@ class IngestionPipeline:
                 if policy == "preview":
                     writer.discard_preview()
                     state = "preview"
-                elif policy == "if_clean" and (problems or failures):
-                    writer.hold("held for review: the submission has rejected rows, unreadable files or values")
+                elif policy == "if_clean" and (problems or failures or blocking):
+                    hold_reasons: list[str] = []
+                    if problems or failures:
+                        hold_reasons.append("the submission has rejected rows, unreadable files or values")
+                    if blocking:
+                        hold_reasons.append(
+                            "it failed blocking data-quality checks: "
+                            + ", ".join(sorted({d.check_name for d in blocking}))
+                        )
+                    writer.hold("held for review: " + "; ".join(hold_reasons))
                     state = "held"
                 else:
                     writer.publish()
@@ -1633,12 +1725,18 @@ class IngestionPipeline:
             written = []
             state = "failed"
         if state == "published":
+            # Each published file must read back. The tables themselves are reloaded only when this
+            # store is next read (DuckDBStore.mark_stale): most callers never read it again.
             for table_name, height, entity_rows in written:
+                files = [f.path for f in catalog.published_files(_store_table(table_name)) if f.batch_id == batch_id]
                 try:
-                    self.duckdb_store.load_table_from_parquet(_store_table(table_name))
+                    if files:
+                        listed = ", ".join("'" + p.as_posix().replace("'", "''") + "'" for p in files)
+                        self.duckdb_store.conn.execute(f"SELECT count(*) FROM read_parquet([{listed}])").fetchone()
                 except Exception as exc:
                     logger.exception("Failed to store table %r (%d rows)", table_name, height)
                     failures[table_name] = (height, entity_rows, type(exc).__name__)
+            self.duckdb_store.mark_stale(_store_table(t) for t, _h, _e in written)
         failed_tables: list[str] = [t for t in table_order if t in failures]
         for table_name in failed_tables:
             height, entity_rows, error = failures[table_name]
@@ -1734,6 +1832,9 @@ class IngestionPipeline:
             "unreadable_files": sorted(unreadable_files),
             "submitted_tables": sorted(manifest_tables),
             "dq_issues": len(all_dq_issues),
+            # What blocking checks found: why an if_clean batch was held (or, in a preview, would
+            # be); under auto the batch is published and this is reported.
+            "blocking_issues": blocking_report,
             "unattributed_rows": unattributed,
             "rule_coverage": coverage,
             "field_coverage": field_coverage,

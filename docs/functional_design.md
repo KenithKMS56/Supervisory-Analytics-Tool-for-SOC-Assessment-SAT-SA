@@ -104,13 +104,15 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
 - **Inter-Rater Concordance Matrix:** Side-by-side comparison revealing the examiner's verdict vs. SAT-SA's mathematical risk band, calculating algorithmic concordance percentage ($0\text{--}100\%$) and logging to the tamper-evident audit trail.
 
 ### 4. Periodic Submission & Ingestion Wizard (`/upload`)
-- **Air-Gapped Batch Ingestion Dropzone:** Drag-and-drop or select CSV, JSON, or ZIP packages for automated ingestion.
+- **Air-Gapped Batch Ingestion Dropzone:** Drag-and-drop or select CSV, JSON, or ZIP packages; the analyst names the target entity and the period. The import runs as a job in the worker and the page links to the job's progress and result.
 - **Data Minimization Pipeline:** Instant HMAC-SHA256 pseudonymisation of analyst identifiers and regex redaction of internal IPs and hostnames.
-- **One-Click Demo Launcher:** Instantly re-seeds the canonical 10-CSE synthetic dataset and triggers full assessment.
+- **Check only:** reads, maps and validates the files and shows what they would give (rows stored, filtered or rejected per file; data-quality issues; which rules the entity could be assessed on; whether the upload would be held) without publishing anything.
+- **Held submissions:** an upload with rejected rows, unreadable values or a format error found by a blocking data-quality check (`config/data_quality.yaml`) is held unpublished; an analyst publishes it as it is or discards it, and both decisions are audited.
+- **Demo Launcher (demonstration deployments only):** reloads the 10-CSE synthetic dataset and assesses it as a job. A production deployment does not show it.
 - **Recent Batch Audit Log:** Displays previous ingestion batches and their cryptographic SHA-256 state hashes.
 
 ### 5. Supervisory Rule Calibration & Rule-Pack Studio (`/tuning`)
-- **Interactive Threshold Calibration:** Live modification of detection parameters (e.g. EG01 human closure threshold, EG04 comment hash share, NS01 silence threshold, NS02 prevalence).
+- **Interactive Threshold Calibration:** proposes new detection parameters (e.g. EG01 human closure threshold, EG04 comment hash share, NS01 silence threshold, NS02 prevalence). In production a change is a draft until someone other than its author approves it (Review Tools → Rule Changes), then an analyst puts it in force and the previous version is retired (`docs/rule_governance.md`). A demonstration deployment applies it at once and records that it did.
 - **Cryptographic Config Tracking:** Displays active SHA-256 configuration hash.
 - **Signed Rule-Pack Studio:** One-click export of signed rule-pack archives (`satsa_signed_rule_pack_v1.0.0.tar.gz`) and HMAC-verified import form.
 
@@ -122,7 +124,7 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
 - **Direct Dossier Exports:** Instant PDF dossier generation via ReportLab and standalone HTML view.
 
 ### 7. Finding Detail & Card View (`/finding/{finding_id}`)
-- Header: rule ID and version, title, entity, domain, score (0–100), confidence, severity and
+- Header: rule ID and version, title, entity, domain, score (0–100), evidence support, severity and
   number of evidence records; PDF exports.
 - Five sections, in this order (`src/satsa/ui/templates/finding_detail.html`, checked for one
   finding of every rule present by `tests/test_finding_page.py`):
@@ -133,34 +135,41 @@ SAT-SA provides ten self-contained, server-rendered UI screens powered by FastAP
      `docs/analytics_methodology.md` Section 3).
   3. **Evidence:** the evidence records with their IDs and details; the figures behind the
      finding as the rule recorded them (for rules that compare with peers, the peer figures they
-     used); and the rule's parameters. A run stores only a hash of `config/rules.yaml`, so the
-     page shows the current parameter values and says whether the configuration is unchanged
-     since the finding's run.
-  4. **Confidence and limitations:** confidence, the rule's limitations and the possible
-     legitimate explanations.
+     used); and the rule's parameters as the run used them, from the configuration snapshot
+     recorded with the run, saying whether the configuration has changed since.
+  4. **Evidence support and limitations:** how much evidence the score rests on, the rule's
+     limitations and the possible legitimate explanations.
+  A finding can be opened as a **supervisory case** from this page (below).
   5. **Next step:** the suggested examiner check.
 - An earlier version of this section listed a peer IQR and percentile rank; no rule computes
   either, and the page never showed them.
 
 ### 8. Review Queue (`/queue`)
 - **Queue Composition:** per entity, records cited by findings (highest accumulated rule score first, up to 70% of the queue size) plus random control samples stratified by severity. Entities with few cited records get a shorter, mostly random queue.
-- **Examiner Feedback Capture:** Examiners can mark each record as `Confirmed Issue`, `Not an Issue / Benign Context`, or `Needs More Data`, alongside explanatory notes.
+- **Examiner Feedback Capture:** Examiners can mark each record as `Confirmed concern`, `Marked as justified` or `More data needed`, alongside explanatory notes. None of these is a statutory notice.
 - **CSV Export:** One-click download of the complete review queue for field examiners.
 
 ### 9. Data Quality & Coverage (`/dq`)
-- Summary of schema conformity, missing mandatory fields, sequence gaps, timestamp inversions, and high null rates.
-- Reports rules skipped due to insufficient or unmonitored data feeds.
+- Summary of schema conformity, missing mandatory fields, unrecognised severities, statuses and dispositions, sequence gaps, timestamp inversions, and high null rates.
+- Per entity and rule, whether the rule was assessed, could not fire for want of a column (degraded) or lacked a table (insufficient evidence). An entity whose submission lets too few rules run is classed *Insufficient Evidence*, never *Low*.
 
 ### 6. Runs & Audit Trail (`/runs`)
-- History of all assessment runs with execution timestamps, config hashes, input data manifests, and row counts.
+- History of all assessment runs with execution timestamps, the analytical fingerprint (every configuration file, the published batches read, the window, the code version), input data manifests, and row counts. `satsa replay <run_id>` re-runs a recorded run and reports whether it reproduces.
 - On-demand verification of the `prev_hash` hash chain (each entry checked with its recorded algorithm), reporting the first entry whose contents or links no longer match. This does not by itself detect removal of the newest entries -- compare against an off-box `satsa audit head` checkpoint for that (DECISIONS.md ADR-005).
+
+### 10. Supervisory Cases (`/cases`)
+- A concern found by SAT-SA becomes a case with a server-enforced lifecycle: assigned, explanation requested (an offline request package for the CSE), response received, decided (confirmed, dismissed or inconclusive; a decision is superseded, never edited), corrective action, verification against the next comparable period, closed or reopened.
+- A decision is signed off by a second examiner; the history is immutable. Concurrent edits are detected, not overwritten.
+
+### 11. Jobs (`/jobs`)
+- Every import and assessment, with its state, stage, attempts and structured error; a job interrupted by a stopped worker is retried or failed by the next one, never run twice.
 
 ---
 
 ## 4. Examiner Feedback Loop & Supervisory Tuning
 
 1. **Non-Corrupting Design:** Examiner feedback is strictly recorded in the SQLite database for regulatory tracking. **Feedback does not alter mathematical scoring models automatically**, preventing feedback loop distortion or model drift.
-2. **Periodic Calibration:** Supervisors inspect historical examiner confirmation rates per rule. If a rule demonstrates high false-alarm rates for specific sectors, supervisors manually adjust thresholds in `config/rules.yaml` and export a newly signed rule pack.
+2. **Periodic Calibration:** Supervisors inspect historical examiner confirmation rates per rule. If a rule demonstrates high false-alarm rates for specific sectors, an analyst proposes new thresholds on Rule Tuning; another person approves the change before it is put in force, and a signed rule pack can carry it to another deployment. A threshold edited outside this lifecycle is recorded and flagged.
 
 ---
 

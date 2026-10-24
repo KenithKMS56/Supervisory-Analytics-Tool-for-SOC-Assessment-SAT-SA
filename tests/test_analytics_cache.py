@@ -1,12 +1,15 @@
 """The web app keeps the analytics tables loaded between requests (AnalyticsCache).
 
 Before, every request built a new DuckDB store and re-read every Parquet file, including
-the many requests that only needed SQLite. The cache is rebuilt when a new assessment run
-completes or the stored data changes, and never otherwise.
+the many requests that only needed SQLite. The cache is rebuilt when the stored data changes,
+and never otherwise: an assessment run publishes no data, so a completed run does not rebuild
+it. A refresher thread rebuilds it after a publication before any request asks, and a request
+never reads tables older than the data.
 """
 
 import shutil
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -52,22 +55,42 @@ def test_tables_are_loaded_once_and_reused(tmp_path):
     _seed_alerts(tmp_path, "E1", 5)
     cache = AnalyticsCache()
     for _ in range(10):
-        view = cache.view(tmp_path, "RUN-1")
+        view = cache.view(tmp_path)
         assert _count(view) == 5
         view.close()  # closes this request's cursor only
     assert cache.loads == 1
 
 
-def test_a_new_run_retires_the_cache(tmp_path):
+def test_a_request_waits_for_the_load_in_progress_instead_of_loading_again(tmp_path, monkeypatch):
+    """Two requests after a publication: the second waits for the first one's load and reads its
+    tables (current data, loaded once), never the previous tables."""
     _seed_alerts(tmp_path, "E1", 5)
     cache = AnalyticsCache()
-    cache.view(tmp_path, "RUN-1").close()
-    cache.view(tmp_path, "RUN-1").close()
-    assert cache.loads == 1
-    cache.view(tmp_path, "RUN-2").close()
-    assert cache.loads == 2
-    cache.view(tmp_path, "RUN-2").close()
-    assert cache.loads == 2
+    assert _count(cache.view(tmp_path)) == 5
+    _seed_alerts(tmp_path, "E2", 3)
+
+    started, release = threading.Event(), threading.Event()
+    load = DuckDBStore.load_all_tables
+
+    def slow_load(self, max_pub_seq=None):
+        started.set()
+        assert release.wait(10)
+        load(self, max_pub_seq)
+
+    monkeypatch.setattr(DuckDBStore, "load_all_tables", slow_load)
+    counts: list[int] = []
+    first = threading.Thread(target=lambda: counts.append(_count(cache.view(tmp_path))))
+    first.start()
+    assert started.wait(10)  # the first request is loading
+    second = threading.Thread(target=lambda: counts.append(_count(cache.view(tmp_path))))
+    second.start()
+    second.join(0.3)
+    assert second.is_alive()  # waiting for the load, not served the previous tables
+    release.set()
+    first.join(10)
+    second.join(10)
+    assert counts == [8, 8]
+    assert cache.loads == 2  # the initial load and one after the publication
 
 
 def test_changed_data_retires_the_cache_even_without_a_run(tmp_path):
@@ -75,17 +98,17 @@ def test_changed_data_retires_the_cache_even_without_a_run(tmp_path):
     _seed_alerts(tmp_path, "E1", 5)
     cache = AnalyticsCache()
     cache.FINGERPRINT_SECONDS = 0  # look at the files on every request (the throttle: next test)
-    assert _count(cache.view(tmp_path, None)) == 5
+    assert _count(cache.view(tmp_path)) == 5
     before = parquet_fingerprint(tmp_path / "parquet")
 
     _seed_alerts(tmp_path, "E2", 3)  # a second entity's file appears
     assert parquet_fingerprint(tmp_path / "parquet") != before
-    assert _count(cache.view(tmp_path, None)) == 8
+    assert _count(cache.view(tmp_path)) == 8
     assert cache.loads == 2
 
     for f in (tmp_path / "parquet" / "alert" / "entity_id=E2").glob("*.parquet"):
         f.unlink()  # and is deleted again (the loader skips the missing published file, with a warning)
-    assert _count(cache.view(tmp_path, None)) == 5
+    assert _count(cache.view(tmp_path)) == 5
     assert cache.loads == 3
 
 
@@ -98,27 +121,27 @@ def test_a_publication_is_seen_at_once_and_a_file_removed_outside_the_catalog_so
     monkeypatch.setattr("satsa.store.duckdb.time.monotonic", lambda: clock[0])
     _seed_alerts(tmp_path, "E1", 5)
     cache = AnalyticsCache()
-    assert _count(cache.view(tmp_path, None)) == 5
+    assert _count(cache.view(tmp_path)) == 5
     _seed_alerts(tmp_path, "E2", 3)  # published through the catalog (a direct batch)
-    assert _count(cache.view(tmp_path, None)) == 8 and cache.loads == 2  # no time has passed
+    assert _count(cache.view(tmp_path)) == 8 and cache.loads == 2  # no time has passed
 
     for f in (tmp_path / "parquet" / "alert" / "entity_id=E2").glob("*.parquet"):
         f.unlink()  # removed behind the catalog's back
     clock[0] += cache.FINGERPRINT_SECONDS / 2
-    assert _count(cache.view(tmp_path, None)) == 8 and cache.loads == 2  # within the interval
+    assert _count(cache.view(tmp_path)) == 8 and cache.loads == 2  # within the interval
     clock[0] += cache.FINGERPRINT_SECONDS
-    assert _count(cache.view(tmp_path, None)) == 5 and cache.loads == 3
+    assert _count(cache.view(tmp_path)) == 5 and cache.loads == 3
 
 
 def test_each_data_directory_has_its_own_cache(tmp_path):
     _seed_alerts(tmp_path / "a", "E1", 2)
     _seed_alerts(tmp_path / "b", "E1", 7)
     cache = AnalyticsCache()
-    assert (_count(cache.view(tmp_path / "a", None)), _count(cache.view(tmp_path / "b", None))) == (2, 7)
-    assert _count(cache.view(tmp_path / "a", None)) == 2
+    assert (_count(cache.view(tmp_path / "a")), _count(cache.view(tmp_path / "b"))) == (2, 7)
+    assert _count(cache.view(tmp_path / "a")) == 2
     assert cache.loads == 2
     cache.clear()
-    cache.view(tmp_path / "a", None)
+    cache.view(tmp_path / "a")
     assert cache.loads == 3
 
 
@@ -131,7 +154,7 @@ def test_fingerprint_of_an_empty_or_missing_store(tmp_path):
 
 def test_shared_view_is_read_only(tmp_path):
     _seed_alerts(tmp_path, "E1", 5)
-    view = AnalyticsCache().view(tmp_path, None)
+    view = AnalyticsCache().view(tmp_path)
     with pytest.raises(ReadOnlyStoreError):
         view.write_partitioned_parquet("alert", pl.DataFrame([{"entity_id": "E9", "alert_id": "X"}]))
     with pytest.raises(ReadOnlyStoreError):
@@ -147,7 +170,7 @@ def test_views_can_be_used_from_many_threads_at_once(tmp_path):
     def worker() -> None:
         try:
             for _ in range(25):
-                view = cache.view(tmp_path, "RUN-1")
+                view = cache.view(tmp_path)
                 results.append(view.query("SELECT count(*), min(alert_id) FROM alert WHERE entity_id = ?", ["E1"]).row(0))
                 view.close()
         except Exception as exc:  # noqa: BLE001 - collected and asserted below
@@ -161,6 +184,119 @@ def test_views_can_be_used_from_many_threads_at_once(tmp_path):
     assert errors == []
     assert set(results) == {(400, "E1-0")} and len(results) == 200
     assert cache.loads == 1
+
+
+def test_refresh_reloads_changed_data_before_any_request(tmp_path):
+    _seed_alerts(tmp_path, "E1", 5)
+    cache = AnalyticsCache()
+    assert _count(cache.view(tmp_path)) == 5 and cache.loads == 1
+    cache.refresh()
+    assert cache.loads == 1  # nothing changed: nothing reloaded
+    _seed_alerts(tmp_path, "E2", 3)
+    cache.refresh()
+    assert cache.loads == 2
+    assert _count(cache.view(tmp_path)) == 8 and cache.loads == 2  # the request found it loaded
+
+
+def test_refresh_leaves_a_data_directory_no_request_used(tmp_path):
+    _seed_alerts(tmp_path / "a", "E1", 2)
+    _seed_alerts(tmp_path / "b", "E1", 7)
+    cache = AnalyticsCache()
+    cache.view(tmp_path / "a").close()
+    _seed_alerts(tmp_path / "a", "E2", 1)
+    cache.refresh()
+    assert cache.loads == 2  # "a" reloaded, "b" never loaded
+    assert _count(cache.view(tmp_path / "b")) == 7 and cache.loads == 3
+
+
+def _wait_for_loads(cache: AnalyticsCache, n: int) -> None:
+    deadline = time.monotonic() + 30
+    while cache.loads < n and time.monotonic() < deadline:
+        time.sleep(0.05)
+
+
+def test_the_refresher_thread_picks_up_a_publication(tmp_path, monkeypatch):
+    monkeypatch.delenv("SATSA_ANALYTICS_REFRESH", raising=False)
+    _seed_alerts(tmp_path, "E1", 5)
+    cache = AnalyticsCache()
+    cache.REFRESH_SECONDS = 0.05
+    cache.view(tmp_path).close()
+    assert cache.start_refresher()
+    try:
+        assert cache.start_refresher()  # once per process: a second call starts nothing new
+        _seed_alerts(tmp_path, "E2", 3)
+        _wait_for_loads(cache, 2)
+        assert cache.loads == 2
+        assert _count(cache.view(tmp_path)) == 8 and cache.loads == 2
+    finally:
+        cache.stop_refresher()
+    assert cache._refresher is None
+
+
+def test_the_refresher_keeps_running_after_a_failed_load(tmp_path, monkeypatch):
+    monkeypatch.delenv("SATSA_ANALYTICS_REFRESH", raising=False)
+    _seed_alerts(tmp_path, "E1", 5)
+    cache = AnalyticsCache()
+    cache.REFRESH_SECONDS = 0.05
+    cache.view(tmp_path).close()
+    load = DuckDBStore.load_all_tables
+    failures: list[int] = []
+
+    def failing_once(self, max_pub_seq=None):
+        if not failures:
+            failures.append(1)
+            raise OSError("disk unavailable")
+        load(self, max_pub_seq)
+
+    monkeypatch.setattr(DuckDBStore, "load_all_tables", failing_once)
+    assert cache.start_refresher()
+    try:
+        _seed_alerts(tmp_path, "E2", 3)
+        _wait_for_loads(cache, 2)
+        assert failures == [1] and cache.loads == 2
+        assert _count(cache.view(tmp_path)) == 8
+    finally:
+        cache.stop_refresher()
+
+
+def test_a_refresher_stopped_during_a_reload_ends_after_it_even_if_another_starts(tmp_path, monkeypatch):
+    """Stopping does not wait out a long reload; a refresher started meanwhile must not revive
+    the stopped one (two threads would then watch, and reload, side by side)."""
+    monkeypatch.delenv("SATSA_ANALYTICS_REFRESH", raising=False)
+    _seed_alerts(tmp_path, "E1", 5)
+    cache = AnalyticsCache()
+    cache.REFRESH_SECONDS = 0.05
+    cache.view(tmp_path).close()
+    _seed_alerts(tmp_path, "E2", 3)
+    started, release = threading.Event(), threading.Event()
+    load = DuckDBStore.load_all_tables
+
+    def slow_load(self, max_pub_seq=None):
+        started.set()
+        assert release.wait(10)
+        load(self, max_pub_seq)
+
+    monkeypatch.setattr(DuckDBStore, "load_all_tables", slow_load)
+    assert cache.start_refresher()
+    first = cache._refresher
+    assert started.wait(10)  # the first refresher is reloading
+    cache.stop_refresher(wait_seconds=0)
+    assert cache.start_refresher()
+    second = cache._refresher
+    try:
+        release.set()
+        first.join(10)
+        assert not first.is_alive() and second.is_alive()
+        assert _count(cache.view(tmp_path)) == 8 and cache.loads == 2
+    finally:
+        cache.stop_refresher()
+
+
+def test_the_refresher_can_be_turned_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("SATSA_ANALYTICS_REFRESH", "off")
+    cache = AnalyticsCache()
+    assert cache.start_refresher() is False
+    assert cache._refresher is None
 
 
 # ------------------------------------------------------------------ through the web app
@@ -193,7 +329,7 @@ def workspace(tmp_path, monkeypatch):
     analytics_cache.clear()
 
 
-def test_requests_reuse_the_loaded_tables_until_a_run_completes(workspace):
+def test_requests_reuse_the_loaded_tables_until_data_is_published(workspace):
     client, run, loads = workspace
     assert loads() == 0  # logging in needs SQLite only
 
@@ -203,11 +339,23 @@ def test_requests_reuse_the_loaded_tables_until_a_run_completes(workspace):
             assert client.get(page).status_code == 200, page
     assert loads() == 1  # 18 analytics requests, one load
 
-    run()  # a new assessment run completes
+    run_id = run()  # a new assessment run completes; it publishes no data
+    page = client.get("/portfolio")
+    assert page.status_code == 200 and run_id in page.text  # the page shows the new run
+    assert loads() == 1  # with the tables already loaded: the run did not change them
+
+    _seed_alerts(Path("data"), "CSE-02", 3)  # data is published
     assert client.get("/portfolio").status_code == 200
     assert loads() == 2
     assert client.get("/api/v1/entities").status_code == 200
     assert loads() == 2
+
+
+def test_the_served_app_runs_the_refresher(workspace, monkeypatch):
+    monkeypatch.delenv("SATSA_ANALYTICS_REFRESH", raising=False)
+    with TestClient(routes.app):  # runs start-up and shut-down, as a served instance does
+        assert analytics_cache._refresher is not None and analytics_cache._refresher.is_alive()
+    assert analytics_cache._refresher is None
 
 
 def test_state_only_requests_do_not_load_the_analytics_tables(workspace):

@@ -96,9 +96,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    """At start, install the egress guard and require a passphrase change on seeded accounts
-    still using their default. The guard is removed again at shutdown."""
+    """At start, install the egress guard, require a passphrase change on seeded accounts still
+    using their default, and start reloading the analytics tables when data is published
+    (AnalyticsCache.start_refresher). The guard and the refresher are stopped at shutdown."""
     guarded = install_egress_guard()
+    refreshing = False
     try:
         store = SQLiteStore("data/satsa.db")
         try:
@@ -107,8 +109,11 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
                                "a new one must be set at first login.", username)
         finally:
             store.close()
+        refreshing = analytics_cache.start_refresher()
         yield
     finally:
+        if refreshing:
+            analytics_cache.stop_refresher()
         if guarded:
             uninstall_egress_guard()
 
@@ -455,12 +460,10 @@ def get_stores() -> tuple[DuckDBStore, SQLiteStore]:
     """Stores for a request that only reads.
 
     The analytics store is a view on the process-wide cache (satsa.store.duckdb.AnalyticsCache):
-    the Parquet tables are loaded once and reused until a new assessment run completes or the
-    stored data changes, instead of being re-read on every request.
+    the Parquet tables are loaded once and reused until the stored data changes, instead of
+    being re-read on every request.
     """
-    sqlite_store = SQLiteStore("data/satsa.db")
-    row = sqlite_store.conn.execute("SELECT run_id FROM runs ORDER BY created_at DESC LIMIT 1").fetchone()
-    return analytics_cache.view("data", row["run_id"] if row else None), sqlite_store
+    return analytics_cache.view("data"), SQLiteStore("data/satsa.db")
 
 
 def get_write_stores() -> tuple[DuckDBStore, SQLiteStore]:

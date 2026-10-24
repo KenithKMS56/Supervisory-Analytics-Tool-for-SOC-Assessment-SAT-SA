@@ -1,6 +1,16 @@
 """Robust statistics module: median, MAD, robust z-score, IQR, and percentile rank."""
 
+import math
 from collections.abc import Sequence
+from typing import Any, Protocol
+
+
+class _Indexable(Protocol):
+    """Anything sized and indexable by position: a sorted list, or a sorted Polars Series."""
+
+    def __len__(self) -> int: ...
+
+    def __getitem__(self, index: int) -> Any: ...
 
 
 class RobustStats:
@@ -15,6 +25,24 @@ class RobustStats:
         n = len(s)
         mid = n // 2
         return (s[mid - 1] + s[mid]) / 2.0 if n % 2 == 0 else float(s[mid])
+
+    @staticmethod
+    def quantile_cont(values: Sequence[float], q: float) -> float | None:
+        """DuckDB's quantile_cont(x, q), bit for bit (tests/test_robust_stats.py checks it against
+        DuckDB): rank (n - 1) * q, interpolated as lo * (1 - d) + hi * d. None for no values."""
+        return RobustStats.quantile_cont_sorted(sorted(values), q)
+
+    @staticmethod
+    def quantile_cont_sorted(s: _Indexable, q: float) -> float | None:
+        """quantile_cont of values already in ascending order (e.g. a sorted Polars Series)."""
+        if not len(s):
+            return None
+        rn = (len(s) - 1) * q
+        lo_i, hi_i = math.floor(rn), math.ceil(rn)
+        if lo_i == hi_i:
+            return float(s[lo_i])
+        d = rn - lo_i
+        return float(s[lo_i]) * (1 - d) + float(s[hi_i]) * d
 
     @staticmethod
     def mad(values: Sequence[float]) -> float:

@@ -8,6 +8,7 @@ from typing import Any
 import duckdb
 import polars as pl
 
+from satsa.ingest.normaliser import UNMAPPED
 from satsa.models.outputs import DQIssue
 from satsa.store.duckdb import text_timestamp_sql
 
@@ -463,6 +464,37 @@ class FrameDQ:
                         count=nulls,
                         sample_records=[],
                         details=f"High null rate in '{table_name}.{fld}': {rate:.1%} exceeds tolerance threshold ({max_rate:.1%}).",
+                    )
+                )
+        return issues
+
+    @staticmethod
+    def check_unrecognised_values(
+        frame: pl.DataFrame, fields: list[str], entity_id: str, table_name: str
+    ) -> list[DQIssue]:
+        """Values config/taxonomy.yaml does not recognise. The normaliser turns a non-empty value
+        it has no entry for into "unmapped"; rules then read it as no value at all."""
+        issues: list[DQIssue] = []
+        id_column = f"{table_name}_id" if f"{table_name}_id" in frame.columns else None
+        for fld in fields:
+            if fld not in frame.columns or frame[fld].dtype != pl.String:
+                continue
+            unrecognised = (frame[fld] == UNMAPPED).fill_null(False)
+            count = int(unrecognised.sum())
+            if count:
+                issues.append(
+                    DQIssue(
+                        issue_id=f"DQ-VALUE-{entity_id}-{table_name}-{fld}",
+                        entity_id=entity_id,
+                        check_name="unrecognised_value",
+                        severity="error",
+                        count=count,
+                        sample_records=FrameDQ._ids(frame, unrecognised, id_column, "unknown"),
+                        details=(
+                            f"'{table_name}.{fld}' holds a value the taxonomy does not recognise in {count} "
+                            "records. Add it to config/taxonomy.yaml (or to the source mapping's "
+                            "value_mappings), or correct the source."
+                        ),
                     )
                 )
         return issues

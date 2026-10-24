@@ -13,7 +13,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 MATRIX = REPO / "docs" / "ps_traceability.md"
-EXPECTED_IDS = [f"F{i}" for i in range(1, 18)] + [f"D{i}" for i in range(1, 7)] + ["O1-O6", "S1", "S2"]
+EXPECTED_IDS = [f"F{i}" for i in range(1, 18)] + [f"D{i}" for i in range(1, 7)] + ["O1-O6", "S1", "S2", "V1"]
 PATH_LIKE = re.compile(r"^[\w.\-]+(/[\w.\-]+)*\.(py|md|yaml|yml|toml|lock|html)(::\w+)?$|^[\w.\-]+/[\w.\-/]+$|^Containerfile$")
 
 

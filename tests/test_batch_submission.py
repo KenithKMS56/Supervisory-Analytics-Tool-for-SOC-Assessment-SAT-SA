@@ -37,7 +37,10 @@ def _batch(eid: str, period: str = "2026-Q2", **extra):
     return {
         "entity_id": eid,
         "period": period,
-        "alerts": [{"alert_id": f"{eid}-A1", "severity_final": "high", "closed_by_type": "human"}],
+        # A complete alert: one without created_at fails a blocking data-quality check
+        # (config/data_quality.yaml) and is rejected, which is not what these tests are about.
+        "alerts": [{"alert_id": f"{eid}-A1", "created_at": "2026-04-15T10:00:00Z", "severity_final": "high",
+                    "closed_by_type": "human"}],
         "run_assessment_now": False,
         **extra,
     }

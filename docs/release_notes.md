@@ -29,6 +29,12 @@ legacy batches; none is rewritten.
   (Review Tools → Rule Changes), then an analyst puts it in force.
 - Review-queue labels are "Confirmed concern", "Marked as justified" and "More data needed";
   nothing is presented as a statutory notice.
+- A web upload with a format error (an alert missing `alert_id`, `created_at` or
+  `severity_final`, a repeated `alert_id`, or a severity, status or disposition
+  `config/taxonomy.yaml` does not list) is held for review, and the same API submission is
+  rejected with 422. Problems that are also supervisory signals (closed before created,
+  references to records not submitted, numbering gaps, empty fields) are reported and published
+  as before. Set in the new `config/data_quality.yaml`; without it the same defaults apply.
 
 ## What is new
 
@@ -109,6 +115,24 @@ layout (B08).
 - *Manuals*: `docs/manuals/administrator.md`, `examiner.md`, `integration.md`. Also
   `docs/connector_compatibility.md`.
 
+**After Phase 5.**
+
+- *Blocking data-quality checks* (owner decision, 2026-10-20): format errors stop publication,
+  supervisory signals stay evidence (`docs/data_contract.md`, "Blocking checks"). New check
+  `unrecognised_value`: a value the taxonomy does not list used to be stored as `unmapped` with
+  no report. API change log 1.3.
+- *Dependency audit*: `pip-audit` on every pinned package found no known vulnerabilities
+  (`docs/dependency_audit.md`).
+- *Performance*: 5,000,000 alerts across 50 entities ingested and assessed in 162.6-164.2 s,
+  against 450.5 s at the end of Phase 5, with identical results on the same data
+  (`docs/benchmarks.md`). Tables are held in entity order; the peer rules and the local-time
+  figures read portfolio-wide figures once per run; an ingest no longer reloads every table
+  after publishing. The memory preflight now assumes 240 bytes per published row.
+- *First page after a run*: a running web app reloads its tables when data is published, in
+  the background, and no longer when a run completes (an assessment publishes no data): 0.1 s
+  instead of 50 s at 5,400,000 alerts (`docs/benchmarks.md`, 2026-10-24). Requests still never
+  read tables older than the published data. `SATSA_ANALYTICS_REFRESH=off` turns it off.
+
 ## Known limitations
 
 - **Field validation has not been done.** No real reviewers or authorised SOC data have been
@@ -120,10 +144,12 @@ layout (B08).
   machine (`docs/benchmarks.md`). There, 100,000 alerts assess in 4.6–6.3 s and ten concurrent
   readers see a p95 of 0.5–0.9 s (up to 1.5 s while another process ingests); single requests
   reached 3.1 s at 100,000 and 4.5 s at 500,000 alerts during the reload after a publication.
-- **Large portfolios are slower than before the brief's changes**: at 5,000,000 alerts ingest
-  takes 97 s (47 s on 2026-10-02), assessment 354 s (124 s) and the first portfolio page after a
-  run 46 s (17 s). Assessment grows faster than the data. Nothing above 100,000 alerts is a
-  supported tier.
+- **A newly started web app is slow to its first page on large portfolios**: 45-55 s at
+  5,000,000 alerts while it loads the tables; later pages load in under a second. Ingest and
+  assessment of 5,000,000 alerts take under 3 minutes (162.6-164.2 s). Nothing above 100,000
+  alerts is a supported tier until the reference machine is measured.
+- **A running web app and the worker each hold the data in memory**: about 4.6 GiB each at 5.2
+  million alerts, more together than the 8-GiB reference machine.
 - **One worker per deployment.** Several workers are safe by lease, but are not load-tested.
 - **Content-Security-Policy keeps `'unsafe-inline'`** for scripts and styles, because the
   templates still use inline scripts and handlers. The other directives confine every page to

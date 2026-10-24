@@ -171,6 +171,76 @@ def local_hour(column: str, tz_alias: str = "_satsa_tz") -> str:
     return f"extract(hour FROM timezone(coalesce({tz_alias}.tz, 'UTC'), {column} AT TIME ZONE 'UTC'))"
 
 
+_LAST_INSTANT = "(hr + INTERVAL 1 HOUR - INTERVAL 1 MICROSECOND)"
+
+# CTEs ending in `localised`: per alert, entity_id, alert_id, UTC month of created_at, the entity's
+# zone (tz) and created_at in that zone (lt). See local_time_counts for how lt is computed.
+LOCALISED_ALERTS_CTE = f"""{ENTITY_TZ_CTE},
+    hours AS (
+        SELECT DISTINCT a.entity_id, date_trunc('hour', a.created_at) AS hr, coalesce(_satsa_tz.tz, 'UTC') AS tz
+        FROM alert a LEFT JOIN _satsa_tz ON _satsa_tz.entity_id = a.entity_id
+        WHERE a.entity_id IS NOT NULL AND a.created_at IS NOT NULL
+    ),
+    offsets AS (
+        SELECT entity_id, hr,
+               timezone(tz, hr AT TIME ZONE 'UTC') - hr AS first_offset,
+               timezone(tz, {_LAST_INSTANT} AT TIME ZONE 'UTC') - {_LAST_INSTANT} AS last_offset
+        FROM hours
+    ),
+    localised AS (
+        SELECT a.entity_id, a.alert_id, strftime(a.created_at, '%Y-%m') AS month, _satsa_tz.tz AS tz,
+               CASE WHEN o.first_offset = o.last_offset THEN a.created_at + o.first_offset
+                    ELSE timezone(coalesce(_satsa_tz.tz, 'UTC'), a.created_at AT TIME ZONE 'UTC') END AS lt
+        FROM alert a
+        LEFT JOIN _satsa_tz ON _satsa_tz.entity_id = a.entity_id
+        LEFT JOIN offsets o ON o.entity_id = a.entity_id AND o.hr = date_trunc('hour', a.created_at)
+    )"""
+
+# Per (entity_id, UTC month "YYYY-MM" of created_at, or None without one): alerts, night-time alerts
+# (local hour before 8 or from 20), weekend alerts (local Saturday or Sunday), and the zone read in.
+LocalTimeCounts = dict[tuple[Any, Any], tuple[int, int, int, str]]
+
+
+def local_time_counts(store: Any) -> LocalTimeCounts:
+    """Every alert converted to its entity's local time once per assessment (DuckDBStore.memo).
+
+    The conversion is the costly part of reading local hours (about 2.6 microseconds an alert),
+    and NS03 and the anomaly scan's night, weekend and monthly figures each used to convert every
+    alert again. Each of those figures is a count of these, so it is unchanged.
+
+    A zone's UTC offset changes only at a transition, so the conversion is done per entity and
+    UTC hour: where the offset at the hour's first and last microsecond is the same, every alert
+    of that hour is shifted by it; an hour holding a transition (or an alert without an entity)
+    is converted alert by alert. The two agree unless a zone changed its offset twice within one
+    hour, which no zone in the time-zone database does (tests/test_local_time.py compares them
+    across transitions and fractional offsets)."""
+
+    def compute() -> LocalTimeCounts:
+        df = store.query(f"""
+            WITH {LOCALISED_ALERTS_CTE}
+            SELECT entity_id, month, count(*) AS n,
+                   count(CASE WHEN h >= 20 OR h < 8 THEN 1 END) AS night,
+                   count(CASE WHEN dow IN (0, 6) THEN 1 END) AS weekend,
+                   coalesce(any_value(tz), 'UTC') AS tz
+            FROM (SELECT entity_id, month, tz, extract(hour FROM lt) AS h, dayofweek(lt) AS dow FROM localised)
+            GROUP BY entity_id, month
+        """)
+        return {(ent, month): (int(n), int(night), int(weekend), str(tz))
+                for ent, month, n, night, weekend, tz in df.iter_rows()}
+
+    result: LocalTimeCounts = store.memo(("alert", "local_time_counts"), compute)
+    return result
+
+
+def entity_local_counts(store: Any) -> dict[Any, tuple[int, int, int, str]]:
+    """local_time_counts summed per entity (every alert, with or without created_at)."""
+    totals: dict[Any, tuple[int, int, int, str]] = {}
+    for (ent, _month), (n, night, weekend, tz) in local_time_counts(store).items():
+        before = totals.get(ent, (0, 0, 0, tz))
+        totals[ent] = (before[0] + n, before[1] + night, before[2] + weekend, tz)
+    return totals
+
+
 # --- persistence (audited) ---------------------------------------------------------------------
 
 

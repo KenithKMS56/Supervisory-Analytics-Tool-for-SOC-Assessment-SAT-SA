@@ -177,6 +177,13 @@ satsa jobs cancel JOB-...    # cancel a queued job; a running one stops at its n
     earlier attempt published or held instead of ingesting the files again.
 - **Disk preflight.** An import refuses to start (`InsufficientDisk`) unless the data volume
   has three times the upload's size free, plus `SATSA_MIN_FREE_DISK_MB` (default 512).
+- **The web app after an import.** Each portal process keeps the analytics tables loaded. It
+  reloads them in the background as soon as an import publishes, usually while the assessment
+  that follows runs, so the first page after the run does not wait for the reload (at 5,000,000
+  alerts the reload takes about 50 s). A request never reads tables older than the published
+  data; during a reload it waits. The web app holds the tables in memory beside the worker's
+  assessment either way (about 4.6 GiB each at 5,000,000 alerts). `SATSA_ANALYTICS_REFRESH=off`
+  leaves the reload to the first request after a publication.
 - **Still synchronous** (kept small by design):
   - the JSON submission API's validation and publication (capped by the request size);
   - held-batch publish and discard;

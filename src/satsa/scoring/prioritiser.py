@@ -53,9 +53,7 @@ class ReviewPrioritiser:
         ORDER BY alert_id ASC
         """
         df_alerts = store.query(sql_alerts, [entity_id])
-        alert_sev_map = {
-            row["alert_id"]: row["severity_final"] for row in df_alerts.iter_rows(named=True)
-        }
+        alert_sev_map = dict(zip(df_alerts["alert_id"].to_list(), df_alerts["severity_final"].to_list(), strict=True))
 
         # Sort flagged records by score descending, then record_id ascending
         sorted_flagged = sorted(record_scores.items(), key=lambda x: (-x[1], x[0]))
@@ -104,9 +102,8 @@ class ReviewPrioritiser:
                 random_selected.extend(rng.sample(aids, sample_k))
 
         # Fill any remainder up to target_rand_count
-        remaining_pool = sorted(
-            [aid for aid in unselected_alerts if aid not in set(random_selected)]
-        )
+        chosen = set(random_selected)  # built once, not once per alert
+        remaining_pool = sorted([aid for aid in unselected_alerts if aid not in chosen])
         needed = target_rand_count - len(random_selected)
         if needed > 0 and remaining_pool:
             random_selected.extend(rng.sample(remaining_pool, min(needed, len(remaining_pool))))

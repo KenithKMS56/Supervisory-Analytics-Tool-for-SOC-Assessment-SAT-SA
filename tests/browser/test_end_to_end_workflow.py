@@ -120,8 +120,10 @@ def test_upload_to_report_in_the_browser(offline_page: OfflinePage, live_server:
     page.fill("#reg-entity-id", ENTITY)
     page.select_option("#sector_select", index=1)
     page.fill("#reg-name", "End-to-end check CSE")
-    page.click("form[action='/upload/add-entity'] button[type=submit]")
-    page.wait_for_load_state("networkidle")
+    # Wait for the form's own navigation: the POST redirects back to /upload, and "network idle"
+    # can be reached before the redirect starts on a loaded machine.
+    with page.expect_navigation():
+        page.click("form[action='/upload/add-entity'] button[type=submit]")
     page.goto(f"{base}/upload")
     assert page.locator(f"#upload-target-entity option[value='{ENTITY}']").count() == 1
 
@@ -146,8 +148,8 @@ def test_upload_to_report_in_the_browser(offline_page: OfflinePage, live_server:
     why = held.inner_text()
     assert PERIOD in why and re.search(r"reject|unreadable|timestamp|created_at", why, re.IGNORECASE), why
     before = _now(live_server.root)
-    held.locator("button:has-text('Publish as is')").click()
-    page.wait_for_load_state("networkidle")
+    with page.expect_navigation():  # the POST redirects back to /upload with the outcome
+        held.locator("button:has-text('Publish as is')").click()
     assert "Assessment queued as job" in page.inner_text("main")
 
     # 4. The worker runs the assessment of the half-year.

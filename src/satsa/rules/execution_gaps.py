@@ -3,7 +3,10 @@
 import math
 from typing import Any
 
+import polars as pl
+
 from satsa.models.outputs import Finding, FindingEvidence
+from satsa.peers.robust_stats import RobustStats
 from satsa.rules.base import BaseRule
 from satsa.store.duckdb import DuckDBStore
 
@@ -37,6 +40,29 @@ def chance_repeat_floor(n_alerts: int, pair_space: int, max_chance_pairs: float,
     return cap
 
 
+def _human_hc_close_seconds(store: DuckDBStore) -> dict[str, pl.Series]:
+    """Per entity: close times (seconds) of its human-closed High/Critical alerts, once per assessment.
+
+    EG01's peer baseline pools these over the cohort. An alert closed before it was created is a
+    timestamp fault (the close_before_create data-quality check), not a fast closure: left out."""
+
+    def compute() -> dict[str, pl.Series]:
+        df = store.query(
+            """
+            SELECT entity_id, epoch(closed_at) - epoch(created_at) AS seconds
+            FROM alert
+            WHERE severity_final IN ('high', 'critical') AND closed_by_type = 'human'
+              AND closed_at >= created_at AND entity_id IS NOT NULL
+            """
+        )
+        return {
+            str(ent): part["seconds"].cast(pl.Float64)
+            for (ent,), part in df.group_by(["entity_id"], maintain_order=True)
+        }
+
+    return store.memo(("EG01", "close_seconds"), compute)
+
+
 class EG01FastClosure(BaseRule):
     """EG01: Fast High-Severity Closure."""
 
@@ -60,19 +86,13 @@ class EG01FastClosure(BaseRule):
         # excluded, so its own fast closures cannot drag down the baseline they are judged by.
         # An alert closed before it was created is a timestamp fault (reported by the
         # close_before_create data-quality check), not a fast closure, and is left out.
-        peer_clause, peer_params = self.peer_filter(entity_id, peer_ids)
-        peer_sql = f"""
-        SELECT quantile_cont(epoch(closed_at) - epoch(created_at), 0.05) as peer_p5
-        FROM alert
-        WHERE severity_final IN ('high', 'critical') AND closed_by_type = 'human'
-          AND closed_at >= created_at AND {peer_clause}
-        """
-        peer_res = store.query(peer_sql, peer_params)
-        peer_p5 = (
-            float(peer_res["peer_p5"][0])
-            if not peer_res.is_empty() and peer_res["peer_p5"][0]
-            else 900.0
-        )
+        # quantile_cont over the cohort's pooled close times, from every entity's close times read
+        # once per assessment (one query over the cohort per entity made the rule quadratic).
+        durations = _human_hc_close_seconds(store)
+        cohort = [durations[p] for p in self.peers_among(entity_id, peer_ids, durations)]
+        pooled = pl.concat(cohort).sort() if cohort else pl.Series([], dtype=pl.Float64)
+        p5 = RobustStats.quantile_cont_sorted(pooled, 0.05)
+        peer_p5 = float(p5) if p5 else 900.0
 
         # Find target entity alerts closed faster than peer p5 with <= 1 workflow event
         target_sql = """
@@ -947,6 +967,24 @@ class EG10KPIRadicalGap(BaseRule):
         return [], []
 
 
+def _fp_rates(store: DuckDBStore) -> dict[str, tuple[int, float]]:
+    """Per entity with alerts: (alerts, share closed as false positive or benign), once per assessment."""
+
+    def compute() -> dict[str, tuple[int, float]]:
+        df = store.query(
+            """
+            SELECT entity_id, count(*) AS n,
+                   count(CASE WHEN disposition IN ('false_positive', 'benign') THEN 1 END) * 1.0 / count(*) as fp_rate
+            FROM alert
+            WHERE entity_id IS NOT NULL
+            GROUP BY entity_id
+            """
+        )
+        return {str(ent): (int(n), float(rate)) for ent, n, rate in df.iter_rows()}
+
+    return store.memo(("EG11", "fp_rates"), compute)
+
+
 class EG11DispositionExtremes(BaseRule):
     """EG11: Disposition extremes."""
 
@@ -991,19 +1029,12 @@ class EG11DispositionExtremes(BaseRule):
         if total < min_alert_volume:
             return [], []
 
-        peer_clause, peer_params = self.peer_filter(entity_id, peer_ids)
-        peer_df = store.query(
-            f"""
-            SELECT entity_id,
-                   count(CASE WHEN disposition IN ('false_positive', 'benign') THEN 1 END) * 1.0 / count(*) as fp_rate
-            FROM alert
-            WHERE {peer_clause}
-            GROUP BY entity_id
-            HAVING count(*) >= ?
-            """,
-            [*peer_params, min_alert_volume],
-        )
-        peer_rates = [float(v) for v in peer_df["fp_rate"].to_list()] if not peer_df.is_empty() else []
+        # Every entity's rate is read once per assessment and the cohort's taken from it (the same
+        # expression per entity as a query over the cohort; one per entity made the rule quadratic).
+        rates = _fp_rates(store)
+        peer_rates = [
+            rates[peer][1] for peer in self.peers_among(entity_id, peer_ids, rates) if rates[peer][0] >= min_alert_volume
+        ]
         z_res = self.robust_z(fp_rate, peer_rates, min_spread)
 
         comparison: dict[str, Any] = {"fp_rate": fp_rate, "total_alerts": total, "peer_count": len(peer_rates)}

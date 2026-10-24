@@ -174,7 +174,7 @@ on Rule Tuning and recorded with their signature as the approval.
 | Symptom | Look at |
 |---|---|
 | Import job failed | its job page (structured error); `/dq` for data-quality issues |
-| Upload held | Upload → Held submissions: publish as is, or discard (both audited) |
+| Upload held | Upload → Held submissions: publish as is, or discard (both audited). Which data-quality checks hold an upload is set in `config/data_quality.yaml` (`docs/data_contract.md`, "Blocking checks"); an unrecognised severity, status or disposition is fixed by adding it to `config/taxonomy.yaml` |
 | `/readyz` not ready | `satsa ops ready` names the failing check |
 | A page is slow for many readers during an import | expected on one worker: `docs/benchmarks.md`, "Ten concurrent readers" |
 | Audit chain doubt | `satsa audit verify` |
