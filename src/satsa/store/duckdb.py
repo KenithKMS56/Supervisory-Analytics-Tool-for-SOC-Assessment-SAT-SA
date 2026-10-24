@@ -623,53 +623,138 @@ class AnalyticsCache:
     """Keeps the canonical tables loaded between requests instead of re-reading every Parquet
     file on each one.
 
-    The loaded store is reused for as long as its key is unchanged. The key is the latest
-    assessment run, the catalog's publication sequence and a fingerprint of the Parquet store,
-    so the cache is rebuilt when a new run completes and when data is published, removed or
-    changed by any process (this web app, the Admin Portal, or the CLI) -- including a batch
-    that only declares tables empty and so adds no file.
+    The loaded store is reused for as long as its key is unchanged. The key is the catalog's
+    publication sequence and a fingerprint of the Parquet store, so the cache is rebuilt when
+    data is published, removed or changed by any process (this web app, the Admin Portal, the
+    worker or the CLI) -- including a batch that only declares tables empty and so adds no file.
+    An assessment run publishes no data, so a completed run does not rebuild it: the loaded
+    tables still hold every published batch, and reloading them would load the same rows.
+
+    A request never reads tables older than its key: when the key has changed it waits for the
+    load, or for the one already in progress. `start_refresher` starts that load as soon as data
+    is published, before any request asks: an import is usually followed by an assessment, which
+    takes longer than the load, so the first page after the run finds the tables loaded.
     """
 
     # The Parquet fingerprint walks every file; it is taken at most this often per data directory.
     # Publication through the catalog changes the publication sequence, which is read on every
     # request, so this delay applies only to files changed outside the catalog.
     FINGERPRINT_SECONDS = 2.0
+    # How often the refresher looks for a publication (start_refresher).
+    REFRESH_SECONDS = 2.0
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._stores: dict[Path, tuple[tuple[Any, ...], DuckDBStore]] = {}
         self._fingerprints: dict[Path, tuple[float, int, tuple[int, int, int]]] = {}
+        # One load at a time per data directory; a request whose key changed waits on it.
+        self._load_locks: dict[Path, threading.Lock] = {}
+        # Data directories a request has used: the refresher keeps them loaded (even after a
+        # failed load, which leaves nothing in _stores).
+        self._roots: set[Path] = set()
+        self._refresher: threading.Thread | None = None
+        self._stop_refresher = threading.Event()  # the running refresher's own (a new one per start)
         self.loads = 0  # how many times the tables were (re)loaded; read by tests and benchmarks
 
     def _fingerprint(self, root: Path, sequence: int) -> tuple[int, int, int]:
         """The Parquet fingerprint, taken again when the interval has passed or anything was
         published since (so a fingerprint is never paired with a newer publication)."""
         now = time.monotonic()
-        taken = self._fingerprints.get(root)
+        with self._lock:
+            taken = self._fingerprints.get(root)
         if taken is None or taken[1] != sequence or now - taken[0] >= self.FINGERPRINT_SECONDS:
             taken = (now, sequence, parquet_fingerprint(root / "parquet"))
-            self._fingerprints[root] = taken
+            with self._lock:
+                self._fingerprints[root] = taken
         return taken[2]
 
-    def view(self, data_dir: Path | str, run_marker: str | None) -> SharedDuckDBView:
-        root = Path(data_dir).resolve()
+    def _key(self, root: Path) -> tuple[Any, ...]:
         sequence = published_sequence(root)
-        key = (run_marker, sequence, *self._fingerprint(root, sequence))
+        return (sequence, *self._fingerprint(root, sequence))
+
+    def _cached(self, root: Path, key: tuple[Any, ...]) -> DuckDBStore | None:
         with self._lock:
             cached = self._stores.get(root)
-            if cached is None or cached[0] != key:
-                store = DuckDBStore(root)
-                store.load_all_tables()
+        return cached[1] if cached is not None and cached[0] == key else None
+
+    def _current(self, root: Path) -> DuckDBStore:
+        """The store loaded for the data as it is now, loading it if the data changed."""
+        store = self._cached(root, self._key(root))
+        if store is not None:
+            return store
+        with self._lock:
+            load_lock = self._load_locks.setdefault(root, threading.Lock())
+        with load_lock:
+            # Taken again: while this caller waited, a load in progress may have finished (the
+            # usual case), or data may have been published again.
+            key = self._key(root)
+            store = self._cached(root, key)
+            if store is not None:
+                return store
+            with self._lock:
+                # The previous store is dropped before the load, not closed: a request on another
+                # thread may still hold a cursor on it, and DuckDB frees it with its last cursor.
+                # Dropped first, it does not stay in memory beside the new one for the whole load.
+                self._stores.pop(root, None)
+            store = DuckDBStore(root)
+            store.load_all_tables()
+            with self._lock:
                 self.loads += 1
-                # The previous store is dropped, not closed: a request on another thread may
-                # still hold a cursor on it. DuckDB frees it with its last cursor.
-                self._stores[root] = cached = (key, store)
-            return SharedDuckDBView(cached[1])
+                self._stores[root] = (key, store)
+            return store
+
+    def view(self, data_dir: Path | str) -> SharedDuckDBView:
+        root = Path(data_dir).resolve()
+        with self._lock:
+            self._roots.add(root)
+        return SharedDuckDBView(self._current(root))
+
+    def refresh(self) -> None:
+        """Reload every data directory already in use whose data changed since it was loaded.
+        One that no request has used yet is left alone: it is loaded when first asked for."""
+        with self._lock:
+            roots = sorted(self._roots)
+        for root in roots:
+            self._current(root)
+
+    def start_refresher(self) -> bool:
+        """Run `refresh` every REFRESH_SECONDS on a daemon thread (once per process). Returns
+        whether it runs; SATSA_ANALYTICS_REFRESH=off leaves loading to the first request, for a
+        host where the web app's load should not overlap an assessment's memory use."""
+        if os.environ.get("SATSA_ANALYTICS_REFRESH", "on").strip().lower() in ("off", "0", "false", "no"):
+            return False
+        with self._lock:
+            if self._refresher is not None and self._refresher.is_alive():
+                return True
+            self._stop_refresher = stop = threading.Event()
+            self._refresher = threading.Thread(target=self._refresh_loop, args=(stop,), name="satsa-analytics-refresh",
+                                               daemon=True)
+            self._refresher.start()
+        return True
+
+    def stop_refresher(self, wait_seconds: float = 5.0) -> None:
+        """Stop the refresher. A reload it is running is not waited for beyond `wait_seconds`
+        (it can take a minute on a large portfolio): the thread stops after that reload, and as
+        a daemon it never holds up the end of the process."""
+        with self._lock:
+            refresher, self._refresher = self._refresher, None
+            stop = self._stop_refresher
+        if refresher is not None:
+            stop.set()
+            refresher.join(wait_seconds)
+
+    def _refresh_loop(self, stop: threading.Event) -> None:
+        while not stop.wait(self.REFRESH_SECONDS):
+            try:
+                self.refresh()
+            except Exception:  # the next request loads (and reports) it; the loop keeps watching
+                logger.warning("Background reload of the analytics tables failed", exc_info=True)
 
     def clear(self) -> None:
         with self._lock:
             self._stores.clear()
             self._fingerprints.clear()
+            self._roots.clear()
 
 
 analytics_cache = AnalyticsCache()

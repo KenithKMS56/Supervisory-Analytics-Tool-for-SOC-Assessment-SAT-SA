@@ -82,7 +82,7 @@ machine of `docs/benchmarks.md`), synthetic data, **not** the declared 4-vCPU / 
 machine. Full tables, including ten concurrent readers and repeated submissions:
 `docs/benchmarks.md`, "After the product brief: performance work".
 
-| Entities x alerts | Alerts | Ingest | Ingest peak | Assess | Assess peak | Ingest + assess | First portfolio page after a run |
+| Entities x alerts | Alerts | Ingest | Ingest peak | Assess | Assess peak | Ingest + assess | First portfolio page of a newly started web app |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | 10 x 10,000 (uniform, skewed, free-text, uneven) | 100,000 | 3.5-21.7 s | 337-518 MiB | 3.5-4.9 s | 214-231 MiB | 7.0-25.2 s | 1.3-2.0 s |
 | 10 x 50,000 | 500,000 | 6.4 s | 876 MiB | 9.6 s | 568 MiB | 16.0 s | 3.8 s |
@@ -97,9 +97,16 @@ machine. Full tables, including ten concurrent readers and repeated submissions:
   measured. There an assessment takes seconds and ten concurrent readers see a p95 of 0.5-0.8 s
   (up to 1.5 s while another process ingests). Larger portfolios are measured on this laptop,
   not promised.
-- **First page after a run:** the web app reloads every table on the first analytics request
-  after a run (55 s at 5,000,000 alerts); later pages load in under a second. Not improved by
-  the performance work: holding tables in entity order made the reload about 16% longer.
+- **First page after a run:** a running web app reloads its tables in the background as soon
+  as an import publishes, while the assessment runs, and not again when the run completes: the
+  first page after the run took 0.1 s at 5,400,000 alerts, against 50 s when it reloaded on that
+  request (2026-10-24, `docs/benchmarks.md`). The assessment beside that reload took 133.5 s
+  against 118.7 s. A newly started web app still loads the tables on its first analytics
+  request (the last column: 55 s at 5,000,000 alerts). `SATSA_ANALYTICS_REFRESH=off` turns
+  the background reload off.
+- **Memory on a running instance:** the web app holds the loaded tables (about 4.6 GiB at 5.2
+  million alerts) while the worker assesses, so web app and worker together need about twice
+  the assessment's peak.
 - **Memory:** an assessment needs about 256 MiB plus 240 bytes per published row (measured up to
   208), an import about four times its input; the worker refuses a job that would not fit
   before starting it.

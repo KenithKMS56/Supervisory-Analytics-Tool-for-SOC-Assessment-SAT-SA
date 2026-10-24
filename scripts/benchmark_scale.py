@@ -2,6 +2,7 @@
 
     python scripts/benchmark_scale.py --configs 10x50000,25x100000,50x100000 --out docs/benchmarks.md
     python scripts/benchmark_scale.py --configs 10x10000,10x10000:skewed,10x10000:freetext --readers
+    python scripts/benchmark_scale.py --configs 50x100000 --served
 
 For each configuration a canonical CSV submission is generated (the same 14 tables and roughly
 the same row ratios as `satsa generate-data`), then three stages run, each in its own process
@@ -30,6 +31,13 @@ With --readers, two more steps run after `pages`:
   repeat   the first submission is ingested again unchanged: its time, and whether the stored
            alert count stays the same (a repeated submission must not double the data)
 
+With --served, after `pages` (and the steps above), the first page after a run on an instance
+that was already running, twice: a server (uvicorn) is started and its first page loaded, then
+a further submission (two more entities) is ingested and assessed by other processes, as the
+worker does, and the first page after the assessment is timed. Once with the analytics tables
+reloaded only when a request asks (SATSA_ANALYTICS_REFRESH=off), once with the server reloading
+them in the background as soon as data is published (the default).
+
 Every figure written to the report is measured on the machine the script runs on; a stage that
 fails or exceeds --stage-timeout is reported as such, never estimated. Nothing here touches
 the repository's own data/ directory: each configuration gets a scratch workspace.
@@ -50,6 +58,7 @@ import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Self
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
@@ -64,8 +73,8 @@ NEW_PASSPHRASE = "Benchmark-Passphrase#2026"
 # ------------------------------------------------------------------ measurement helpers
 
 
-def peak_memory_mb() -> float:
-    """Peak resident memory of this process so far, in MiB."""
+def peak_memory_mb(pid: int | None = None) -> float:
+    """Peak resident memory of this process (or of process `pid`) so far, in MiB."""
     if os.name == "nt":
         class Counters(ctypes.Structure):
             _fields_ = [("cb", ctypes.c_ulong), ("PageFaultCount", ctypes.c_ulong)] + [
@@ -80,14 +89,68 @@ def peak_memory_mb() -> float:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         psapi = ctypes.WinDLL("psapi", use_last_error=True)
         kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
         psapi.GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(Counters), ctypes.c_ulong]
-        if not psapi.GetProcessMemoryInfo(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb):
+        # PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ
+        handle = kernel32.GetCurrentProcess() if pid is None else kernel32.OpenProcess(0x1000 | 0x0010, 0, pid)
+        if not handle:
             return 0.0
+        try:
+            if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                return 0.0
+        finally:
+            if pid is not None:
+                kernel32.CloseHandle(handle)
         return counters.PeakWorkingSetSize / (1024 * 1024)
+    if pid is not None:
+        for line in Path(f"/proc/{pid}/status").read_text().splitlines():
+            if line.startswith("VmHWM:"):
+                return int(line.split()[1]) / 1024
+        return 0.0
     import resource
 
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return peak / (1024 * 1024) if sys.platform == "darwin" else peak / 1024
+
+
+def _child_pids(pid: int) -> list[int]:
+    """Processes started by `pid` (on Windows a virtual environment's python.exe is a launcher
+    that runs the interpreter as its child; elsewhere none is expected)."""
+    if os.name != "nt":
+        return []
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("dwSize", ctypes.c_ulong), ("cntUsage", ctypes.c_ulong), ("th32ProcessID", ctypes.c_ulong),
+                    ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", ctypes.c_ulong),
+                    ("cntThreads", ctypes.c_ulong), ("th32ParentProcessID", ctypes.c_ulong),
+                    ("pcPriClassBase", ctypes.c_long), ("dwFlags", ctypes.c_ulong), ("szExeFile", ctypes.c_wchar * 260)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    kernel32.Process32FirstW.argtypes = kernel32.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(Entry)]
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+        return []
+    children = []
+    try:
+        entry = Entry()
+        entry.dwSize = ctypes.sizeof(Entry)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            if entry.th32ParentProcessID == pid:
+                children.append(int(entry.th32ProcessID))
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return children
+
+
+def tree_peak_memory_mb(pid: int) -> float:
+    """The highest peak resident memory of process `pid` and the processes it started, in MiB."""
+    return max([peak_memory_mb(pid)] + [peak_memory_mb(child) for child in _child_pids(pid)])
 
 
 def total_ram_gb() -> float:
@@ -315,6 +378,16 @@ def stage_ingest_more(workspace: Path) -> dict:
     return _ingest(workspace, "csv_more")
 
 
+def stage_ingest_served(workspace: Path) -> dict:
+    """A further submission (new entities), ingested while a server runs (--served)."""
+    return _ingest(workspace, "csv_served")
+
+
+def stage_account(workspace: Path) -> dict:
+    ensure_analyst()
+    return {}
+
+
 def _stored_alerts() -> int:
     from satsa.store.duckdb import DuckDBStore
 
@@ -407,7 +480,8 @@ def stage_pages(workspace: Path) -> dict:
 
 
 STAGES = {"ingest": stage_ingest, "assess": stage_assess, "pages": stage_pages,
-          "ingest_more": stage_ingest_more, "repeat": stage_repeat}
+          "ingest_more": stage_ingest_more, "repeat": stage_repeat,
+          "ingest_served": stage_ingest_served, "account": stage_account}
 
 
 def run_stage_in_process(stage: str, workspace: Path) -> None:
@@ -489,33 +563,59 @@ def _read_loop(base: str, entity: str, stop, samples: list[float], errors: list[
         client.close()
 
 
-def readers(workspace: Path, timeout: int, entities: int, alerts_per_entity: int, profile: str) -> dict:
-    """Ten reader sessions against a served instance: idle, then while a second submission is
-    ingested by another process. Pages are warmed first (the first-request cost is in `pages`)."""
-    import socket
-    import threading
+class _Server:
+    """A served instance (uvicorn, one process) in a workspace, stopped on leaving the block."""
 
-    import httpx
+    def __init__(self, workspace: Path, extra_env: dict[str, str] | None = None):
+        import socket
 
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    base = f"http://127.0.0.1:{port}"
-    env = {**os.environ, "PYTHONPATH": str(REPO / "src"), "PYTHONIOENCODING": "utf-8", "NO_PROXY": "*"}
-    log = open(workspace / "server.log", "wb")  # noqa: SIM115 - closed below
-    server = subprocess.Popen([sys.executable, "-m", "uvicorn", "satsa.api:app", "--host", "127.0.0.1", "--port", str(port)],
-                              cwd=workspace, env=env, stdout=log, stderr=subprocess.STDOUT)
-    try:
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        self.base = f"http://127.0.0.1:{port}"
+        env = {**os.environ, "PYTHONPATH": str(REPO / "src"), "PYTHONIOENCODING": "utf-8", "NO_PROXY": "*",
+               **(extra_env or {})}
+        self._log = open(workspace / "server.log", "ab")  # noqa: SIM115 - closed in __exit__
+        self.process = subprocess.Popen(
+            [sys.executable, "-m", "uvicorn", "satsa.api:app", "--host", "127.0.0.1", "--port", str(port)],
+            cwd=workspace, env=env, stdout=self._log, stderr=subprocess.STDOUT,
+        )  # fmt: skip
+
+    def started(self) -> bool:
+        import httpx
+
         deadline = time.monotonic() + 120
         while True:
             try:
-                if httpx.get(f"{base}/splash", timeout=2, trust_env=False).status_code == 200:
-                    break
+                if httpx.get(f"{self.base}/splash", timeout=2, trust_env=False).status_code == 200:
+                    return True
             except httpx.HTTPError:
                 pass
-            if server.poll() is not None or time.monotonic() > deadline:
-                return {"ok": False, "error": "the server did not start"}
+            if self.process.poll() is not None or time.monotonic() > deadline:
+                return False
             time.sleep(0.3)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+        self._log.close()
+
+
+def readers(workspace: Path, timeout: int, entities: int, alerts_per_entity: int, profile: str) -> dict:
+    """Ten reader sessions against a served instance: idle, then while a second submission is
+    ingested by another process. Pages are warmed first (the first-request cost is in `pages`)."""
+    import threading
+
+    with _Server(workspace) as server:
+        if not server.started():
+            return {"ok": False, "error": "the server did not start"}
+        base = server.base
         entity = "CSE-001"
         warm = _sign_in(base)
         for page in READER_PAGES:
@@ -548,13 +648,43 @@ def readers(workspace: Path, timeout: int, entities: int, alerts_per_entity: int
         generate(workspace / "csv_more", 2, alerts_per_entity, profile, entity_offset=entities)
         busy = phase(lambda: run_stage("ingest_more", workspace, timeout))
         return {"ok": True, "readers": READERS, "idle": idle, "during_ingest": busy}
-    finally:
-        server.terminate()
+
+
+def _timed_get(client, url: str) -> float:  # type: ignore[no-untyped-def]
+    started = time.perf_counter()
+    r = client.get(url)
+    elapsed = time.perf_counter() - started
+    if r.status_code != 200:
+        raise RuntimeError(f"{url}: HTTP {r.status_code}")
+    return elapsed
+
+
+def served(workspace: Path, timeout: int, alerts_per_entity: int, profile: str, entity_offset: int,
+           refresh: bool) -> dict:
+    """The first page after a run on an instance that was running while data was ingested and
+    assessed by other processes (as the worker does). `refresh` sets SATSA_ANALYTICS_REFRESH."""
+    shutil.rmtree(workspace / "csv_served", ignore_errors=True)
+    generate(workspace / "csv_served", 2, alerts_per_entity, profile, entity_offset=entity_offset)
+    run_stage("account", workspace, timeout)
+    with _Server(workspace, {"SATSA_ANALYTICS_REFRESH": "on" if refresh else "off"}) as server:
+        if not server.started():
+            return {"ok": False, "error": "the server did not start"}
+        client = _sign_in(server.base)
         try:
-            server.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            server.kill()
-        log.close()
+            start_first = _timed_get(client, "/portfolio")  # loads the tables as they are
+            ingest = run_stage("ingest_served", workspace, timeout)
+            if not ingest.get("ok"):
+                return {"ok": False, "error": f"ingest: {ingest.get('error')}"}
+            assess = run_stage("assess", workspace, timeout)
+            if not assess.get("ok"):
+                return {"ok": False, "error": f"assess: {assess.get('error')}"}
+            first = _timed_get(client, "/portfolio")
+            repeat = statistics.median(_timed_get(client, "/portfolio") for _ in range(5))
+        finally:
+            client.close()
+        return {"ok": True, "refresh": refresh, "start_first_seconds": start_first, "ingest": ingest,
+                "assess": assess, "first_after_run_seconds": first, "repeat_seconds": repeat,
+                "server_peak_mb": tree_peak_memory_mb(server.process.pid)}
 
 
 def _dir_mb(path: Path) -> float:
@@ -565,7 +695,7 @@ def _dir_mb(path: Path) -> float:
 
 
 def benchmark(entities: int, alerts_per_entity: int, workdir: Path, timeout: int, profile: str = "uniform",
-              with_readers: bool = False) -> dict:
+              with_readers: bool = False, with_served: bool = False) -> dict:
     workspace = workdir / f"bench_{entities}x{alerts_per_entity}_{profile}"
     shutil.rmtree(workspace, ignore_errors=True)
     (workspace / "data").mkdir(parents=True)
@@ -601,6 +731,13 @@ def benchmark(entities: int, alerts_per_entity: int, workdir: Path, timeout: int
         result["repeat"] = run_stage("repeat", workspace, timeout)
         print(f"  [{entities}x{alerts_per_entity} {profile}] repeat: {json.dumps(result['repeat'])[:400]}", flush=True)
         result["data_dir_mb_after"] = _dir_mb(workspace / "data")
+    if with_served and result.get("pages", {}).get("ok"):
+        # New entities each time, after any the readers step added.
+        for i, refresh in enumerate((False, True)):
+            name = "served_refresh" if refresh else "served_on_request"
+            print(f"  [{entities}x{alerts_per_entity} {profile}] {name} ...", flush=True)
+            result[name] = served(workspace, timeout, alerts_per_entity, profile, entities + 2 + 2 * i, refresh)
+            print(f"  [{entities}x{alerts_per_entity} {profile}] {name}: {json.dumps(result[name])[:600]}", flush=True)
     shutil.rmtree(workspace, ignore_errors=True)
     return result
 
@@ -657,6 +794,12 @@ def render(results: list[dict], specs: dict[str, str], command: str) -> str:
         "  first with nothing else running, then while another process ingests a second submission",
         "  (two more entities). Latency is per request, measured by the client.",
         "- **Repeat:** the first submission ingested again, unchanged.",
+        "- **Served first page** (with `--served`): a served instance is started and its first",
+        "  `/portfolio` loaded; another process ingests two more entities and then assesses (as the",
+        "  worker does); the first `/portfolio` after the assessment is timed. Twice: with the",
+        "  analytics tables reloaded only when a request asks (`SATSA_ANALYTICS_REFRESH=off`) and with",
+        "  the server reloading them in the background as soon as data is published (the default).",
+        "  The server's peak memory includes its reload alongside the assessment.",
         "- **Disk:** everything under `data/` (Parquet, databases, manifests) after the stages.",
         "",
         "## Results",
@@ -679,7 +822,8 @@ def render(results: list[dict], specs: dict[str, str], command: str) -> str:
         "",
         "\"Reload\" is what every request paid before the analytics cache: building a store and",
         "re-reading every Parquet table. It is measured directly here (`DuckDBStore.load_all_tables`)",
-        "and is now paid once, on the first analytics request after a run completes or the data changes.",
+        "and is now paid once after the data changes: on the first analytics request, or in the",
+        "background on a running instance (see the served first page below, with `--served`).",
         "",
         "| Entities x alerts each | Reload (old per-request cost) | Page | First request | Repeat (median of 5) | Pages peak |",
         "|---|---:|---|---:|---:|---:|",
@@ -732,6 +876,27 @@ def render(results: list[dict], specs: dict[str, str], command: str) -> str:
                 continue
             lines.append(f"| {label} | {r['profile']} | {rp['seconds']:,.1f} s | {rp['status']} | "
                          f"{rp['alerts_before']:,} | {rp['alerts_after']:,} |")
+    with_served = [r for r in results if r.get("served_refresh") or r.get("served_on_request")]
+    if with_served:
+        lines += ["", "### First page after a run, on a running instance", "",
+                  ("| Entities x alerts each | Tables reloaded | First page at server start | Further submission ingested | "
+                   "Assessed (alongside the server) | First page after the run | Repeat (median of 5) | Server peak |"),
+                  "|---|---|---:|---:|---:|---:|---:|---:|"]
+        for r in with_served:
+            label = f"{r['entities']} x {r['alerts_per_entity']:,}"
+            for name, how in (("served_on_request", "on the first request"), ("served_refresh", "in the background")):
+                sv = r.get(name)
+                if sv is None:
+                    continue
+                if not sv.get("ok"):
+                    lines.append(f"| {label} | {how} | FAILED: {sv.get('error')} | | | | | |")
+                    continue
+                lines.append(
+                    f"| {label} | {how} | {sv['start_first_seconds']:,.1f} s | "
+                    f"{sv['ingest']['rows']:,} rows in {sv['ingest']['seconds']:,.1f} s | "
+                    f"{sv['assess']['seconds']:,.1f} s, peak {sv['assess']['peak_mb']:,.0f} MiB | "
+                    f"{sv['first_after_run_seconds'] * 1000:,.0f} ms | {sv['repeat_seconds'] * 1000:,.0f} ms | "
+                    f"{sv['server_peak_mb']:,.0f} MiB |")
     failures = [
         f"- **{r['entities']} x {r['alerts_per_entity']:,}, {stage}:** {r[stage]['error']} "
         f"(after {r[stage].get('wall_seconds', 0):,.0f} s, peak {r[stage].get('peak_mb', 0):,.0f} MiB)"
@@ -750,6 +915,8 @@ def main() -> int:
     parser.add_argument("--configs", default="10x50000,25x100000,50x100000",
                         help="comma-separated ENTITIESxALERTS[:profile], profile one of " + ", ".join(PROFILES))
     parser.add_argument("--readers", action="store_true", help="also measure ten concurrent readers and a repeat")
+    parser.add_argument("--served", action="store_true",
+                        help="also measure the first page after a run on an instance that kept running")
     parser.add_argument("--out", default="docs/benchmarks.md", help="Markdown report to write")
     parser.add_argument("--json", default=None, help="also write the raw results as JSON")
     parser.add_argument("--workdir", default=None, help="scratch directory (default: the system temp directory)")
@@ -775,7 +942,8 @@ def main() -> int:
     results = []
     for entities, alerts_per_entity, profile in configs:
         print(f"== {entities} entities x {alerts_per_entity:,} alerts ({profile})", flush=True)
-        results.append(benchmark(entities, alerts_per_entity, workdir, args.stage_timeout, profile, args.readers))
+        results.append(benchmark(entities, alerts_per_entity, workdir, args.stage_timeout, profile, args.readers,
+                                 args.served))
     command = "python scripts/benchmark_scale.py " + " ".join(sys.argv[1:])
     report = render(results, machine_specs(), command.strip())
     Path(args.out).write_text(report, encoding="utf-8")

@@ -128,6 +128,10 @@ layout (B08).
   (`docs/benchmarks.md`). Tables are held in entity order; the peer rules and the local-time
   figures read portfolio-wide figures once per run; an ingest no longer reloads every table
   after publishing. The memory preflight now assumes 240 bytes per published row.
+- *First page after a run*: a running web app reloads its tables when data is published, in
+  the background, and no longer when a run completes (an assessment publishes no data): 0.1 s
+  instead of 50 s at 5,400,000 alerts (`docs/benchmarks.md`, 2026-10-24). Requests still never
+  read tables older than the published data. `SATSA_ANALYTICS_REFRESH=off` turns it off.
 
 ## Known limitations
 
@@ -140,10 +144,12 @@ layout (B08).
   machine (`docs/benchmarks.md`). There, 100,000 alerts assess in 4.6–6.3 s and ten concurrent
   readers see a p95 of 0.5–0.9 s (up to 1.5 s while another process ingests); single requests
   reached 3.1 s at 100,000 and 4.5 s at 500,000 alerts during the reload after a publication.
-- **The first page after a run is slow on large portfolios**: 55 s at 5,000,000 alerts (17 s on
-  2026-10-02), while the web app reloads every table; later pages load in under a second.
-  Ingest and assessment of 5,000,000 alerts take under 3 minutes (162.6-164.2 s). Nothing above
-  100,000 alerts is a supported tier until the reference machine is measured.
+- **A newly started web app is slow to its first page on large portfolios**: 45-55 s at
+  5,000,000 alerts while it loads the tables; later pages load in under a second. Ingest and
+  assessment of 5,000,000 alerts take under 3 minutes (162.6-164.2 s). Nothing above 100,000
+  alerts is a supported tier until the reference machine is measured.
+- **A running web app and the worker each hold the data in memory**: about 4.6 GiB each at 5.2
+  million alerts, more together than the 8-GiB reference machine.
 - **One worker per deployment.** Several workers are safe by lease, but are not load-tested.
 - **Content-Security-Policy keeps `'unsafe-inline'`** for scripts and styles, because the
   templates still use inline scripts and handlers. The other directives confine every page to

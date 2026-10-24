@@ -2,8 +2,9 @@
 
 > **Supervisory Notice:** *Indicators requiring supervisory review; not a compliance determination.*
 
-**Current figures: Section "After the product brief: performance work (2026-10-20)" below.** The
-other sections are earlier runs, kept with their dates, including the end of the brief's Phase 5
+**Current figures: Section "After the product brief: performance work (2026-10-20)" below, and
+for the first page after a run on a running web app, "First page after a run, on a running web
+app (2026-10-24)".** The other sections are earlier runs, kept with their dates, including the end of the brief's Phase 5
 (2026-10-19). (They use an older project's phase numbering: their
 "Phase 5" is an ingest change from 2026-10-01, not the product brief's Phase 5.) Measured with `scripts/benchmark_scale.py`,
 on the machine described below.
@@ -20,6 +21,46 @@ the other:
   tree, so that its stage processes import the old ingest code.
 
 The Phase 5 tables are those runs' own output; the raw results of every run are at the end.
+
+## First page after a run, on a running web app (2026-10-24)
+
+The web app no longer reloads its analytics tables because an assessment completed (a run
+publishes no data, so the reload loaded the same rows again), and it reloads them in the
+background as soon as data is published (`AnalyticsCache.start_refresher`). A request never
+reads tables older than the published data: if a reload is still in progress it waits for it.
+`SATSA_ANALYTICS_REFRESH=off` turns the background reload off.
+
+Measured on the laptop of the 2026-10-20 section:
+
+```
+python scripts/benchmark_scale.py --configs 50x100000 --served --workdir build/bench --stage-timeout 3000 --out ... --json ...
+```
+
+After the usual stages, a web app (uvicorn) is started and its first `/portfolio` loaded; then
+other processes ingest two more entities (100,000 alerts each) and assess the portfolio, as the
+worker does, and the first `/portfolio` after the assessment is timed. Twice, on the same
+workspace: first with the background reload off, then on, each with two new entities.
+
+| Entities after the submission | Tables reloaded | First page at web app start | Submission ingested | Assessment (web app running) | First page after the run | Repeat (median of 5) | Web app peak |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 52 (5,200,000 alerts) | on the first request (`SATSA_ANALYTICS_REFRESH=off`) | 55.3 s | 854,884 rows in 4.4 s | 118.7 s, peak 4,663 MiB | **50,163 ms** | 68 ms | 4,690 MiB |
+| 54 (5,400,000 alerts) | in the background (default) | 45.4 s | 854,555 rows in 4.6 s | 133.5 s, peak 4,833 MiB | **107 ms** | 87 ms | 4,861 MiB |
+
+- **The first page after a run takes 0.1 s instead of 50 s** at this size: the reload ran while
+  the assessment did and was finished before it.
+- **Cost:** the assessment took 133.5 s beside the reload, against 118.7 s without it. Part of
+  that is the larger portfolio (54 entities against 52, 4% more data); the rest is the reload
+  competing for the same laptop. The web app's peak memory rose by 171 MiB: the previous tables
+  are released before the reload, not kept beside the new ones.
+- **Memory on a running instance:** the web app holds the loaded tables (about 4.6 GiB at 5.2
+  million alerts) while the worker assesses (about 4.6 GiB), with or without the background
+  reload: about 9.1 GiB together, more than the declared 8-GiB reference machine. Portfolios of
+  this size are measured, not a supported tier.
+- **Not changed:** a newly started web app still loads the tables on its first analytics
+  request (45-55 s at this size); later requests take under 0.1 s.
+- The ingest and assessment of the first 5,000,000 alerts in this run (98.3 s and 139.8 s) were
+  measured while tests ran on the same laptop and are not used; the current figures for them
+  are those of 2026-10-20 below. Raw results: end of this page.
 
 ## After the product brief: performance work (2026-10-20): current figures
 
@@ -2324,6 +2365,123 @@ Final code, with the anomaly scan (2026-10-02):
   },
   "parquet_mb": 281.0587577819824,
   "data_dir_mb": 285.72302436828613
+ }
+]
+```
+
+## Raw results: first page on a running web app (2026-10-24)
+
+```json
+[
+ {
+  "entities": 50,
+  "alerts_per_entity": 100000,
+  "profile": "uniform",
+  "largest_entity_alerts": 100000,
+  "smallest_entity_alerts": 100000,
+  "alerts": 5000000,
+  "rows": 21365529,
+  "csv_mb": 2248.1162853240967,
+  "generate_seconds": 23.12779189999992,
+  "ingest": {
+   "seconds": 98.34992310000007,
+   "rows": 21365579,
+   "dq_issues": 0,
+   "batch_id": "BATCH-MULTI_CSE-0b0c984c3c75",
+   "ok": true,
+   "peak_mb": 6388.671875,
+   "wall_seconds": 104.26540769999997
+  },
+  "assess": {
+   "seconds": 139.84946639999998,
+   "findings": 150,
+   "queue": 1500,
+   "ok": true,
+   "peak_mb": 4488.4375,
+   "wall_seconds": 143.81860890000007
+  },
+  "pages": {
+   "reload_seconds": 53.68500340000014,
+   "pages": {
+    "/portfolio": {
+     "first": 64.36111110000002,
+     "repeat_median": 0.09952729999986332
+    },
+    "/alerts": {
+     "first": 0.7972945999999865,
+     "repeat_median": 1.0987511000000723
+    },
+    "/entity/{entity}": {
+     "first": 0.40815790000010566,
+     "repeat_median": 0.15219170000000304
+    },
+    "/queue": {
+     "first": 0.18859550000001946,
+     "repeat_median": 0.15254339999978583
+    },
+    "/api/v1/entities": {
+     "first": 0.21977549999996882,
+     "repeat_median": 0.04752809999990859
+    }
+   },
+   "table_loads": 1,
+   "requests": 30,
+   "ok": true,
+   "peak_mb": 4519.39453125,
+   "wall_seconds": 135.26914399999987
+  },
+  "parquet_mb": 281.05875968933105,
+  "data_dir_mb": 285.72302627563477,
+  "served_on_request": {
+   "ok": true,
+   "refresh": false,
+   "start_first_seconds": 55.29191519999995,
+   "ingest": {
+    "seconds": 4.382282699999905,
+    "rows": 854884,
+    "dq_issues": 0,
+    "batch_id": "BATCH-MULTI_CSE-6718b4ead428",
+    "ok": true,
+    "peak_mb": 540.796875,
+    "wall_seconds": 7.278929500000004
+   },
+   "assess": {
+    "seconds": 118.66706859999977,
+    "findings": 156,
+    "queue": 1560,
+    "ok": true,
+    "peak_mb": 4663.31640625,
+    "wall_seconds": 122.59874190000005
+   },
+   "first_after_run_seconds": 50.16319180000028,
+   "repeat_seconds": 0.06752240000014353,
+   "server_peak_mb": 4690.02734375
+  },
+  "served_refresh": {
+   "ok": true,
+   "refresh": true,
+   "start_first_seconds": 45.39029410000012,
+   "ingest": {
+    "seconds": 4.5893386000002465,
+    "rows": 854555,
+    "dq_issues": 0,
+    "batch_id": "BATCH-MULTI_CSE-4ec818fdc76d",
+    "ok": true,
+    "peak_mb": 542.16796875,
+    "wall_seconds": 7.3931117000001905
+   },
+   "assess": {
+    "seconds": 133.51222279999956,
+    "findings": 162,
+    "queue": 1620,
+    "ok": true,
+    "peak_mb": 4833.109375,
+    "wall_seconds": 137.4606877000001
+   },
+   "first_after_run_seconds": 0.10691439999982322,
+   "repeat_seconds": 0.08748610000020562,
+   "server_peak_mb": 4861.00390625
+  }
  }
 ]
 ```
