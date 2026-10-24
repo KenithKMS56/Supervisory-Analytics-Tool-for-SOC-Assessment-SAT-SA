@@ -473,6 +473,7 @@ satsa/
 │   └── mappings/                # Source schemas (Splunk, ServiceNow, TheHive)
 ├── docs/                        # Complete technical and regulatory documentation
 │   ├── architecture.md          # System architecture, data flow, security model
+│   ├── architecture_2page.md    # 2-page architecture document for evaluation (PDF: SAT-SA_Architecture.pdf)
 │   ├── analytics_methodology.md # Mathematical specs for all 20 rules & robust stats
 │   ├── data_requirements.md     # Canonical schemas & per-rule dependency matrix
 │   ├── infrastructure.md        # Hardware sizing and measured scale figures
@@ -523,6 +524,7 @@ satsa/
 
 **All validation data is synthetic; a real-data pilot is pending.** Start with [`docs/validation_summary.md`](docs/validation_summary.md).
 
+- [`docs/SAT-SA_Architecture.pdf`](docs/SAT-SA_Architecture.pdf): The 2-page architecture document for evaluation (source: [`docs/architecture_2page.md`](docs/architecture_2page.md); `python scripts/render_architecture_pdf.py` rebuilds it and fails above 2 pages).
 - [`docs/architecture.md`](docs/architecture.md): Components, data flow and security model.
 - [`docs/functional_design.md`](docs/functional_design.md): RBAC roles and examiner workflows.
 - [`docs/analytics_methodology.md`](docs/analytics_methodology.md): All 20 rules, the systemic detector, robust statistics.
