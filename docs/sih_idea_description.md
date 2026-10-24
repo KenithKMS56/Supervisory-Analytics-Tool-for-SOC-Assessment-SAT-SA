@@ -94,7 +94,7 @@ Four design decisions make this work.
 
 **5. Prioritises entities, controls, processes and alerts.** Entities are ranked by risk index. Controls (rules) are ranked by how many entities failed them, then by severity. Processes (the eight areas) are ranked by how many entities score 50 or more. Each entity's review queue is filled up to 70% with records the findings cite, highest score first, and the rest with a random control sample. For each item the examiner chooses Escalate to Statutory Notice, Mark as Justified, or Request CSE Explanation.
 
-**6. Explains every finding and records every action.** A finding page says what was found, why it matters, which records it rests on, the thresholds and confidence involved, the innocent explanations to rule out, and what to do next. Every ingest, run, threshold change, user change and decision goes into a hash-chained audit log. The examiner sees a portfolio league table, a heatmap, a trend chart across periods, an entity radar against the peer median and declared-versus-recomputed KPIs, and can drill down from any finding to the underlying records. Dossiers come out as PDF, HTML and CSV.
+**6. Explains every finding and records every action.** A finding page says what was found, why it matters, which records it rests on, the thresholds and evidence support involved, the innocent explanations to rule out, and what to do next. Every ingest, run, threshold change, user change and decision goes into a hash-chained audit log. The examiner sees a portfolio league table, a heatmap, a trend chart across periods, an entity radar against the peer median and declared-versus-recomputed KPIs, and can drill down from any finding to the underlying records. Dossiers come out as PDF, HTML and CSV.
 
 Between them, these features answer all 17 functional requirements in the problem statement. The requirement-by-requirement mapping to code and tests is in `docs/ps_traceability.md`.
 
@@ -205,7 +205,7 @@ Product data comes in only as file exports. No single export supports all 20 rul
 
 - **The air gap is enforced.** All web assets ship with the app, outbound Python network connections are blocked at runtime, and a test opens every page under a socket guard to prove nothing leaves the machine. The guard is a second line of defence; it cannot stop native code that bypasses Python's sockets.
 - **The audit log is tamper-evident.** Each entry carries the SHA3-256 hash of the previous one, so editing, inserting, deleting or reordering an entry breaks verification. Deleting the newest entries is caught by comparing against a checkpoint kept off the machine and signed with Ed25519 (`satsa audit checkpoint --sign`). It is tamper-evident, not tamper-proof.
-- **Access is controlled.** Nobody self-registers. Passphrases are stored with PBKDF2-HMAC-SHA256 at 200,000 iterations. Five failed sign-ins lock an account for 15 minutes, and every default account must change its passphrase at first sign-in. Analysts, Examiners and Administrators are each refused the others' functions (HTTP 403), and a test checks every role against every route.
+- **Access is controlled.** Nobody self-registers. Passphrases are stored with PBKDF2-HMAC-SHA256 at 200,000 iterations. Five failed sign-ins lock an account for 15 minutes. A production installation has no default accounts: the administrator creates them during a one-time setup protected by a setup token, and default accounts exist only in a clearly labelled demo mode. Analysts, Examiners and Administrators are each refused the others' functions (HTTP 403), and a test checks every role against every route.
 - **Rule packs are signed.** Threshold changes export with SHA-256 checksums and an HMAC signature, and import checks both before writing anything.
 - **We keep data to a minimum.** SAT-SA works on alert and case metadata, not raw logs or packet captures, as the problem statement asks. A test scans every stored file and table for personal identifiers from the sample exports.
 - **TLS is optional.** A locally generated RSA-3072 certificate is available for when the portals must be reached from another machine on an isolated network.
@@ -239,7 +239,7 @@ The first two hours set the baseline. We install the offline bundle on the demo 
 
 - **Connectors.** Map any sample export the evaluators provide, and finish a fourth product mapping (Cortex XSIAM case exports), which is under way.
 - **Analytics.** Recalibrate EG05's repeat-pair threshold, the only rule with false positives on our stress set. Decide the two threshold proposals we have documented (EG04's group size scaled with volume, EG11's spread floor), and re-run the ±20% sensitivity sweep.
-- **Platform.** Build and run the Docker image, which we have not yet done. Pre-warm the analytics cache after each run, so the first page after a 5,000,000-alert run no longer takes 17 seconds. Repeat the offline install on a physically disconnected machine.
+- **Platform.** Build and run the Docker image, which we have not yet done. Repeat the offline install on a physically disconnected machine.
 - **Interface.** Run our written usability protocol with two or three stand-in examiners, record the first usability figures, and fix what they find.
 - **Validation.** After every merge, run the hard set, the stress set over 20 seeds and the independent generator. Run the shadow-pilot mode on any workpaper sample the evaluators can share.
 - **Pitch and traceability.** Re-check every quoted requirement against the problem statement, and prepare its evaluation deliverables: a 2-page architecture document, a 2-minute demo video and a 5-slide presentation.
@@ -257,7 +257,7 @@ All SAT-SA figures here were measured on the prototype. Accuracy figures are fro
 
 - **The right records come first.** In the first 25 alerts an examiner reads, defect-affected records go from about 0.7 (random sample, 2.67% base rate) to 13 (SAT-SA's queue).
 - **Everything gets read.** Coverage goes from a few dozen sampled records per entity to every submitted record, under every rule, every period.
-- **It scales.** 50 entities and 5,000,000 alerts were ingested and assessed in under 3 minutes on a 4-core laptop. Repeat page loads stayed under half a second at that size.
+- **It scales.** 50 entities and 5,000,000 alerts were ingested and assessed in under 3 minutes on a 4-core laptop (162.6 s and 164.2 s in two runs, 2026-10-20). Repeat page loads stayed under half a second at that size, and on a running server the first page after an assessment appears in 0.1 s, because the data is reloaded in the background while the assessment runs (2026-10-24).
 - **KPIs get checked.** Declared response times are recomputed from the records for every entity, every period.
 - **Absence gets checked.** Eight rules test for missing evidence that no sample can show.
 - **It catches what we plant, on synthetic data.** It found all 503 defects planted across 24 synthetic portfolio runs at three volumes, with no false findings and none of the 72 clean entities flagged. Precision was 93.8% on a deliberately ambiguous stress set. On a second generator written separately, it found all 487 planted defects and flagged none of the 245 decoys set just under a threshold. We wrote both generators knowing the rules, so these results show the code does what its specification says, not how it will do on real data.
@@ -298,7 +298,7 @@ Every deliverable the problem statement lists is in the repository:
 | Detecting execution gaps | 12 rules (EG01–EG12); all planted defects found in 24 synthetic runs |
 | Detecting negative space | 8 rules (NS01–NS08); missing tables reported as "not assessed", never as defects |
 | Explainability and auditability | Finding pages with thresholds and records; hash-chained audit log with signed checkpoints; reproducible runs |
-| Scalability and performance | 50 entities, 5,000,000 alerts, under 3 minutes on a laptop |
+| Scalability and performance | 50 entities, 5,000,000 alerts ingested and assessed in under 3 minutes on a laptop (162.6-164.2 s, 2026-10-20) |
 | Innovation and additional insights | Evidence-led sampling (19.5x lift), KPI reconciliation, shared-vendor findings, anomaly leads, blinded review |
 
 ### Risks and how we handle them
