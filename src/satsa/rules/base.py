@@ -1,12 +1,18 @@
 """Base class and interface for deterministic detection rules."""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from satsa.models.outputs import Finding, FindingEvidence
 from satsa.peers.robust_stats import RobustStats
 from satsa.store.duckdb import DuckDBStore
+
+if TYPE_CHECKING:
+    from satsa.context import EntityContext
+    from satsa.peers.grouping import PeerComparison
 
 
 def data_reference_date(store: DuckDBStore) -> datetime | None:
@@ -46,6 +52,11 @@ class BaseRule(ABC):
     # "As of" date for time-dependent rules, set by the assessment runner. Never the wall
     # clock: the same submission must give the same findings whenever it is assessed.
     reference_date: datetime | None = None
+    # The entity's context (satsa.context: time zone, schedule, approved maintenance) and the
+    # run's recorded peer comparison, set by the assessment runner before each evaluation. None
+    # when a rule is evaluated on its own; rules then read context from the store or not at all.
+    context: EntityContext | None = None
+    peer_comparison_record: PeerComparison | None = None
 
     def __init__(self, config_override: dict[str, Any] | None = None):
         if config_override:

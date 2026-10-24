@@ -3,6 +3,7 @@
 import math
 from typing import Any
 
+from satsa.context import ENTITY_TZ_CTE, local_hour
 from satsa.models.outputs import Finding, FindingEvidence
 from satsa.rules.base import BaseRule
 from satsa.store.duckdb import DuckDBStore
@@ -13,9 +14,14 @@ REVIEW_PERIOD_MONTHS_RANGE = (1, 24)
 
 
 class NS01SilentCriticalAssets(BaseRule):
-    """NS01: Silent critical assets (>= min_silent_days zero-event days on critical monitored assets)."""
+    """NS01: Silent critical assets (>= min_silent_days zero-event days on critical monitored assets).
+
+    Version 1.1.0: days inside approved maintenance (satsa.context) and days outside an asset's
+    in-service dates are not counted as silence.
+    """
 
     id = "NS01"
+    version = "1.1.0"
     name = "Silent Critical Assets"
     domain = "Threat Detection"
     level = "asset"
@@ -33,34 +39,64 @@ class NS01SilentCriticalAssets(BaseRule):
         # Tunable: min asset criticality considered, and min zero-event days to flag.
         min_silent_days = int(self.params.get("min_silent_days", 3))
         min_asset_criticality = int(self.params.get("min_asset_criticality", 3))
-        sql = """
+        # A zero-event day counts as silence only when the asset was in service that day
+        # (effective-dated inventory) and no approved maintenance window covered it (satsa.context).
+        # A day with no log_source_daily row at all is a missing submission, not silence.
+        windows = self.context.maintenance if self.context is not None else ()
+        maint_sql = " OR ".join("(l.date BETWEEN ? AND ? AND (? IS NULL OR l.asset_id = ?))" for _ in windows)
+        maint_params: list[Any] = [
+            v for w in windows for v in (w.starts_on, w.ends_on, w.asset_id, w.asset_id)
+        ]
+        in_maint = f"({maint_sql})" if windows else "false"
+        in_service = (
+            "(a.in_service_from IS NULL OR l.date >= a.in_service_from) "
+            "AND (a.in_service_to IS NULL OR l.date <= a.in_service_to)"
+        )
+        silent = f"l.event_count = 0 AND {in_service} AND NOT {in_maint}"
+        sql = f"""
         SELECT
             l.asset_id,
-            count(CASE WHEN l.event_count = 0 THEN 1 END) as silent_days,
+            count(CASE WHEN {silent} THEN 1 END) as silent_days,
+            count(CASE WHEN l.event_count = 0 AND {in_maint} THEN 1 END) as maintenance_days,
+            count(CASE WHEN l.event_count = 0 AND NOT ({in_service}) THEN 1 END) as out_of_service_days,
             min(l.date) as min_date,
             max(l.date) as max_date
         FROM log_source_daily l
         JOIN asset a ON l.entity_id = a.entity_id AND l.asset_id = a.asset_id
         WHERE l.entity_id = ? AND a.criticality >= ? AND a.monitored_flag = true
         GROUP BY l.asset_id
-        HAVING count(CASE WHEN l.event_count = 0 THEN 1 END) >= ?
         ORDER BY l.asset_id
         """
-        df = store.query(sql, [entity_id, min_asset_criticality, min_silent_days])
+        considered = store.query(sql, [*maint_params, *maint_params, entity_id, min_asset_criticality])
+        if considered.is_empty():
+            return [], []
+        df = considered.filter(considered["silent_days"] >= min_silent_days)
         if df.is_empty():
             return [], []
 
         silent_assets = df["asset_id"].to_list()
         max_silent_val = df["silent_days"].max()
         max_silent = int(str(max_silent_val)) if max_silent_val is not None else 0
+        # Across every asset considered, so an asset cleared by maintenance is still accounted for.
+        maintenance_days = int(considered["maintenance_days"].sum() or 0)
+        out_of_service_days = int(considered["out_of_service_days"].sum() or 0)
         score, conf = self.compute_rule_score(
             max_silent / float(min_silent_days), len(silent_assets)
         )
         f_id = f"FND-NS01-{entity_id}-{run_id}"
 
+        excluded = []
+        if maintenance_days:
+            excluded.append(
+                f"{maintenance_days} zero-event day(s) inside approved maintenance "
+                f"({', '.join(w.window_id for w in windows)}) were not counted"
+            )
+        if out_of_service_days:
+            excluded.append(f"{out_of_service_days} zero-event day(s) outside the assets' in-service dates were not counted")
         rationale = (
             f"Logging blind spot: {len(silent_assets)} monitored critical assets "
             f"recorded zero log events on up to {max_silent} days."
+            + (f" {'; '.join(excluded)}." if excluded else "")
         )
         finding = Finding(
             finding_id=f_id,
@@ -78,6 +114,9 @@ class NS01SilentCriticalAssets(BaseRule):
             peer_comparison={
                 "silent_assets_count": len(silent_assets),
                 "max_silent_days": max_silent,
+                "maintenance_days_excluded": maintenance_days,
+                "out_of_service_days_excluded": out_of_service_days,
+                "maintenance_windows": [w.window_id for w in windows],
             },
             examiner_check=self.examiner_check,
             benign_explanations=self.benign_explanations,
@@ -186,14 +225,24 @@ class NS02MissingAlertCategories(BaseRule):
         return [], []
 
 
+_LOCAL_HOUR = local_hour("created_at")
+_NIGHT = f"({_LOCAL_HOUR} < 8 OR {_LOCAL_HOUR} >= 20)"
+_LOCAL_DATE = "CAST(timezone(coalesce(_satsa_tz.tz, 'UTC'), created_at AT TIME ZONE 'UTC') AS DATE)"
+
+
 class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
     """NS03: Unexpectedly low night-time activity.
 
     Night-time share of alerts compared with the peer cohort by robust z-score; the absolute
     max_night_share floor applies only when too few peers have enough volume to compare.
+
+    Night is 20:00-08:00 in each entity's own time zone (satsa.context), for the entity and for
+    every peer, so daylight saving and fractional offsets are exact. Version 1.1.0: before it,
+    hours were read in UTC.
     """
 
     id = "NS03"
+    version = "1.1.0"
     name = "Unexpectedly Low or Flat Activity"
     domain = "Security Operations"
     level = "entity"
@@ -208,12 +257,12 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
-        # Calculate night share of alerts
-        sql = """
-        SELECT
-            count(*) as total,
-            count(CASE WHEN extract(hour from created_at) < 8 OR extract(hour from created_at) >= 20 THEN 1 END) as night_cnt
-        FROM alert
+        # Night share of the entity's alerts, hours read in its own time zone.
+        sql = f"""
+        WITH {ENTITY_TZ_CTE}
+        SELECT count(*) AS total, count(CASE WHEN {_NIGHT} THEN 1 END) AS night_cnt,
+               coalesce(any_value(_satsa_tz.tz), 'UTC') AS tz
+        FROM alert LEFT JOIN _satsa_tz USING (entity_id)
         WHERE entity_id = ?
         """
         df = store.query(sql, [entity_id])
@@ -222,6 +271,7 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
 
         total = df["total"][0]
         night_cnt = df["night_cnt"][0]
+        tz = str(df["tz"][0] or "UTC")
         night_share = night_cnt / max(total, 1)
 
         # Tunable: minimum volume for a night share to mean anything; the robust-z cut-off
@@ -237,16 +287,24 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
         # Night share of each peer in the cohort with enough volume to compare.
         peer_clause, peer_params = self.peer_filter(entity_id, peer_ids)
         sql_peer = f"""
-        SELECT entity_id,
-               count(CASE WHEN extract(hour from created_at) < 8 OR extract(hour from created_at) >= 20 THEN 1 END) * 1.0
-                 / count(*) as night_share
-        FROM alert
+        WITH {ENTITY_TZ_CTE}
+        SELECT entity_id, count(CASE WHEN {_NIGHT} THEN 1 END) * 1.0 / count(*) AS night_share
+        FROM alert LEFT JOIN _satsa_tz USING (entity_id)
         WHERE {peer_clause}
         GROUP BY entity_id
         HAVING count(*) >= ?
+        ORDER BY entity_id
         """
         peer_df = store.query(sql_peer, [*peer_params, min_alert_volume])
         peer_shares = [float(v) for v in peer_df["night_share"].to_list()] if not peer_df.is_empty() else []
+        peers_compared = [str(v) for v in peer_df["entity_id"].to_list()] if not peer_df.is_empty() else []
+        ctx = self.context
+        local: dict[str, Any] = {"timezone": tz, "night_window": "20:00-08:00 local"}
+        if ctx is not None:
+            local["schedule"] = ctx.schedule
+            local["declared_shift_hours"] = ctx.shift_hours
+            if ctx.timezone_assumed:
+                local["timezone_note"] = ctx.notes()[0]
         z_res = self.robust_z(night_share, peer_shares, min_spread)
 
         if z_res is not None:
@@ -262,6 +320,8 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
                 "robust_z": round(z, 2),
                 "peer_median": peer_median,
                 "peer_count": len(peer_shares),
+                "peer_ids": peers_compared,
+                **local,
             }
         else:
             flagged = night_share < max_night_share
@@ -269,15 +329,23 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
                 f"below the absolute {max_night_share:.0%} floor (only {len(peer_shares)} comparable peers, "
                 "too few for a peer comparison)"
             )
-            comparison = {"night_share": night_share, "method": "absolute", "peer_count": len(peer_shares)}
+            comparison = {
+                "night_share": night_share, "method": "absolute", "peer_count": len(peer_shares),
+                "peer_ids": peers_compared, **local,
+            }
 
         if flagged:
             score, conf = self.compute_rule_score(2.0, total)
             f_id = f"FND-NS03-{entity_id}-{run_id}"
 
+            schedule = (
+                f" The entity declares operating hours {ctx.shift_hours} ({ctx.schedule.replace('_', ' ')})."
+                if ctx is not None and ctx.shift_hours else ""
+            )
+            note = f" {local['timezone_note']}" if "timezone_note" in local else ""
             rationale = (
-                f"Abnormal operational flatline: night-time (20:00-08:00) volume is only {night_share:.1%} of "
-                f"alerts, {basis}, indicating potential monitoring blackouts outside business hours."
+                f"Abnormal operational flatline: night-time (20:00-08:00 {tz}) volume is only {night_share:.1%} of "
+                f"alerts, {basis}, indicating potential monitoring blackouts outside business hours.{schedule}{note}"
             )
             finding = Finding(
                 finding_id=f_id,
@@ -301,17 +369,17 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
             # it: any night-time alerts that do exist, and the last alert of each recent day
             # (where activity stops until the next morning).
             night_df = store.query(
-                "SELECT alert_id, created_at FROM alert WHERE entity_id = ? "
-                "AND (extract(hour from created_at) < 8 OR extract(hour from created_at) >= 20) "
-                "ORDER BY created_at DESC, alert_id LIMIT 5",
+                f"WITH {ENTITY_TZ_CTE} SELECT alert_id, created_at FROM alert LEFT JOIN _satsa_tz USING (entity_id) "
+                f"WHERE entity_id = ? AND {_NIGHT} ORDER BY created_at DESC, alert_id LIMIT 5",
                 [entity_id],
             )
             last_df = store.query(
-                """
+                f"""
+                WITH {ENTITY_TZ_CTE}
                 SELECT alert_id, created_at FROM (
                     SELECT alert_id, created_at,
-                           row_number() OVER (PARTITION BY CAST(created_at AS DATE) ORDER BY created_at DESC, alert_id) AS rn
-                    FROM alert WHERE entity_id = ? AND created_at IS NOT NULL
+                           row_number() OVER (PARTITION BY {_LOCAL_DATE} ORDER BY created_at DESC, alert_id) AS rn
+                    FROM alert LEFT JOIN _satsa_tz USING (entity_id) WHERE entity_id = ? AND created_at IS NOT NULL
                 ) WHERE rn = 1 ORDER BY created_at DESC, alert_id LIMIT 10
                 """,
                 [entity_id],
@@ -321,7 +389,8 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
                     finding_id=f_id,
                     record_type="alert",
                     record_id=str(row["alert_id"]),
-                    details={"reason": reason, "created_at": str(row["created_at"])},
+                    # created_at is UTC; the night window and "that day" are in `timezone`.
+                    details={"reason": reason, "created_at": str(row["created_at"]), "timezone": tz},
                 )
                 for df_ev, reason in (
                     (night_df, "Night-time alert (20:00-08:00)"),
@@ -496,9 +565,15 @@ class NS05RuleCoverageGaps(BaseRule):
 
 
 class NS06InventoryVsTelemetry(BaseRule):
-    """NS06: Inventory vs telemetry (ghost assets and shadow assets)."""
+    """NS06: Inventory vs telemetry (ghost assets and shadow assets).
+
+    Version 1.1.0: an asset whose in-service dates do not overlap the submitted telemetry period
+    (commissioned after it, or decommissioned before it) is not expected to emit anything and is
+    not a ghost.
+    """
 
     id = "NS06"
+    version = "1.1.0"
     name = "Inventory vs Telemetry"
     domain = "Cyber Resilience"
     level = "entity"
@@ -515,16 +590,20 @@ class NS06InventoryVsTelemetry(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         sql = """
+        WITH span AS (SELECT min(date) AS lo, max(date) AS hi FROM log_source_daily WHERE entity_id = ?)
         SELECT a.asset_id
         FROM asset a
+        CROSS JOIN span
         LEFT JOIN alert alt ON a.entity_id = alt.entity_id AND a.asset_id = alt.asset_id
         LEFT JOIN log_source_daily l ON a.entity_id = l.entity_id AND a.asset_id = l.asset_id
         WHERE a.entity_id = ?
+          AND NOT coalesce(a.in_service_to < span.lo, false)
+          AND NOT coalesce(a.in_service_from > span.hi, false)
         GROUP BY a.asset_id
         HAVING count(alt.alert_id) = 0 AND (count(l.event_count) = 0 OR sum(l.event_count) = 0)
         ORDER BY a.asset_id
         """
-        df = store.query(sql, [entity_id])
+        df = store.query(sql, [entity_id, entity_id])
         if df.is_empty():
             return [], []
 

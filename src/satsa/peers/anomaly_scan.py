@@ -34,6 +34,7 @@ from typing import Any
 
 import yaml
 
+from satsa.context import ENTITY_TZ_CTE
 from satsa.models.canonical import Entity
 from satsa.peers.grouping import PeerResolver
 from satsa.peers.robust_stats import RobustStats
@@ -128,11 +129,16 @@ _SEV_RANK = (
 )
 _HC = "lower(a.severity_final) IN ('high', 'critical')"
 _SECS = "epoch(a.closed_at) - epoch(a.created_at)"
+# Hours and weekdays are read in the entity's own time zone (satsa.context); a query using _LOCAL
+# starts with `WITH {ENTITY_TZ_CTE}` and joins _satsa_tz on the entity.
+_LOCAL = "timezone(coalesce(_satsa_tz.tz, 'UTC'), a.created_at AT TIME ZONE 'UTC')"
+_TZ_JOIN = "LEFT JOIN _satsa_tz ON _satsa_tz.entity_id = a.entity_id"
 
 # One query per source; each returns entity_id plus metric columns and their populations
 # (column "<metric>" and "<metric>__n").
 _QUERIES: list[str] = [
     f"""
+    WITH {ENTITY_TZ_CTE}
     SELECT a.entity_id,
         avg(CASE WHEN a.disposition = 'true_positive' THEN 1.0 ELSE 0.0 END) AS tp_share,
         count(*) AS tp_share__n,
@@ -150,10 +156,10 @@ _QUERIES: list[str] = [
         count(*) FILTER (WHERE a.closed_at IS NOT NULL) AS unacknowledged_closed_share__n,
         avg(CASE WHEN a.closed_at IS NULL OR a.status = 'open' THEN 1.0 ELSE 0.0 END) AS open_share,
         count(*) AS open_share__n,
-        avg(CASE WHEN extract(hour FROM a.created_at) >= 20 OR extract(hour FROM a.created_at) < 8
+        avg(CASE WHEN extract(hour FROM {_LOCAL}) >= 20 OR extract(hour FROM {_LOCAL}) < 8
                  THEN 1.0 ELSE 0.0 END) AS night_share,
         count(*) AS night_share__n,
-        avg(CASE WHEN dayofweek(a.created_at) IN (0, 6) THEN 1.0 ELSE 0.0 END) AS weekend_share,
+        avg(CASE WHEN dayofweek({_LOCAL}) IN (0, 6) THEN 1.0 ELSE 0.0 END) AS weekend_share,
         count(*) AS weekend_share__n,
         avg(CASE WHEN a.playbook_id IS NOT NULL AND a.playbook_id <> '' THEN 1.0 ELSE 0.0 END) AS playbook_share,
         count(*) AS playbook_share__n,
@@ -167,7 +173,7 @@ _QUERIES: list[str] = [
             FILTER (WHERE NOT {_HC} AND a.closed_by_type = 'human' AND a.closed_at >= a.created_at) AS close_median_lm,
         count(*) FILTER (WHERE NOT {_HC} AND a.closed_by_type = 'human' AND a.closed_at >= a.created_at)
             AS close_median_lm__n
-    FROM alert a
+    FROM alert a {_TZ_JOIN}
     GROUP BY a.entity_id
     """,
     f"""
@@ -326,18 +332,19 @@ SELECT entity_id, category, count(*) AS n FROM alert WHERE category IS NOT NULL 
 """
 
 _MONTHLY_SQL = f"""
+WITH {ENTITY_TZ_CTE}
 SELECT a.entity_id,
     strftime(a.created_at, '%Y-%m') AS month,
     count(*) AS n,
     avg(CASE WHEN a.disposition = 'true_positive' THEN 1.0 ELSE 0.0 END) AS tp_share,
     avg(CASE WHEN a.closed_by_type = 'automation' THEN 1.0 ELSE 0.0 END) AS automation_share,
-    avg(CASE WHEN extract(hour FROM a.created_at) >= 20 OR extract(hour FROM a.created_at) < 8
+    avg(CASE WHEN extract(hour FROM {_LOCAL}) >= 20 OR extract(hour FROM {_LOCAL}) < 8
              THEN 1.0 ELSE 0.0 END) AS night_share,
     quantile_cont({_SECS}, 0.5)
         FILTER (WHERE {_HC} AND a.closed_by_type = 'human' AND a.closed_at >= a.created_at) AS close_median_hc,
     count(*) FILTER (WHERE {_HC} AND a.closed_by_type = 'human' AND a.closed_at >= a.created_at)
         AS close_median_hc__n
-FROM alert a
+FROM alert a {_TZ_JOIN}
 WHERE a.created_at IS NOT NULL
 GROUP BY a.entity_id, month
 """

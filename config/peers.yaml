@@ -2,8 +2,16 @@
 # Governs cohort formation for robust statistical baselines.
 
 peer_groups:
+  # A fallback level (sector and size, sector, size) is used when it has at least min_peers members.
   min_peers: 3
+  # Below min_support members a comparison is shown as exploratory, never as an established peer
+  # judgement (satsa.peers.grouping). The all-entities fallback is always exploratory.
+  min_support: 5
+  # Most specific first. The first level splits by SOC model and operating schedule as well, and
+  # only when that still leaves min_members peers, so a small portfolio is not over-partitioned.
   hierarchy:
+    - attributes: ["sector", "size_band", "soc_model", "schedule"]
+      min_members: 5
     - ["sector", "size_band"]
     - ["sector"]
     - ["size_band"]

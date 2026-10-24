@@ -447,6 +447,111 @@ def _m7_examiner_workflow(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_blind_tasks_assignee ON blind_tasks (assigned_to, submitted_at)")
 
 
+def _m8_context_and_peers(conn: sqlite3.Connection) -> None:
+    """Entity context, recorded peer comparisons and saved portfolio views (satsa.context,
+    satsa.peers.grouping, docs/analytics_context.md).
+
+    - `maintenance_windows`: approved maintenance for an entity (all assets, or one asset) over
+      inclusive local dates. Requested by one user, approved by a different examiner; only an
+      approved, unrevoked window changes an assessment, and only for its own scope and dates.
+    - `rule_exceptions`: a documented, time-limited exception for one entity and rule (reason,
+      scope, evidence, approver, mandatory expiry). Requested and approved by different examiners.
+    - `peer_comparisons`: per run and entity, the cohort actually used: members, excluded
+      entities with the reason, fallback level, denominator, minimum support and whether the
+      comparison is established or only exploratory.
+    - `saved_views`: a user's named portfolio filter.
+    - `findings.exception_id`, `rule_results.exception_id`: the exception a finding was recorded
+      under (kept, shown, and left out of the score and queue while the exception is in force).
+
+    Nothing existing is rewritten: runs recorded earlier have no peer comparison rows and show
+    "not recorded"; their findings have no exception.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS maintenance_windows (
+            window_id TEXT PRIMARY KEY,
+            entity_id TEXT NOT NULL,
+            asset_id TEXT,
+            starts_on TEXT NOT NULL,
+            ends_on TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            evidence_ref TEXT NOT NULL,
+            requested_by TEXT NOT NULL,
+            requested_at TEXT NOT NULL,
+            approved_by TEXT,
+            approved_at TEXT,
+            revoked_by TEXT,
+            revoked_at TEXT,
+            revoke_reason TEXT,
+            CHECK (ends_on >= starts_on),
+            CHECK (approved_by IS NULL OR approved_by <> requested_by)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_maintenance_entity ON maintenance_windows (entity_id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS rule_exceptions (
+            exception_id TEXT PRIMARY KEY,
+            entity_id TEXT NOT NULL,
+            rule_id TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            evidence_ref TEXT NOT NULL,
+            requested_by TEXT NOT NULL,
+            requested_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            approved_by TEXT,
+            approved_at TEXT,
+            revoked_by TEXT,
+            revoked_at TEXT,
+            revoke_reason TEXT,
+            CHECK (approved_by IS NULL OR approved_by <> requested_by)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rule_exceptions_entity ON rule_exceptions (entity_id, rule_id)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS peer_comparisons (
+            run_id TEXT NOT NULL REFERENCES runs (run_id),
+            entity_id TEXT NOT NULL,
+            cohort_label TEXT NOT NULL,
+            attributes_json TEXT NOT NULL,
+            fallback_level INTEGER NOT NULL,
+            member_ids_json TEXT NOT NULL,
+            excluded_json TEXT NOT NULL,
+            denominator INTEGER NOT NULL,
+            min_support INTEGER NOT NULL,
+            strength TEXT NOT NULL CHECK (strength IN ('established', 'exploratory', 'none')),
+            reason TEXT NOT NULL,
+            PRIMARY KEY (run_id, entity_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS saved_views (
+            view_id TEXT PRIMARY KEY,
+            owner TEXT NOT NULL,
+            name TEXT NOT NULL,
+            query_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (owner, name)
+        )
+        """
+    )
+    _add_column(conn, "findings", "exception_id", "TEXT")
+    # Provider-level leads (satsa.rules.systemic): affected / assessable / group size, the
+    # comparison rate and the bound. Earlier rows keep NULL ("not recorded").
+    for column, decl in (
+        ("assessable_count", "INTEGER"), ("group_size", "INTEGER"), ("comparison_affected", "INTEGER"),
+        ("comparison_assessable", "INTEGER"), ("p_value", "REAL"), ("q_value", "REAL"),
+    ):
+        _add_column(conn, "systemic_findings", column, decl)
+    _add_column(conn, "rule_results", "exception_id", "TEXT")
+
+
 OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(1, "evidence coverage and rule results", _m1_evidence_coverage),
     Migration(2, "run snapshots and analytical fingerprint", _m2_run_snapshots),
@@ -455,4 +560,5 @@ OPERATIONAL_MIGRATIONS: list[Migration] = [
     Migration(5, "service credentials, session idle timeout, entity retirement", _m5_access_controls),
     Migration(6, "administrator MFA", _m6_admin_mfa),
     Migration(7, "supervisory cases, case events, response packages, blind tasks", _m7_examiner_workflow),
+    Migration(8, "maintenance windows, rule exceptions, peer comparisons, saved views", _m8_context_and_peers),
 ]

@@ -37,7 +37,7 @@
       synthetic or stand-in labels only rehearse the pipeline (see <code>docs/validation.md</code> Section 5A).
     </p>
     <form method="post" action="/shadow-pilot" enctype="multipart/form-data" style="display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
-      <input type="file" name="workpaper" accept=".csv,text/csv" required class="form-control" style="max-width: 360px;">
+      <input type="file" name="workpaper" accept=".csv,text/csv" required class="form-control" style="max-width: 360px;" aria-label="Examiner workpaper CSV">
       <button type="submit" class="btn" {% if not latest_run_id %}disabled title="Run an assessment first"{% endif %}>Evaluate Against Latest Run</button>
     </form>
   </div>

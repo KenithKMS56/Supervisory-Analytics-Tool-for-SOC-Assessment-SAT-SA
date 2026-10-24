@@ -103,17 +103,17 @@
         <circle cx="11" cy="11" r="8"></circle>
         <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
       </svg>
-      <input type="text" name="q" value="{{ q }}" placeholder="Search by Alert ID, Asset ID, or Rule..." class="form-control">
+      <input type="text" name="q" value="{{ q }}" placeholder="Search by Alert ID, Asset ID, or Rule..." class="form-control" aria-label="Search alerts">
     </div>
 
-    <select name="entity" class="form-control">
+    <select name="entity" class="form-control" aria-label="Entity">
       <option value="">All Entities ({{ all_entities|length }})</option>
       {% for ent in all_entities %}
         <option value="{{ ent }}" {% if entity_filter == ent %}selected{% endif %}>{{ ent }}</option>
       {% endfor %}
     </select>
 
-    <select name="severity" class="form-control">
+    <select name="severity" class="form-control" aria-label="Severity">
       <option value="">All Severities</option>
       <option value="critical" {% if sev_filter == 'critical' %}selected{% endif %}>Critical Severity</option>
       <option value="high" {% if sev_filter == 'high' %}selected{% endif %}>High Severity</option>
@@ -121,7 +121,7 @@
       <option value="low" {% if sev_filter == 'low' %}selected{% endif %}>Low Severity</option>
     </select>
 
-    <select name="actor_type" class="form-control">
+    <select name="actor_type" class="form-control" aria-label="Closed by">
       <option value="">All Closure Actors</option>
       <option value="human" {% if actor_filter == 'human' %}selected{% endif %}>Human Analyst</option>
       <option value="soar" {% if actor_filter == 'soar' %}selected{% endif %}>SOAR Playbook</option>

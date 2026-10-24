@@ -133,10 +133,11 @@ def test_metric_from_a_table_never_submitted_is_not_compared(generated):
 def test_cusum_spread_floor_keeps_flat_series_finite():
     flat = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     assert SPCDetector.cusum(flat, min_scale=0.1)[2] == []
-    # A shift lasting half the series is absorbed by a self-referenced median, which is why
-    # the scan tests later months against a reference period instead.
+    # The default baseline is the first PHASE_I values, fixed before the values it judges, so a
+    # shift in the later values is detected instead of being absorbed into a median of the whole
+    # series (which would use values later than the point tested).
     step = [2.0, 2.0, 2.0, 1.2, 1.2, 1.2]
-    assert SPCDetector.cusum(step, min_scale=0.1)[2] == []
+    assert SPCDetector.cusum(step, min_scale=0.1)[2] == [3, 4, 5]
     _hi, lo, alarms = SPCDetector.cusum(step[3:], threshold_h=4.0, min_scale=0.1, reference=step[:3])
     assert alarms == [0, 1, 2] and all(v < float("inf") for v in lo)
 

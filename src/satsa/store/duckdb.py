@@ -128,7 +128,9 @@ class DuckDBStore:
                 asset_type VARCHAR,
                 criticality INTEGER,
                 monitored_flag BOOLEAN,
-                owner_unit VARCHAR
+                owner_unit VARCHAR,
+                in_service_from DATE,
+                in_service_to DATE
             )
             """,
             """

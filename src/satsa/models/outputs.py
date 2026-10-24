@@ -65,6 +65,9 @@ class Finding(BaseModel):
     examiner_check: str
     evidence_ids: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    # The approved rule exception (satsa.context) in force when the finding was recorded: the
+    # finding is kept and shown, but left out of the score and the review queue.
+    exception_id: str | None = None
 
 
 class DomainScore(BaseModel):

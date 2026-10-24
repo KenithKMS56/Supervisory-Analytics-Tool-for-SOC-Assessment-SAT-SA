@@ -17,7 +17,7 @@
       }
     })();
   </script>
-  <link rel="stylesheet" href="/static/style.css?v=9.1.1">
+  <link rel="stylesheet" href="/static/style.css?v=9.2.6">
   <script src="/static/echarts.min.js"></script>
   <script src="/static/echarts-theme.js?v=9.0.0"></script>
   {% block head %}{% endblock %}
@@ -188,9 +188,9 @@
       {% if current_identity %}
         <div class="floating-nav-identity" title="Logged in as {{ current_identity.username }} ({{ current_identity.role }}){% if current_identity.cse_id %} | Scoped: {{ current_identity.cse_id }}{% endif %}{% if current_identity.org_id %} | Org: {{ current_identity.org_name or current_identity.org_id }}{% endif %}">
           <span class="floating-nav-user-chip">{{ current_identity.username }}</span>
-          <span style="font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: rgba(59, 130, 246, 0.12); color: var(--accent-blue); font-weight: 600;">{% if nav_is_analyst %}NCIIPC Analyst{% elif is_examiner(current_identity.role) %}NCIIPC Examiner{% else %}{{ current_identity.role }}{% endif %}</span>
+          <span class="floating-nav-role" style="font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; background: rgba(59, 130, 246, 0.12); color: var(--accent-blue); font-weight: 600;">{% if nav_is_analyst %}NCIIPC Analyst{% elif is_examiner(current_identity.role) %}NCIIPC Examiner{% else %}{{ current_identity.role }}{% endif %}</span>
           {% if current_identity.cse_id %}
-            <span style="font-size: 0.65rem; padding: 2px 5px; border-radius: 4px; background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); font-family: 'JetBrains Mono', monospace; font-weight: 600;" title="Scoped CSE: {{ current_identity.cse_id }}">{{ current_identity.cse_id }}</span>
+            <span class="floating-nav-scope" style="font-size: 0.65rem; padding: 2px 5px; border-radius: 4px; background: rgba(59, 130, 246, 0.15); color: var(--accent-blue); font-family: 'JetBrains Mono', monospace; font-weight: 600;" title="Scoped CSE: {{ current_identity.cse_id }}">{{ current_identity.cse_id }}</span>
           {% endif %}
           <form method="post" action="/logout" style="display:inline; margin:0;">
             <button type="submit" class="floating-nav-logout-action" title="Log out">
@@ -337,34 +337,44 @@
   {% endif %}
 
   <script>
-    /* Sideways scrollbar dock for every wide table (.hscroll-dock in style.css): a mouse
-       user can drag across without first scrolling to the table's last row. */
+    /* One sideways scrollbar for every wide table (.hscroll-top in style.css), above the
+       table and sticky: a mouse user can drag across from anywhere in a long table without
+       first scrolling to its last row. Keyboard users get the table itself as a focusable
+       region that the arrow keys scroll; the bar is a mouse-only copy (aria-hidden). */
     (function () {
       function attach(wrap) {
-        if (wrap.satsaDock) return;
-        var dock = document.createElement('div');
-        var spacer = document.createElement('div');
-        dock.className = 'hscroll-dock';
-        dock.setAttribute('aria-hidden', 'true');
-        dock.hidden = true;
-        dock.appendChild(spacer);
-        wrap.after(dock);
-        wrap.satsaDock = dock;
+        if (wrap.satsaBar) return;
+        var bar = document.createElement('div');
+        bar.className = 'hscroll-top';
+        bar.setAttribute('aria-hidden', 'true');
+        bar.hidden = true;
+        bar.appendChild(document.createElement('div'));
+        wrap.before(bar);
+        wrap.satsaBar = bar;
+        var labelled = wrap.hasAttribute('aria-label');
 
         function fit() {
           var wide = wrap.scrollWidth > wrap.clientWidth + 1;
           wrap.classList.toggle('has-hdock', wide);
-          dock.hidden = !wide;
-          if (!wide) return;
-          dock.style.width = wrap.getBoundingClientRect().width + 'px';
-          spacer.style.width = wrap.scrollWidth + 'px';
-          dock.scrollLeft = wrap.scrollLeft;
+          bar.hidden = !wide;
+          if (wide) {
+            wrap.setAttribute('tabindex', '0');
+            wrap.setAttribute('role', 'region');
+            if (!labelled) wrap.setAttribute('aria-label', 'Wide table: use the arrow keys to scroll sideways');
+            bar.style.width = wrap.getBoundingClientRect().width + 'px';
+            bar.firstChild.style.width = wrap.scrollWidth + 'px';
+            bar.scrollLeft = wrap.scrollLeft;
+          } else {
+            wrap.removeAttribute('tabindex');
+            wrap.removeAttribute('role');
+            if (!labelled) wrap.removeAttribute('aria-label');
+          }
         }
         wrap.addEventListener('scroll', function () {
-          if (Math.abs(dock.scrollLeft - wrap.scrollLeft) > 1) dock.scrollLeft = wrap.scrollLeft;
+          if (Math.abs(bar.scrollLeft - wrap.scrollLeft) > 1) bar.scrollLeft = wrap.scrollLeft;
         });
-        dock.addEventListener('scroll', function () {
-          if (Math.abs(wrap.scrollLeft - dock.scrollLeft) > 1) wrap.scrollLeft = dock.scrollLeft;
+        bar.addEventListener('scroll', function () {
+          if (Math.abs(wrap.scrollLeft - bar.scrollLeft) > 1) wrap.scrollLeft = bar.scrollLeft;
         });
         if (window.ResizeObserver) {
           var ro = new ResizeObserver(fit);
@@ -375,6 +385,14 @@
         }
         fit();
       }
+
+      var banner = document.getElementById('demoBanner');
+      function stickyTop() {
+        document.documentElement.style.setProperty(
+          '--sticky-top', banner ? banner.getBoundingClientRect().height + 'px' : '0px');
+      }
+      stickyTop();
+      if (banner && window.ResizeObserver) new ResizeObserver(stickyTop).observe(banner);
 
       window.satsaDockScrollbars = function (root) {
         root.querySelectorAll('.table-responsive').forEach(attach);

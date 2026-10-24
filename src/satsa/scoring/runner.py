@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from satsa.context import build_contexts, exceptions_in_force, maintenance_in_force
 from satsa.models.canonical import Entity
 from satsa.models.outputs import (
     DomainScore,
@@ -186,6 +187,29 @@ class AssessmentRunner:
             entity_id, start, window.end.isoformat(), window.max_pub_seq
         )
 
+    @staticmethod
+    def _apply_exception(
+        exception: dict[str, Any] | None, rule_result: dict[str, Any], findings: list[Finding]
+    ) -> list[Finding]:
+        """Mark the rule's findings with an approved exception in force (satsa.context).
+
+        The findings are kept; the caller leaves them out of the score and the queue. A critical
+        finding is never covered: the exception is then recorded as not applied."""
+        if exception is None or not findings:
+            return findings
+        xid = exception["exception_id"]
+        if any(f.severity == "critical" for f in findings):
+            rule_result["reason"] = (
+                f"{rule_result['reason']} Exception {xid} was not applied: a critical finding is never covered."
+            )
+            return findings
+        rule_result["exception_id"] = xid
+        rule_result["reason"] = (
+            f"{rule_result['reason']} Recorded under exception {xid} (approved by {exception['approved_by']}, "
+            f"expires {exception['expires_at'][:10]}): not scored or queued while it is in force."
+        )
+        return [f.model_copy(update={"exception_id": xid}) for f in findings]
+
     def _rule_result(
         self,
         rule: Any,
@@ -348,8 +372,13 @@ class AssessmentRunner:
         max_pub_seq: int | None = None,
         run_id: str | None = None,
         excluded_entities: Iterable[str] | None = None,
+        context_at: str | None = None,
     ) -> dict[str, Any]:
         """Run full evaluation pipeline.
+
+        Entity context (satsa.context) -- applicability decisions, approved maintenance windows
+        and rule exceptions -- is what was in force at `context_at` (default now); a replay
+        passes the recorded run's time so it sees what the run saw.
 
         Retired entities (SQLiteStore.retire_entity) are not assessed; the run records which
         were left out, and `excluded_entities` replays that list instead of the current one.
@@ -443,7 +472,14 @@ class AssessmentRunner:
         needed_tables = {t for c in rule_contracts.values() for t in c.required_tables}
         entity_ids = [e.entity_id for e in entities]
         statuses = self._table_status(entity_ids, needed_tables, window)
-        decisions = self.sqlite_store.active_applicability_decisions()
+        # The run's own start time, so a replay (which passes it) resolves exactly the same set.
+        context_at = context_at or now.isoformat(timespec="microseconds")
+        decisions = self.sqlite_store.active_applicability_decisions(context_at)
+        exceptions = exceptions_in_force(self.sqlite_store, context_at)
+        maintenance = maintenance_in_force(self.sqlite_store, context_at)
+        contexts = build_contexts(entities, self.duckdb_store, maintenance)
+        left_out = {e: "retired" for e in excluded}
+        comparisons = []
         all_alert_fields = {f for c in rule_contracts.values() for f in c.alert_fields}
 
         as_of = reference_date or data_reference_date(self.duckdb_store)
@@ -451,14 +487,19 @@ class AssessmentRunner:
             rule.reference_date = as_of
         for entity in entities:
             ent_id = entity.entity_id
-            peers, _cohort_label, _is_weak = self.peer_resolver.resolve_peers(entity, entities)
+            comparison = self.peer_resolver.resolve(entity, entities, left_out)
+            comparisons.append(comparison)
+            peers = comparison.member_ids
 
             ent_findings: list[Finding] = []
             ent_evidences: list[FindingEvidence] = []
             unusable = unusable_alert_fields(self.duckdb_store, ent_id, all_alert_fields)
             population_cache: dict[str, int] = {}
             ent_results: list[dict[str, Any]] = []
+            scored_findings: list[Finding] = []
             for rule in all_rules:
+                rule.context = contexts[ent_id]
+                rule.peer_comparison_record = comparison
                 rule_result, findings, evidences = self._rule_result(
                     rule,
                     rule_contracts[rule.id],
@@ -470,9 +511,11 @@ class AssessmentRunner:
                     run_id,
                     peers,
                 )
+                findings = self._apply_exception(exceptions.get((ent_id, rule.id)), rule_result, findings)
                 ent_results.append(rule_result)
                 ent_findings.extend(findings)
                 ent_evidences.extend(evidences)
+                scored_findings.extend(f for f in findings if f.exception_id is None)
 
             all_findings.extend(ent_findings)
             all_evidences.extend(ent_evidences)
@@ -486,10 +529,11 @@ class AssessmentRunner:
                 if r["state"] in (INSUFFICIENT_EVIDENCE, DEGRADED) and r["missing_inputs"]
             }
             coverage = self.scorer.classify_coverage(states, missing_by_rule)
+            # A finding under an approved exception is recorded and shown, but not scored or queued.
             dom_scores = self.scorer.compute_domain_scores(
-                ent_id, run_id, ent_findings, {r["rule_id"]: (r["domain"], r["state"]) for r in ent_results}
+                ent_id, run_id, scored_findings, {r["rule_id"]: (r["domain"], r["state"]) for r in ent_results}
             )
-            ent_score = self.scorer.compute_entity_score(ent_id, run_id, dom_scores, ent_findings, coverage)
+            ent_score = self.scorer.compute_entity_score(ent_id, run_id, dom_scores, scored_findings, coverage)
             all_domain_scores.extend(dom_scores)
             all_entity_scores.append(ent_score)
 
@@ -497,7 +541,7 @@ class AssessmentRunner:
             q_items = self.prioritiser.build_queue(
                 run_id=run_id,
                 entity_id=ent_id,
-                findings=ent_findings,
+                findings=scored_findings,
                 evidences=ent_evidences,
                 store=self.duckdb_store,
                 total_size=self.queue_size_per_entity,
@@ -512,8 +556,11 @@ class AssessmentRunner:
             "reference_date": as_of.isoformat() if as_of else None,
             "applicability_decisions": sorted(d["decision_id"] for d in decisions.values()),
             # Only when some entity was left out, so runs recorded before retirement existed
-            # keep their identity.
+            # keep their identity. Likewise for maintenance windows and rule exceptions.
             **({"retired_entities": excluded} if excluded else {}),
+            **({"maintenance_windows": sorted(w.window_id for ws in maintenance.values() for w in ws)}
+               if maintenance else {}),
+            **({"rule_exceptions": sorted(x["exception_id"] for x in exceptions.values())} if exceptions else {}),
         }
         fingerprint = analytical_fingerprint(snapshot, data_fp, selection, environment)
 
@@ -536,6 +583,11 @@ class AssessmentRunner:
             "entities_evaluated": entity_ids,
             "entities_skipped_invalid_id": skipped_entity_ids,
             "classification_summary": coverage_summary,
+            "peer_comparisons": {
+                strength: sum(1 for c in comparisons if c.strength == strength)
+                for strength in sorted({c.strength for c in comparisons})
+            },
+            "entity_context": {e: c.as_dict() for e, c in sorted(contexts.items())},
             "total_findings": len(all_findings),
             "total_queue_items": len(all_queue_items),
             "anomaly_config_hash": self.anomaly_scanner.config_hash,
@@ -543,7 +595,7 @@ class AssessmentRunner:
 
         # Cross-entity ("systemic") correlation: looks ACROSS the per-entity
         # findings just computed, not within any single entity's data.
-        systemic_findings = self.systemic_detector.evaluate(entities, all_findings, run_id)
+        systemic_findings = self.systemic_detector.evaluate(entities, all_findings, run_id, all_results)
 
         # Exploratory scan for indicators no rule tests: leads for the examiner, kept out of
         # the scores and the queue (satsa.peers.anomaly_scan). A table counts as submitted when
@@ -597,10 +649,12 @@ class AssessmentRunner:
         if dry_run:
             result["dry_run"] = True
             result["findings"] = [
-                {"entity_id": f.entity_id, "rule_id": f.rule_id, "score": f.score, "severity": f.severity, "title": f.title}
+                {"entity_id": f.entity_id, "rule_id": f.rule_id, "score": f.score, "severity": f.severity, "title": f.title,
+                 "exception_id": f.exception_id}
                 for f in all_findings
             ]
             result["rule_results"] = all_results
+            result["peer_comparisons"] = [c.as_row(run_id) for c in comparisons]
             return result
 
         dependency_issues = (
@@ -632,6 +686,7 @@ class AssessmentRunner:
                 store.save_findings(all_findings, all_evidences)
                 store.save_scores(all_domain_scores, all_entity_scores)
                 store.save_rule_results(all_results)
+                store.save_peer_comparisons([c.as_row(run_id) for c in comparisons])
                 store.save_review_queue(all_queue_items)
                 if systemic_findings:
                     store.save_systemic_findings(systemic_findings)

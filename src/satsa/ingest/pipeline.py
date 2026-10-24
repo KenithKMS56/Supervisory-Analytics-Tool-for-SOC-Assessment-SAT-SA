@@ -485,6 +485,8 @@ class IngestionPipeline:
             "criticality": ["criticality", "priority", "tier", "business_value"],
             "monitored_flag": ["monitored_flag", "is_monitored", "monitored", "active_monitoring"],
             "owner_unit": ["owner_unit", "owner", "unit", "department"],
+            "in_service_from": ["in_service_from", "commissioned_on", "active_from", "go_live_date"],
+            "in_service_to": ["in_service_to", "decommissioned_on", "retired_on", "active_to"],
         },
         "log_source_daily": {
             "entity_id": ["entity_id", "entity", "cse_id"],

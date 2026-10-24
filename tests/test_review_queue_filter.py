@@ -121,15 +121,19 @@ def test_unknown_filter_is_the_whole_queue():
     assert resp.headers["location"] == "/queue"
 
 
-def test_wide_tables_get_a_scrollbar_pinned_to_the_window_bottom():
+def test_wide_tables_get_one_sticky_scrollbar_above_them():
     html = client.get("/queue").text
     assert '<div class="table-responsive" data-keep-scroll>' in html
     assert "window.satsaDockScrollbars = function" in html
     assert "window.satsaDockScrollbars(main)" in html  # rebuilt after an in-place swap
+    # One bar, above the table and pinned to the top of the window (tests/browser checks it
+    # scrolls the table); no second bar below.
+    assert "bar.className = 'hscroll-top'" in html and "hscroll-dock" not in html
     css = client.get("/static/style.css").text
-    dock = css[css.index(".hscroll-dock {") :]
-    assert "position: sticky" in dock[: dock.index("}")]
-    assert "bottom: 0" in dock[: dock.index("}")]
+    assert ".hscroll-dock" not in css
+    top = css[css.index(".hscroll-top {") :]
+    assert "position: sticky" in top[: top.index("}")]
+    assert "top: var(--sticky-top, 0px)" in top[: top.index("}")]  # under the demo banner, if any
 
 
 STAT = re.compile(

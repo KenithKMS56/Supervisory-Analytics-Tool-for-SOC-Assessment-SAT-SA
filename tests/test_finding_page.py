@@ -23,7 +23,7 @@ from satsa.rules.registry import RuleRegistry
 from satsa.store.duckdb import DuckDBStore
 from satsa.store.sqlite import SQLiteStore
 
-SECTIONS = ["1. What was found", "2. Why it matters", "3. Evidence", "4. Confidence and limitations", "5. Next step"]
+SECTIONS = ["1. What was found", "2. Why it matters", "3. Evidence", "4. Evidence support and limitations", "5. Next step"]
 
 
 def _examiner() -> TestClient:

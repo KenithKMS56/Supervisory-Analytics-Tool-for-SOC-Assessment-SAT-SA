@@ -28,7 +28,7 @@
 {% set top_risk_count = total_count - random_count %}
 {% set confirmed_count = status_counts["confirmed"] %}
 
-<div class="stats-grid" style="grid-template-columns: repeat(4, 1fr); margin-bottom: 2rem;">
+<div class="stats-grid" style="margin-bottom: 2rem;">
   <div class="stat-card">
     <div class="stat-label">Total Queue Candidates</div>
     <div class="stat-value" style="color: var(--accent-blue);">{{ total_count }}</div>
@@ -94,7 +94,7 @@
         {% for item in queue_items %}
         <tr>
           <td><code style="color: var(--accent-blue);">{{ item.record_id }}</code></td>
-          <td><strong>{{ item.entity_id }}</strong></td>
+          <td><strong>{{ item.entity_id }}</strong>{% set ev = entity_evidence.get(item.entity_id) %}{% if ev and ev.status and ev.status != 'assessable' %}<br><span class="badge badge-mod" style="font-size: 0.68rem;" title="{{ ev.text }}">&#9888; {{ ev.status | replace('_', ' ') }}</span>{% endif %}</td>
           <td><span class="badge" style="background-color: var(--bg-hover);">{{ item.record_type|upper }}</span></td>
           <td>
             {% if item.is_random %}
@@ -142,7 +142,7 @@
             <form action="/api/v1/feedback" method="POST" style="display: flex; gap: 0.5rem; align-items: center; margin: 0;">
               <input type="hidden" name="queue_id" value="{{ item.queue_id }}">
               <input type="hidden" name="return_status" value="{{ status_filter }}">
-              <select name="status" class="form-control" style="padding: 0.35rem 0.5rem; font-size: 0.78rem; width: 215px; min-width: 215px; flex-shrink: 0;">
+              <select name="status" class="form-control" aria-label="Examiner decision for {{ item.record_id }}" style="padding: 0.35rem 0.5rem; font-size: 0.78rem; width: 215px; min-width: 215px; flex-shrink: 0;">
                 <option value="confirmed" {% if item.examiner_status == 'confirmed' %}selected{% endif %}>Confirm concern</option>
                 <option value="not_an_issue" {% if item.examiner_status == 'not_an_issue' %}selected{% endif %}>Mark as Justified</option>
                 <option value="needs_more_data" {% if item.examiner_status == 'needs_more_data' %}selected{% endif %}>Needs more data</option>

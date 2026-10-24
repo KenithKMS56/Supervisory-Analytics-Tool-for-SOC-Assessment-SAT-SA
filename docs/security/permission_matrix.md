@@ -30,6 +30,9 @@ Phase 3 case workflow.
 | Review decisions (`/api/v1/feedback`) | 401 | **write** | 403 | 403 | 401 |
 | Supervisory cases: list, page, `/api/v1/cases` reads, evidence downloads | login redirect / 401 | read | read | 403 | 401 |
 | Supervisory cases: open, transitions, request/response packages | 401 | **write** (owner-only and second-examiner rules apply) | 403 | 403 | 401 |
+| Entity context: record a maintenance window | 401 | **write** | **write** | 403 | 401 |
+| Entity context: approve or revoke maintenance; request, approve or revoke a rule exception; record or revoke an applicability decision | 401 | **write** (approval only by an examiner other than the requester) | 403 | 403 | 401 |
+| Saved portfolio views (`/portfolio/views`) | 401 | **own views only** | **own views only** | 403 | 401 |
 | Blind review: draw a sample | 401 | 403 | **write** | 403 | 401 |
 | Blind review: task page, submit, reveal | login redirect / 401 | **own tasks only** | 403 | 403 | 401 |
 | Upload, held-batch publish/discard, register or retire entity | 401 | 403 | **write** | 403 | 401 |

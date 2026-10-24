@@ -82,9 +82,20 @@ All thresholds except EG03, NS07 and NS08 are configurable in `config/rules.yaml
 ### Cross-Entity Systemic Correlation (beyond the 20 per-entity rules)
 Unlike EG01-EG12 and NS01-NS08, which each evaluate one entity in isolation, `satsa.rules.systemic`
 runs once per assessment and looks ACROSS the whole portfolio: if 3 or more entities sharing the same
-third-party SOC provider all trigger the identical rule in the same run, that is surfaced as its own
-"systemic gap, possible shared-vendor issue" finding on the portfolio dashboard, separate from any
-individual entity's finding cards. See [`docs/analytics_methodology.md`](docs/analytics_methodology.md) Section 3A.
+third-party SOC provider all trigger the identical rule in the same run, that is surfaced as a
+possible shared-provider pattern on the portfolio dashboard, separate from any individual entity's
+finding cards. Each lead shows affected, assessable and total clients, the rate among other
+providers' clients and a Fisher-exact / Benjamini-Hochberg bound. It is a hypothesis to examine,
+not proof of shared-vendor causation, and it is never scored. See
+[`docs/analytics_context.md`](docs/analytics_context.md) and
+[`docs/analytics_methodology.md`](docs/analytics_methodology.md) Section 3A.
+
+### Entity context and peer comparisons
+Hours are read in each entity's own time zone. Approved maintenance windows and in-service dates
+keep planned downtime from counting as monitoring silence. Documented, expiring rule exceptions,
+approved by a second examiner, keep a finding visible but out of the score. Every run records the
+peer cohort it used and whether the comparison is established or only exploratory. See
+[`docs/analytics_context.md`](docs/analytics_context.md).
 
 ### Exploratory Leads and Review Priorities (beyond the 20 rules)
 To surface indicators no rule tests, `satsa.peers.anomaly_scan` computes about 40 operational rates per entity across the eight domains and flags **peer outliers** (robust z $\ge 3.5$ against the peer cohort) and **time shifts** (CUSUM against the entity's first three months). Leads appear on the entity profile and portfolio and at `GET /api/v1/anomalies`; they are **not scored** (no severity, no effect on the risk index or review queue; DECISIONS.md ADR-007). The portfolio also ranks **controls** (rules) and **processes** (domains) for review (`GET /api/v1/priorities`). Method: [`docs/analytics_methodology.md`](docs/analytics_methodology.md) Sections 3B and 4.5.
@@ -502,6 +513,7 @@ satsa/
 - [`docs/architecture.md`](docs/architecture.md): Components, data flow and security model.
 - [`docs/functional_design.md`](docs/functional_design.md): RBAC roles and examiner workflows.
 - [`docs/analytics_methodology.md`](docs/analytics_methodology.md): All 20 rules, the systemic detector, robust statistics.
+- [`docs/analytics_context.md`](docs/analytics_context.md): Entity context (time zone, schedule, maintenance, exceptions), peer cohorts and their strength, evidence support, provider-level leads.
 - [`docs/threshold_rationale.md`](docs/threshold_rationale.md): Why the most fragile thresholds sit where they do (proposals only; none changed).
 - [`docs/data_requirements.md`](docs/data_requirements.md): Canonical schemas, ingest sources, per-rule data needs.
 - [`docs/connectors.md`](docs/connectors.md): Splunk ES, ServiceNow SIR and TheHive 5 exports.

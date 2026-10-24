@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +53,14 @@ def _window(selection: dict[str, Any]) -> AssessmentWindow:
         max_pub_seq=selection.get("max_pub_seq"),
         label=selection.get("label"),
     )
+
+
+def _context_time(created_at: Any) -> str:
+    """The run's start in the store's timestamp format (utc_now_iso), for "in force as of"."""
+    when = created_at if isinstance(created_at, datetime) else datetime.fromisoformat(str(created_at))
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    return when.astimezone(UTC).isoformat(timespec="microseconds")
 
 
 def replay_run(run_id: str, data_dir: Path | str, sqlite_store: SQLiteStore) -> dict[str, Any]:
@@ -98,6 +106,8 @@ def replay_run(run_id: str, data_dir: Path | str, sqlite_store: SQLiteStore) -> 
                 reference_date=datetime.fromisoformat(ref) if ref else None,
                 record_data_gaps=False,
                 excluded_entities=selection.get("retired_entities", []),
+                # Applicability decisions, maintenance and exceptions as they stood for the run.
+                context_at=_context_time(row["created_at"]),
             )
         finally:
             duck.close()

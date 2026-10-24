@@ -1116,9 +1116,11 @@ a.stat-card:hover {
 }
 
 /* A wide table's own scrollbar sits under its last row, out of reach for a mouse on a
-   long table (a trackpad's sideways swipe was the only way across). base.html gives it a
-   dock instead: the same scrollbar, pinned to the bottom of the window while the table
-   is on screen, and back under the last row once that is in view. */
+   long table (a trackpad's sideways swipe was the only way across). base.html replaces it
+   with one bar above the table that is sticky, not fixed: it sits above the header row,
+   stays pinned to the top of the window while the rest of the table is on screen, and
+   leaves with the table. --sticky-top is the height of the demonstration banner (set in
+   base.html), which is pinned there too and would otherwise cover it. */
 .table-responsive.has-hdock {
   scrollbar-width: none;
 }
@@ -1127,22 +1129,27 @@ a.stat-card:hover {
   display: none;
 }
 
-.hscroll-dock {
+.hscroll-top {
   position: sticky;
-  bottom: 0;
+  top: var(--sticky-top, 0px);
   z-index: 5;
   overflow-x: auto;
   overflow-y: hidden;
   background: var(--surface-card);
-  border-top: 1px solid var(--border-default);
+  border-bottom: 1px solid var(--border-default);
 }
 
-.hscroll-dock[hidden] {
+.hscroll-top[hidden] {
   display: none;
 }
 
-.hscroll-dock > div {
+.hscroll-top > div {
   height: 1px;
+}
+
+.table-responsive.has-hdock:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
 }
 
 /* Review queue: one queue per examiner disposition. */
@@ -1941,4 +1948,129 @@ textarea::placeholder,
 .export-menu-items a:hover {
   background: var(--surface-hover);
   text-decoration: none;
+}
+
+/* ==========================================================================
+   B08: content never widens the page
+   A flex or grid child may shrink below its content's width; a wide table scrolls inside
+   its own .table-responsive container; layout grids collapse on narrow screens.
+   ========================================================================== */
+
+main, .card, .stat-card, .stat-box, .grid-2 > *, .grid-3 > *, .grid-2-1 > *, .stats-grid > * {
+  min-width: 0;
+}
+
+.stat-value, .stat-val, .stat-desc, .card p, .card code, .header-title h1, .header-title p {
+  overflow-wrap: anywhere;
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.grid-2-1 {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: var(--space-6);
+}
+
+.grid-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--space-4);
+}
+
+.stats-grid.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.header-actions-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* A hidden tooltip takes no room (a hidden one at the edge of a phone screen widened the page). */
+.tooltip-hint .tooltip-text {
+  display: none;
+  max-width: calc(100vw - 2rem);
+}
+
+.tooltip-hint:hover .tooltip-text,
+.tooltip-hint:focus-visible .tooltip-text,
+.tooltip-hint:focus-within .tooltip-text {
+  display: block;
+}
+
+form select.form-control, form input.form-control {
+  max-width: 100%;
+}
+
+@media (max-width: 1024px) {
+  .floating-nav-item:not(.active) .nav-text,
+  .floating-nav-role {
+    display: none;
+  }
+
+  .grid-2-1, .grid-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 767px) {
+  .stats-grid.cols-3, .grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .header-title h1 {
+    font-size: 1.75rem;
+  }
+
+  .tooltip-hint .tooltip-text {
+    position: fixed;
+    left: 1rem;
+    right: 1rem;
+    bottom: 6rem;
+    width: auto;
+    transform: none;
+  }
+}
+
+@media (max-width: 480px) {
+  .floating-nav-user-chip, .floating-nav-scope {
+    display: none;
+  }
+}
+
+/* A filter field's label sits above it, on every width. */
+.filter-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+#portfolio-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: flex-end;
+  margin-bottom: 0.75rem;
+}
+
+@media (max-width: 767px) {
+  #portfolio-filters {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+.filter-row label > .form-control {
+  min-height: 40px;
 }

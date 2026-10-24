@@ -28,16 +28,31 @@
   </div>
 </div>
 
+{% if run %}
+<p style="font-size: 0.82rem; color: var(--text-secondary); margin: -0.5rem 0 1rem;">
+  Assessment run <code>{{ run.run_id }}</code> ({{ run.period }}), recorded {{ run.created_at }}.
+</p>
+{% endif %}
+
 <div class="grid-4">
   <div class="stat-box">
+    {% if score.risk_index is none or band_tier(score.risk_band) == 'insufficient' %}
+    <div class="stat-val" style="color: var(--text-muted);" title="Not classified in this run">n/a</div>
+    {% else %}
     <div class="stat-val" style="color: {% if score.risk_index >= 50 %}var(--risk-crit){% elif score.risk_index >= 25 %}var(--risk-mod){% else %}var(--risk-low){% endif %};">
       {{ score.risk_index }}
     </div>
+    {% endif %}
     <div class="stat-lbl">Entity Risk Index</div>
   </div>
   <div class="stat-box">
     <div class="stat-val">{{ score.risk_band }}</div>
     <div class="stat-lbl">Risk Classification</div>
+    {% if score.classification_status %}
+    <div id="evidence-sufficiency" style="font-size: 0.78rem; color: var(--text-secondary); margin-top: 0.4rem;">
+      Evidence: {{ score.classification_status | replace('_', ' ') }}{% if score.coverage is not none %}, {{ (score.coverage * 100) | round | int }}% of applicable rules assessed{% endif %}
+    </div>
+    {% endif %}
     {% if band_note %}<div style="font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.4rem;">{{ band_note }}</div>{% endif %}
   </div>
   <div class="stat-box">
@@ -56,7 +71,21 @@
       <span>8-Domain Radar vs Peer Median</span>
       <span style="font-size: 0.8rem; color: var(--text-secondary);">Peers: {{ peer_label }}</span>
     </div>
-    <div id="domainRadar" style="width: 100%; height: 320px;"></div>
+    {% include "_peer_cohort.html" %}
+    <div id="domainRadar" style="width: 100%; height: 320px;" role="img" aria-label="Radar chart of the entity's eight domain scores against the peer median; the same values are in the table below"></div>
+    <details style="margin-top: 0.5rem;">
+      <summary style="cursor: pointer; font-size: 0.82rem;">Show the chart's values as a table</summary>
+      <div class="table-responsive">
+        <table>
+          <thead><tr><th>Domain</th><th>This entity</th><th>Peer median</th></tr></thead>
+          <tbody>
+            {% for d in radar_domains %}
+            <tr><td>{{ d }}</td><td>{{ radar_entity_vals[loop.index0] }}</td><td>{% if radar_peer_vals %}{{ radar_peer_vals[loop.index0] }}{% else %}-{% endif %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </details>
   </div>
 
   <div class="card">
@@ -68,6 +97,7 @@
       Declared MTTR compared with MTTR recomputed from the submitted alert timestamps, for each severity
       the entity declared. A gap above {{ (kpi_gap_threshold * 100)|round(0)|int }}% (EG10's threshold) is flagged.
     </p>
+    <div class="table-responsive">
     <table>
       <thead>
         <tr>
@@ -96,6 +126,7 @@
         {% endfor %}
       </tbody>
     </table>
+    </div>
   </div>
 </div>
 
@@ -133,6 +164,9 @@
           <td>
             <div style="font-weight: 600; margin-bottom: 0.2rem;">{{ f.title }}</div>
             <div style="font-size: 0.85rem; color: var(--text-secondary);">{{ f.rationale }}</div>
+            {% if f.finding_id in excepted %}
+            <div style="margin-top: 0.3rem;"><span class="badge badge-mod" title="Kept and shown, but not scored or queued while the exception is in force">Under exception {{ f.exception_id }}: not scored</span></div>
+            {% endif %}
           </td>
           <td>
             <a href="/finding/{{ f.finding_id }}" class="btn btn-secondary" style="padding: 0.25rem 0.6rem; font-size: 0.8rem;">Evidence Card</a>
@@ -144,11 +178,13 @@
   </div>
 </div>
 
+{% include "_entity_context.html" %}
+
 <div class="card" id="anomaly-leads">
   <div class="card-title">
     <span>
       Exploratory Leads: Indicators No Rule Tests ({{ anomaly_leads|length }})
-      <span class="tooltip-hint">❓
+      <span class="tooltip-hint" tabindex="0">❓
         <span class="tooltip-text">A fixed catalogue of about 40 operational rates is computed for every entity. A peer outlier is a rate at least 3.5 robust standard deviations from the entity's peer cohort; a time shift is a sustained change inside the entity's own period found by a CUSUM chart over its monthly values. Leads are not findings: they carry no severity, are not part of the risk index and do not enter the review queue. Every value behind them is stored with the run.</span>
       </span>
     </span>
@@ -219,5 +255,6 @@
   };
 
   myChart.setOption(option);
+  window.addEventListener('resize', () => myChart.resize());
 </script>
 {% endblock %}

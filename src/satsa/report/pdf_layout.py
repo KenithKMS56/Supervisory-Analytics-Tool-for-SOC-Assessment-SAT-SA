@@ -276,7 +276,8 @@ def technical_detail(
             f"{finding['rule_id']} v{finding.get('rule_version') or '?'}  |  "
             f"Domain: {finding['domain']}  |  Score: {float(finding['score']):.1f}"
             + (
-                f"  |  Confidence: {float(finding['confidence']):.2f}"
+                # Records examined against the rule's minimum sample; not a probability.
+                f"  |  Evidence support: {float(finding['confidence']):.0%}"
                 if finding.get("confidence") is not None
                 else ""
             ),

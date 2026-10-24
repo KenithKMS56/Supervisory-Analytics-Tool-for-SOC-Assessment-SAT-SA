@@ -1088,8 +1088,10 @@ class SQLiteStore:
                     """
                     INSERT OR REPLACE INTO systemic_findings (
                         systemic_id, run_id, rule_id, shared_attribute, shared_value,
-                        entity_count, entity_ids_json, title, rationale, severity, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        entity_count, entity_ids_json, title, rationale, severity, created_at,
+                        assessable_count, group_size, comparison_affected, comparison_assessable,
+                        p_value, q_value
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         f["systemic_id"],
@@ -1103,13 +1105,20 @@ class SQLiteStore:
                         f["rationale"],
                         f["severity"],
                         f["created_at"],
+                        f.get("assessable_count"),
+                        f.get("group_size"),
+                        f.get("comparison_affected"),
+                        f.get("comparison_assessable"),
+                        f.get("p_value"),
+                        f.get("q_value"),
                     ),
                 )
 
     def get_systemic_findings(self, run_id: str) -> list[dict[str, Any]]:
         cur = self.conn.cursor()
         cur.execute(
-            "SELECT * FROM systemic_findings WHERE run_id = ? ORDER BY entity_count DESC",
+            "SELECT * FROM systemic_findings WHERE run_id = ? "
+            "ORDER BY coalesce(q_value, 1), coalesce(p_value, 1), entity_count DESC, systemic_id",
             (run_id,),
         )
         rows = [dict(r) for r in cur.fetchall()]
@@ -1196,8 +1205,8 @@ class SQLiteStore:
                         finding_id, run_id, entity_id, rule_id, rule_version, domain,
                         level, score, confidence, severity, title, rationale,
                         peer_comparison_json, limitations, benign_explanations_json,
-                        examiner_check, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        examiner_check, created_at, exception_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         f.finding_id,
@@ -1217,6 +1226,7 @@ class SQLiteStore:
                         json.dumps(f.benign_explanations),
                         f.examiner_check,
                         f.created_at.isoformat(),
+                        f.exception_id,
                     ),
                 )
             for ev in evidences:
@@ -1280,18 +1290,50 @@ class SQLiteStore:
                 """
                 INSERT OR REPLACE INTO rule_results (
                     run_id, entity_id, rule_id, rule_version, domain, state, reason,
-                    missing_inputs_json, population, min_sample, findings_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    missing_inputs_json, population, min_sample, findings_count, exception_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
                         r["run_id"], r["entity_id"], r["rule_id"], r["rule_version"], r["domain"], r["state"],
                         r["reason"], json.dumps(r.get("missing_inputs", [])), r.get("population"),
-                        r.get("min_sample"), r.get("findings_count", 0),
+                        r.get("min_sample"), r.get("findings_count", 0), r.get("exception_id"),
                     )
                     for r in rows
                 ],
             )
+
+    def save_peer_comparisons(self, rows: list[dict[str, Any]]) -> None:
+        """The cohort each entity was compared with in a run (satsa.peers.grouping)."""
+        with self.transaction():
+            self.conn.executemany(
+                """
+                INSERT OR REPLACE INTO peer_comparisons (
+                    run_id, entity_id, cohort_label, attributes_json, fallback_level, member_ids_json,
+                    excluded_json, denominator, min_support, strength, reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        r["run_id"], r["entity_id"], r["cohort_label"], json.dumps(r["attributes"]),
+                        r["fallback_level"], json.dumps(r["member_ids"]), json.dumps(r["excluded"]),
+                        r["denominator"], r["min_support"], r["strength"], r["reason"],
+                    )
+                    for r in rows
+                ],
+            )
+
+    def get_peer_comparison(self, run_id: str, entity_id: str) -> dict[str, Any] | None:
+        """The recorded cohort of `entity_id` in `run_id`; None for runs recorded before cohorts were."""
+        r = self.conn.execute(
+            "SELECT * FROM peer_comparisons WHERE run_id = ? AND entity_id = ?", (run_id, entity_id)
+        ).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        for key in ("attributes", "member_ids", "excluded"):
+            d[key] = json.loads(d.pop(f"{key}_json"))
+        return d
 
     def get_rule_results(self, run_id: str, entity_id: str | None = None) -> list[dict[str, Any]]:
         rows = self.conn.execute(
@@ -1365,14 +1407,16 @@ class SQLiteStore:
         return bool(changed)
 
     def active_applicability_decisions(self, at: str | None = None) -> dict[tuple[str, str], dict[str, Any]]:
-        """(entity_id, rule_id) -> decision, for decisions neither revoked nor expired at `at`."""
+        """(entity_id, rule_id) -> decision in force at `at` (default now): made by then, and
+        neither revoked nor expired by then. A replay passes the run's time."""
         when = at or utc_now_iso()
         return {
             (r["entity_id"], r["rule_id"]): dict(r)
             for r in self.conn.execute(
-                "SELECT * FROM applicability_decisions WHERE revoked_at IS NULL "
+                "SELECT * FROM applicability_decisions WHERE decided_at <= ? "
+                "AND (revoked_at IS NULL OR revoked_at > ?) "
                 "AND (expires_at IS NULL OR expires_at > ?) ORDER BY decided_at",
-                (when,),
+                (when, when, when),
             )
         }
 

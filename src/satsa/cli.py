@@ -636,6 +636,14 @@ def report_cmd(
     rep_gen = ReportGenerator(duckdb_store, sqlite_store)
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
+    # Every report and export is of one run: the latest, as the UI shows by default.
+    try:
+        latest_run = rep_gen.resolve_run().run_id
+    except ReportNotFoundError:
+        duckdb_store.close()
+        sqlite_store.close()
+        console.print("[red]No assessment run yet: run `satsa run` first.[/red]")
+        raise typer.Exit(code=1) from None
 
     generated = []
 
@@ -662,7 +670,7 @@ def report_cmd(
 
     # Entity-specific or all entities HTML & PDF
     cur = sqlite_store.conn.cursor()
-    cur.execute("SELECT DISTINCT entity_id FROM entity_scores")
+    cur.execute("SELECT DISTINCT entity_id FROM entity_scores WHERE run_id = ? ORDER BY entity_id", (latest_run,))
     available_entities = [r["entity_id"] for r in cur.fetchall()]
 
     if entity == "all":
