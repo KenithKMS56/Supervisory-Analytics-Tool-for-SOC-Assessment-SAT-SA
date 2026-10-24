@@ -1,2 +1,5 @@
 # Vendored upstream files: keep them byte-identical to the release their VERSION file checksums.
 src/satsa/ui/static/vendor/** -text
+
+# Binary documents: never convert line endings (a converted PDF has wrong byte offsets).
+*.pdf binary
