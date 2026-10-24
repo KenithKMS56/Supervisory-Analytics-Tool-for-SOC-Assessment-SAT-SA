@@ -133,3 +133,47 @@ def test_historical_periods_assess_their_own_window_not_the_full_dataset():
                 cur.execute(f"DELETE FROM {table} WHERE run_id = ?", (rid,))
         store.conn.commit()
         store.close()
+
+
+def test_trend_comparisons_warn_about_rule_peer_and_coverage_changes(tmp_path, monkeypatch):
+    """docs/product_brief.md section 8: rule-version and cohort changes are flagged on trends, and
+    a lower score caused by missing evidence is not shown as improvement."""
+    from case_fixtures import Q2, add_result, add_run, make_store
+
+    from satsa.api.routes import _trend_comparability_warnings
+
+    monkeypatch.chdir(tmp_path)
+    store = make_store(tmp_path)
+    try:
+        add_run(store, "RUN-Q1", "2026-04-02T00:00:00+00:00")
+        add_result(store, "RUN-Q1", "finding", risk_index=70.0, coverage=0.9)
+        add_run(store, "RUN-Q2", "2026-07-02T00:00:00+00:00", window=Q2, period="2026-Q2",
+                rules_sha="rules-v2", peers_sha="peers-v2")
+        add_result(store, "RUN-Q2", "insufficient_evidence", version="2.0", risk_index=12.0, coverage=0.3,
+                   classification="partially_assessable")
+        warnings = _trend_comparability_warnings(store.conn.cursor(), ["CSE-01"])
+    finally:
+        store.close()
+    joined = " | ".join(warnings)
+    assert "Rule parameters changed between 2026-Q1 and 2026-Q2" in joined
+    assert "peer-group definition changed" in joined
+    assert "NS03 changed version (1.0 to 2.0)" in joined
+    assert "CSE-01: the risk index fell 2026-Q1 to 2026-Q2" in joined and "(coverage 90% to 30%)" in joined
+    assert "not improvement" in joined
+
+
+def test_a_fall_with_the_same_evidence_raises_no_warning(tmp_path, monkeypatch):
+    from case_fixtures import Q2, add_result, add_run, make_store
+
+    from satsa.api.routes import _trend_comparability_warnings
+
+    monkeypatch.chdir(tmp_path)
+    store = make_store(tmp_path)
+    try:
+        add_run(store, "RUN-Q1", "2026-04-02T00:00:00+00:00")
+        add_result(store, "RUN-Q1", "finding", risk_index=70.0)
+        add_run(store, "RUN-Q2", "2026-07-02T00:00:00+00:00", window=Q2, period="2026-Q2")
+        add_result(store, "RUN-Q2", "assessed_clear", risk_index=20.0)
+        assert _trend_comparability_warnings(store.conn.cursor(), ["CSE-01"]) == []
+    finally:
+        store.close()

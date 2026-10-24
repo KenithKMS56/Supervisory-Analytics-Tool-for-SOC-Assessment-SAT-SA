@@ -1,0 +1,258 @@
+{% extends "base.html" %}
+
+{% block title %}Case {{ case.case_id }}{% endblock %}
+
+{% macro textarea(label, name="rationale", required=True) %}
+  <label style="display: block; margin-bottom: 0.6rem;">{{ label }}
+    <textarea name="{{ name }}" class="form-control" rows="3" maxlength="5000" {% if required %}required{% endif %}></textarea>
+  </label>
+{% endmacro %}
+
+{% macro outcome_select() %}
+  <label style="display: block; margin-bottom: 0.6rem;">Outcome
+    <select name="outcome" class="form-control" required>
+      <option value="confirmed">Confirmed concern</option>
+      <option value="dismissed">Dismissed (no concern)</option>
+      <option value="inconclusive">Inconclusive</option>
+    </select>
+  </label>
+{% endmacro %}
+
+{% macro file_input() %}
+  <label style="display: block; margin-bottom: 0.6rem;">Evidence file (optional, up to 20 MiB)
+    <input type="file" name="attachment" class="form-control">
+  </label>
+{% endmacro %}
+
+{% block content %}
+<div class="header-section">
+  <div class="header-title">
+    <h1>Case <code>{{ case.case_id }}</code>: {{ case.title }}</h1>
+    <p>Entity <a href="/entity/{{ case.entity_id }}"><strong>{{ case.entity_id }}</strong></a> |
+       Rule <strong>{{ case.rule_id }} (v{{ case.rule_version }})</strong> |
+       Opened from <a href="/finding/{{ case.finding_id }}">{{ case.finding_id }}</a> in run <code>{{ case.run_id }}</code>
+       {% if case.previous_case_id %}| Recurs after <a href="/cases/{{ case.previous_case_id }}">{{ case.previous_case_id }}</a>{% endif %}</p>
+  </div>
+  <a href="/cases" class="btn btn-secondary">&larr; All cases</a>
+</div>
+
+{% if error %}
+<div class="notice-banner case-error" role="alert" style="border-color: var(--risk-crit);">
+  <strong>Not recorded:</strong> {{ error }}
+</div>
+{% endif %}
+
+<div class="grid-4">
+  <div class="stat-box"><div class="stat-val">{{ state_label }}</div><div class="stat-lbl">State</div></div>
+  <div class="stat-box"><div class="stat-val">{{ case.owner or "unassigned" }}</div><div class="stat-lbl">Owner</div></div>
+  <div class="stat-box"><div class="stat-val">{{ case.due_date or "none" }}</div><div class="stat-lbl">Due</div></div>
+  <div class="stat-box"><div class="stat-val">{{ case.version }}</div><div class="stat-lbl">Version</div></div>
+</div>
+
+<p style="font-size: 0.82rem; color: var(--text-secondary);">
+  A confirmed concern is the examiner's finding, not a statutory notice: SAT-SA drafts, issues and sends nothing.
+  Requests to the entity leave as an exported package, through whatever channel the regulator uses.
+</p>
+
+{% if dissent %}
+<div class="card" style="border-left: 4px solid var(--risk-mod);">
+  <strong>Unresolved disagreement:</strong>
+  {% for d in dissent %}{{ d.actor }} disagrees ({{ d.created_at[:19] }}){% if not loop.last %}; {% endif %}{% endfor %}.
+  Closure and corrective action wait for adjudication by a third examiner, or a new decision by the owner.
+</div>
+{% endif %}
+
+<section class="card" id="actions">
+  <div class="card-title"><span>Next steps</span></div>
+  {% if not allowed %}
+    <p style="color: var(--text-secondary);">
+      {% if case.state == 'closed' %}The case is closed.{% endif %}
+      No action is open to you now. Examiners act on cases. Some steps belong to the owner, and sign-off needs a second examiner.
+    </p>
+  {% endif %}
+  {% for a in allowed %}
+  <details style="margin-bottom: 0.75rem;" {% if loop.first %}open{% endif %}>
+    <summary><strong>{{ a.label }}</strong> <span style="color: var(--text-secondary); font-size: 0.85rem;">{{ a.help }}</span></summary>
+    <form method="post" action="/cases/{{ case.case_id }}/actions" enctype="multipart/form-data" style="margin-top: 0.75rem; max-width: 720px;">
+      <input type="hidden" name="action" value="{{ a.name }}">
+      <input type="hidden" name="expected_version" value="{{ case.version }}">
+      {% if a.name in ('assign', 'reassign') %}
+        <label style="display: block; margin-bottom: 0.6rem;">Owner
+          <select name="owner" class="form-control" required>
+            {% for e in examiners %}<option value="{{ e }}">{{ e }}</option>{% endfor %}
+          </select>
+        </label>
+        {% if a.name == 'assign' %}
+        <label style="display: block; margin-bottom: 0.6rem;">Review due (optional)
+          <input type="date" name="due_date" class="form-control">
+        </label>
+        {{ textarea("Note (optional)", required=False) }}
+        {% else %}{{ textarea("Why reassign") }}{% endif %}
+      {% elif a.name == 'request_explanation' %}
+        {{ textarea("Request to the entity: what must it explain?") }}
+        <label style="display: block; margin-bottom: 0.6rem;">Respond by
+          <input type="date" name="due_date" class="form-control" required>
+        </label>
+      {% elif a.name == 'record_response' %}
+        {{ textarea("Explanation received (summary)") }}{{ file_input() }}
+      {% elif a.name in ('decide', 'supersede_decision', 'adjudicate') %}
+        {{ outcome_select() }}
+        {{ textarea("Reasons" if a.name == 'decide' else ("Why the earlier decision is superseded" if a.name == 'supersede_decision' else "Adjudication reasons")) }}
+      {% elif a.name == 'record_review' %}
+        <label style="display: block; margin-bottom: 0.6rem;">Opinion
+          <select name="opinion" class="form-control" required>
+            <option value="agree">Agree with the decision</option>
+            <option value="disagree">Disagree with the decision</option>
+          </select>
+        </label>
+        {{ textarea("Reasons") }}
+      {% elif a.name == 'require_corrective_action' %}
+        {{ textarea("Corrective action required", name="description") }}
+        <label style="display: block; margin-bottom: 0.6rem;">Entity-side owner
+          <input type="text" name="action_owner" class="form-control" maxlength="200" required>
+        </label>
+        <label style="display: block; margin-bottom: 0.6rem;">Due
+          <input type="date" name="due_date" class="form-control" required>
+        </label>
+        {{ textarea("Verification criteria: what evidence will show it worked?", name="verification_criteria") }}
+        {{ textarea("Reasons") }}
+      {% elif a.name == 'submit_for_verification' %}
+        {{ textarea("What the entity reports and provided") }}{{ file_input() }}
+      {% elif a.name == 'verify' %}
+        <label style="display: block; margin-bottom: 0.6rem;">Result
+          <select name="result" class="form-control" required>
+            <option value="passed">Passed: remediation verified</option>
+            <option value="failed">Failed: back to corrective action</option>
+          </select>
+        </label>
+        <label style="display: block; margin-bottom: 0.6rem;">Next-period assessment
+          <select name="reassessment_run_id" class="form-control" required>
+            {% for r in reassessment %}
+            <option value="{{ r.run_id }}">{{ r.period }} ({{ r.run_id }}) &mdash; {% if r.sufficient_for_closure %}sufficient evidence{% else %}not sufficient{% endif %}</option>
+            {% else %}
+            <option value="">No later assessment run yet</option>
+            {% endfor %}
+          </select>
+        </label>
+        {{ textarea("Verification notes") }}
+      {% else %}
+        {{ textarea("Reasons" if a.name in ('close', 'reopen') else "Note", required=a.name != 'add_note') }}
+        {% if a.name == 'add_note' %}{{ file_input() }}{% endif %}
+      {% endif %}
+      <button type="submit" class="btn btn-primary">{{ a.label }}</button>
+    </form>
+  </details>
+  {% endfor %}
+</section>
+
+<section class="card" id="packages">
+  <div class="card-title"><span>Explanation requests and responses</span></div>
+  <p style="font-size: 0.85rem; color: var(--text-secondary);">A request package holds the case reference, the concern's title, your request and its due date: no scores, peer comparisons or evidence records. The entity returns a response package, which the owner imports here.</p>
+  {% set me = get_identity(request) %}
+  {% if case.state == 'explanation_requested' and me and me.username == case.owner %}
+  <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end;">
+    {# A file download: posted for real, not through the in-place form handler (base.html). #}
+    <form method="post" action="/cases/{{ case.case_id }}/request-package" data-full-reload style="margin: 0;">
+      <button type="submit" class="btn btn-secondary">Export request package</button>
+    </form>
+    <form method="post" action="/cases/{{ case.case_id }}/response-package" enctype="multipart/form-data" style="margin: 0; display: flex; gap: 0.5rem; align-items: flex-end;">
+      <input type="hidden" name="expected_version" value="{{ case.version }}">
+      <label>Response package (.zip)<input type="file" name="package" accept=".zip" class="form-control" required></label>
+      <button type="submit" class="btn btn-primary">Import response</button>
+    </form>
+  </div>
+  {% endif %}
+  {% if packages %}
+  <div class="table-responsive"><table>
+    <thead><tr><th>Package</th><th>Exported</th><th>Response imported</th><th>Response SHA-256</th></tr></thead>
+    <tbody>{% for p in packages %}
+      <tr><td><code>{{ p.package_id }}</code></td><td>{{ p.exported_at[:19] }} by {{ p.exported_by }}</td>
+          <td>{% if p.imported_at %}{{ p.imported_at[:19] }} by {{ p.imported_by }}{% else %}awaiting{% endif %}</td>
+          <td><code>{{ (p.response_sha256 or "")[:16] }}</code></td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+</section>
+
+{% if corrective_actions %}
+<section class="card" id="corrective-actions">
+  <div class="card-title"><span>Corrective actions</span></div>
+  <div class="table-responsive"><table>
+    <thead><tr><th>Action</th><th>Entity owner</th><th>Due</th><th>Verification criteria</th><th>State</th></tr></thead>
+    <tbody>{% for ca in corrective_actions %}
+      <tr><td>{{ ca.description }}</td><td>{{ ca.owner }}</td><td>{{ ca.due_date }}</td><td>{{ ca.verification_criteria }}</td><td>{{ ca.state }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+</section>
+{% endif %}
+
+<section class="card" id="reassessment">
+  <div class="card-title"><span>Next-period evidence</span></div>
+  <p style="font-size: 0.85rem; color: var(--text-secondary);">Remediation is verified only on a later run that covers a later period, assessed the same rule version for this entity and found it clear. A lower score caused by missing or degraded data is not improvement.</p>
+  {% if not reassessment %}
+    <p>No assessment run after the one this case was opened from.</p>
+  {% else %}
+  <div class="table-responsive"><table>
+    <thead><tr><th>Run</th><th>Period</th><th>Rule result</th><th>Coverage</th><th>Evidence change</th><th>Sufficient to verify?</th></tr></thead>
+    <tbody>{% for r in reassessment %}
+      <tr>
+        <td><code>{{ r.run_id }}</code></td><td>{{ r.period }}</td>
+        <td>{{ (r.rule_state or "not evaluated")|replace("_", " ") }}{% if r.finding_id %} (<a href="/finding/{{ r.finding_id }}">finding</a>, score {{ r.score }}){% endif %}</td>
+        <td>{{ r.classification_status or "" }}{% if r.coverage is not none %} {{ (r.coverage * 100)|round|int }}%{% endif %}</td>
+        <td>{% if r.evidence_change %}score {{ r.evidence_change.score_before }} &rarr; {{ r.evidence_change.score_after }}; {{ r.evidence_change.records_added }} new records cited, {{ r.evidence_change.records_no_longer_cited }} no longer cited{% else %}&mdash;{% endif %}</td>
+        <td>{% if r.sufficient_for_closure %}<strong>Yes</strong>{% else %}No: {{ r.reasons|join(" ") }}{% endif %}
+            {% for w in r.warnings %}<br><em>Warning: {{ w }}</em>{% endfor %}</td>
+      </tr>
+    {% endfor %}</tbody>
+  </table></div>
+  {% endif %}
+</section>
+
+<section class="card" id="lineage">
+  <div class="card-title"><span>Concern lineage: findings of {{ case.rule_id }} for {{ case.entity_id }}</span></div>
+  <div class="table-responsive"><table>
+    <thead><tr><th>Finding</th><th>Run</th><th>Period</th><th>Rule version</th><th>Score</th></tr></thead>
+    <tbody>{% for f in lineage %}
+      <tr><td><a href="/finding/{{ f.finding_id }}">{{ f.finding_id }}</a></td><td><code>{{ f.run_id }}</code></td><td>{{ f.period }}</td><td>{{ f.rule_version }}</td><td>{{ f.score }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+</section>
+
+<section class="card" id="history">
+  <div class="card-title"><span>History (immutable)</span></div>
+  <ol style="padding-left: 1.25rem;">
+    {% for e in events %}
+    <li style="margin-bottom: 0.75rem;">
+      <strong>{{ e.action|replace("_", " ") }}</strong>
+      {% if e.to_state and e.to_state != e.from_state %}&rarr; {{ state_labels[e.to_state] }}{% endif %}
+      by {{ e.actor }} ({{ e.actor_role }}), {{ e.created_at[:19] }} UTC
+      {% if e.superseded %}<span class="badge badge-mod">superseded</span>{% endif %}
+      {% if e.supersedes_event_id %}<span style="color: var(--text-secondary);">supersedes {{ e.supersedes_event_id }}</span>{% endif %}
+      {% if e.rationale %}<div style="white-space: pre-wrap;">{{ e.rationale }}</div>{% endif %}
+      {% if e.payload.outcome %}<div>Outcome: {{ state_labels[e.payload.outcome] }}</div>{% endif %}
+      {% if e.payload.opinion %}<div>Opinion: {{ e.payload.opinion }}</div>{% endif %}
+      {% if e.payload.owner %}<div>Owner: {{ e.payload.owner }}</div>{% endif %}
+      {% if e.payload.respond_by %}<div>Respond by {{ e.payload.respond_by }}</div>{% endif %}
+      {% if e.payload.package_id %}<div>Response package {{ e.payload.package_id }} from {{ e.payload.responder_name }} {% if e.payload.responder_role %}({{ e.payload.responder_role }}){% endif %}</div>{% endif %}
+      {% if e.payload.corrective_action %}<div>Corrective action: {{ e.payload.corrective_action.description }} (due {{ e.payload.corrective_action.due_date }})</div>{% endif %}
+      {% if e.payload.result %}<div>Verification {{ e.payload.result }} on run {{ e.payload.reassessment.run_id }}</div>{% endif %}
+      {% if e.payload.finding_id and e.action == 'link_finding' %}<div>Linked <a href="/finding/{{ e.payload.finding_id }}">{{ e.payload.finding_id }}</a></div>{% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+</section>
+
+{% if attachments %}
+<section class="card" id="attachments">
+  <div class="card-title"><span>Evidence files</span></div>
+  <div class="table-responsive"><table>
+    <thead><tr><th>File</th><th>Source</th><th>Size</th><th>SHA-256</th><th>Added</th></tr></thead>
+    <tbody>{% for a in attachments %}
+      <tr><td><a href="/cases/{{ case.case_id }}/attachments/{{ a.attachment_id }}">{{ a.filename }}</a></td>
+          <td>{{ a.source|replace("_", " ") }}</td><td>{{ a.bytes }} B</td><td><code>{{ a.sha256[:16] }}</code></td>
+          <td>{{ a.added_at[:19] }} by {{ a.added_by }}</td></tr>
+    {% endfor %}</tbody>
+  </table></div>
+</section>
+{% endif %}
+{% endblock %}

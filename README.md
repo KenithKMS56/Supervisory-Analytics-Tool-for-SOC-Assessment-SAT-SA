@@ -39,7 +39,7 @@ Unlike generic dashboards or black-box machine-learning prototypes, SAT-SA is bu
 4. **Columnar Analytics, Measured at Scale:**
    DuckDB over Parquet, no database server. On one 4-core / 8-thread laptop (AMD Ryzen 5 7235HS, 23.7 GB RAM) with uniform synthetic data, 5,000,000 alerts (21.4M rows) took **46.6 s to ingest** (5.7 GB peak memory) and **124 s to assess** (3.9 GB peak; assessment time varies widely between runs), recorded 2026-10-02 in [`docs/benchmarks.md`](docs/benchmarks.md). A single in-memory aggregation query is much faster than that (7.6M rows/s at 1M rows, `satsa benchmark`), but scan speed is not end-to-end time.
 5. **Cognitive Bias Mitigation (Blinded Review Studio):**
-   Includes a double-blind supervisory mode that presents raw operational metrics without showing pre-calculated risk scores, helping examiners reach unbiased conclusions before revealing inter-rater concordance.
+   Includes assigned blind-review tasks that present raw operational metrics without pre-calculated risk scores, so examiners reach their own conclusion before the system's assessment and the agreement score are revealed.
 6. **Admin Activity Feed (Operator Session Monitor):**
    The NCIIPC Admin Portal shows what SAT-SA's *own operators* are doing -- sign-ins, report downloads, assessment runs, account blocks -- via an admin-only WebSocket (`/ws/activity`) with a polling fallback, plus instant session revocation. This monitors the tool's internal users; it does **not** collect or monitor any CSE security data (SAT-SA only assesses periodic batch submissions, after the fact).
 
@@ -114,24 +114,27 @@ The application provides a fully server-rendered, responsive web interface:
 3. **National Alert Explorer (`/alerts`)**:
    - Server-side paginated browser of submitted alert records (25 records/page).
    - Cross-filtering by entity, severity, disposition, and search query with live duration tracking.
-4. **Blinded Review Studio (`/blind-review`)**:
-   - Cognitive debiasing workspace: presents raw empirical metrics (MTTR, SOAR volume, true-positive rates) without scores.
-   - Allows examiners to formulate independent assessments before revealing the Inter-Rater Concordance Matrix.
-5. **Stratified Supervisory Review Queue (`/queue`)**:
+4. **Blind Review (`/blind-review`)**:
+   - An analyst draws a seeded sample of flagged, control and random entities from a run and assigns it to an examiner.
+   - The examiner judges each task from raw operational signals; scores, findings and the reason for selection are served only after submission and an explicit, recorded reveal ([docs/examiner_workflow.md](docs/examiner_workflow.md)).
+5. **Supervisory Cases (`/cases`)**:
+   - One case per concern (entity x rule), opened from a finding: assignment, explanation request and offline response package, decision, second-examiner review and adjudication, corrective action, and verification on next-period evidence.
+   - Immutable history with superseding decisions; concurrent edits are detected. A confirmed concern is not a notice: SAT-SA issues and sends nothing.
+6. **Stratified Supervisory Review Queue (`/queue`)**:
    - Per-entity review queue: records cited by findings (up to 70% of the queue size) plus a severity-stratified random control sample.
-   - Examiner disposition logging (`Confirmed`, `Not an Issue`, `Needs More Data`) with persistent record keeping.
-6. **Regulatory Rules Catalog (`/rules`)**:
+   - Examiner disposition logging (`Confirmed concern`, `Marked as justified`, `More data needed`) with persistent record keeping.
+7. **Regulatory Rules Catalog (`/rules`)**:
    - Comprehensive interactive directory of all 20 detection rules (EG01–EG12 & NS01–NS08).
    - Filter by rule category, capability domain, and severity with full mathematical logic definitions.
-7. **Rule Calibration & Studio (`/tuning`)**:
+8. **Rule Calibration & Studio (`/tuning`)**:
    - Live threshold tuning sliders for parameters like Fast Closure Threshold ($s$) or Max Inactivity Days.
    - Real-time SHA-256 configuration hash calculation and signed rule-pack export/import (`.tar.gz`).
-8. **Entity Deep-Dive Profile (`/entity/{entity_id}`)**:
+9. **Entity Deep-Dive Profile (`/entity/{entity_id}`)**:
    - Radar capability chart contrasting the entity against the national peer median.
    - Self-declared vs. empirically computed KPI reconciliation tables.
-9. **Transparent Finding Card (`/finding/{finding_id}`)**:
+10. **Transparent Finding Card (`/finding/{finding_id}`)**:
    - Full explainability card displaying rule rationale, exact parameter values, benign explanations, a suggested examiner check (what to verify or request from the entity), and evidentiary drill-down tables.
-10. **Audit Trail & Cryptographic Verification (`/audit`)**:
+11. **Audit Trail & Cryptographic Verification (`/audit`)**:
     - Live verification of the tamper-evident audit hash chain (SHA3-256; legacy SHA-256 entries still verify).
     - Run history, configuration hashes, record counts, and execution metrics.
 
@@ -153,8 +156,9 @@ SAT-SA follows the operating model of real regulators: one person operates the p
               ▼
   2. NCIIPC EXAMINER (decision maker)
      • Portfolio heatmap, entity radar vs peer median, plain-language findings
-     • Review queue: Escalate to Statutory Notice / Mark as Justified / Request CSE Explanation
-     • Blinded review studio; one-click Executive Regulatory Dossier (PDF)
+     • Review queue: Confirm concern / Mark as justified / Needs more data
+     • Supervisory cases (/cases): request explanations, decide, require and verify remediation
+     • Assigned blind-review tasks; one-click Executive Regulatory Dossier (PDF)
 ```
 
 | | Analyst | Examiner |
@@ -162,7 +166,9 @@ SAT-SA follows the operating model of real regulators: one person operates the p
 | Portfolio, entity profiles, findings, PDF/HTML dossiers | ✔ | ✔ |
 | Upload & ingest, assessment runs, rule tuning & rule packs | ✔ | ✘ (403) |
 | Alert explorer, data quality, runs & audit ledger, raw CSV exports | ✔ | ✘ (403) |
-| Review-queue decisions and blind-review verdicts | ✘ (403) | ✔ |
+| Review-queue decisions, case actions, blind-review verdicts | ✘ (403) | ✔ |
+| Read supervisory cases | ✔ | ✔ |
+| Draw and assign blind-review samples | ✔ | ✘ (403) |
 
 Separation of duties is deliberate: whoever tunes the rules can't also sign off the findings. Every other role, including NCIIPC administrators and CSE-scoped accounts, is refused at SAT-SA's login.
 

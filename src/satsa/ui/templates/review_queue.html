@@ -45,7 +45,7 @@
     <div class="stat-desc">Zero-bias baseline verification</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">Escalated to Statutory Notice</div>
+    <div class="stat-label">Confirmed concern</div>
     <div class="stat-value" style="color: var(--risk-low);">{{ confirmed_count }}</div>
     <div class="stat-desc">Examiner-substantiated operational defects</div>
   </div>
@@ -56,6 +56,11 @@
     <span>Examination Queue Records</span>
     <span style="font-size: 0.85rem; color: var(--text-secondary);">Review samples to confirm execution gaps or negative space</span>
   </div>
+  <p class="queue-disposition-note" style="font-size: 0.82rem; color: var(--text-secondary); margin: 0 0 1rem;">
+    A disposition here is the examiner's triage of one record. Confirming a concern issues no notice and
+    sends nothing: to request an explanation, decide and follow remediation, open a
+    <a href="/cases">supervisory case</a> from the finding's evidence card.
+  </p>
 
   {# One queue per disposition. A GET form, so the page updates in place (base.html). #}
   <form method="get" action="/queue" class="queue-filter" role="group" aria-label="Filter the queue by examiner disposition">
@@ -122,11 +127,11 @@
           </td>
           <td>
             {% if item.examiner_status == 'confirmed' %}
-              <span class="badge badge-crit">Escalated to Statutory Notice</span>
+              <span class="badge badge-crit">Confirmed concern</span>
             {% elif item.examiner_status == 'not_an_issue' %}
               <span class="badge badge-low">Marked as Justified</span>
             {% elif item.examiner_status == 'needs_more_data' %}
-              <span class="badge badge-mod">CSE Explanation Requested</span>
+              <span class="badge badge-mod">More data needed</span>
             {% else %}
               <span class="badge" style="background-color: var(--bg-hover); color: var(--text-muted);">Pending Review</span>
             {% endif %}
@@ -138,9 +143,9 @@
               <input type="hidden" name="queue_id" value="{{ item.queue_id }}">
               <input type="hidden" name="return_status" value="{{ status_filter }}">
               <select name="status" class="form-control" style="padding: 0.35rem 0.5rem; font-size: 0.78rem; width: 215px; min-width: 215px; flex-shrink: 0;">
-                <option value="confirmed" {% if item.examiner_status == 'confirmed' %}selected{% endif %}>Escalate to Statutory Notice</option>
+                <option value="confirmed" {% if item.examiner_status == 'confirmed' %}selected{% endif %}>Confirm concern</option>
                 <option value="not_an_issue" {% if item.examiner_status == 'not_an_issue' %}selected{% endif %}>Mark as Justified</option>
-                <option value="needs_more_data" {% if item.examiner_status == 'needs_more_data' %}selected{% endif %}>Request CSE Explanation</option>
+                <option value="needs_more_data" {% if item.examiner_status == 'needs_more_data' %}selected{% endif %}>Needs more data</option>
               </select>
               <button type="submit" class="btn btn-secondary" style="padding: 0.35rem 0.75rem; font-size: 0.78rem; font-weight: 600; min-width: 55px; flex-shrink: 0; justify-content: center;">Save</button>
             </form>

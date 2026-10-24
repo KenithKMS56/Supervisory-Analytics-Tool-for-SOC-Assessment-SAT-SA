@@ -163,6 +163,36 @@
   </ul>
 </section>
 
+<section id="supervisory-case" class="card">
+  <div class="card-title"><span>Supervisory case</span></div>
+  {% set case_ident = get_identity(request) %}
+  {% if case and case.state != 'closed' %}
+    <p>This concern ({{ card.entity_id }}, {{ card.rule_id }}) is tracked in case
+      <a href="/cases/{{ case.case_id }}"><code>{{ case.case_id }}</code></a>:
+      <strong>{{ case_state_labels[case.state] }}</strong>{% if case.owner %}, owner {{ case.owner }}{% endif %}.</p>
+    {% if case_ident and is_examiner(case_ident.role) and case.finding_id != card.finding_id %}
+    <form method="post" action="/cases" style="margin: 0;">
+      <input type="hidden" name="finding_id" value="{{ card.finding_id }}">
+      <button type="submit" class="btn btn-secondary">Link this finding to the case</button>
+    </form>
+    {% endif %}
+  {% else %}
+    {% if case %}<p>The last case for this concern, <a href="/cases/{{ case.case_id }}"><code>{{ case.case_id }}</code></a>, is closed. A new case links back to it.</p>
+    {% else %}<p>No supervisory case is open for this concern.</p>{% endif %}
+    {% if case_ident and is_examiner(case_ident.role) %}
+    <form method="post" action="/cases" style="display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: flex-end; margin: 0;">
+      <input type="hidden" name="finding_id" value="{{ card.finding_id }}">
+      <label style="flex: 1 1 280px;">Why open a case (optional)
+        <input type="text" name="rationale" class="form-control" maxlength="5000">
+      </label>
+      <button type="submit" class="btn btn-primary">Open supervisory case</button>
+    </form>
+    {% else %}
+    <p style="color: var(--text-muted); font-size: 0.85rem;">Cases are opened and worked by examiners.</p>
+    {% endif %}
+  {% endif %}
+</section>
+
 <section id="next-step" class="card">
   <div class="card-title">
     <span>5. Next step</span>
