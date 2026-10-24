@@ -130,6 +130,16 @@ class ReportGenerator:
         self.duckdb_store = duckdb_store
         self.sqlite_store = sqlite_store
 
+    def _brand_title(self, title: str) -> str:
+        """A report's top line: the configured organisation, if any (satsa.deployment.branding),
+        then the title. Escaped for ReportLab's markup."""
+        from xml.sax.saxutils import escape as xml_escape
+
+        from satsa.deployment import branding
+
+        org = branding(self.sqlite_store)["org"]
+        return xml_escape(f"{org.upper()}  |  {title}" if org else title)
+
     def generate_entity_html(self, entity_id: str, output_path: Path | str, run_id: str | None = None) -> Path:
         """Self-contained HTML report of one entity in one run (default: the latest run).
 
@@ -263,7 +273,7 @@ class ReportGenerator:
   </div>
 
   <div class="card">
-    <h3>NCIIPC 8-Domain Capability Scores</h3>
+    <h3>8-Domain Capability Scores</h3>
     <table>
       <thead><tr><th>Capability Domain</th><th>Supervisory Risk Score</th><th>Status</th></tr></thead>
       <tbody>
@@ -500,7 +510,7 @@ class ReportGenerator:
         if domains:
             story += section(
                 "Capability domains",
-                "One bar per NCIIPC capability domain; a longer bar means more supervisory "
+                "One bar per capability domain; a longer bar means more supervisory "
                 "concern in that area.",
             )
             story.append(
@@ -840,7 +850,7 @@ class ReportGenerator:
             [300, CONTENT_W - 300],
         )
         return [
-            Paragraph("NCIIPC  |  SUPERVISORY PORTFOLIO REPORT", st["tech_title"]),
+            Paragraph(self._brand_title("SUPERVISORY PORTFOLIO REPORT"), st["tech_title"]),
             Spacer(1, 4),
             Paragraph("National SOC Supervisory Portfolio Report", st["h1"]),
             Paragraph(

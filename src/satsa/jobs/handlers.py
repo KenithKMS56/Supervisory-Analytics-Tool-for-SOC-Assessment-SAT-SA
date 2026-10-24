@@ -42,10 +42,15 @@ def run_id_for(job_id: str) -> str:
 
 
 def _assess(ctx: JobContext, period: str | None, entity_label: str) -> dict[str, Any]:
+    from satsa.jobs.worker import ASSESS_BYTES_PER_ROW, MEMORY_BASE_BYTES
     from satsa.scoring.runner import AssessmentRunner
+    from satsa.store.catalog import published_rows
     from satsa.store.duckdb import DuckDBStore
 
     actor, role = ctx.job["created_by"], ctx.job["params"].get("role", "")
+    rows = published_rows(ctx.data_dir)
+    ctx.preflight_memory(MEMORY_BASE_BYTES + ASSESS_BYTES_PER_ROW * rows,
+                         f"an assessment of {rows:,} stored rows")
     ctx.stage("assessing")
     ctx.store.record_live_event(
         "ASSESSMENT_STARTED", actor=actor, role=role, entity_id=entity_label,
@@ -84,6 +89,14 @@ def describe_ingestion(res: dict[str, Any], target_entity: str | None) -> str:
     status = res.get("status")
     if status == "empty":
         return "Warning: No supported CSV, TSV, Excel (.xlsx) or JSON files could be parsed from upload."
+    if status == "preview":
+        rows = sum(res.get("row_counts", {}).values())
+        return (
+            f"Checked only: nothing was published or recorded. {rows} row(s) would be stored; "
+            f"{len(res.get('dq_issue_list') or [])} data-quality issue(s). The tables below say what each file "
+            "would give and which rules the entity could then be assessed on. Upload again without "
+            "\"Check only\" to submit it."
+        )
     if status == "held":
         held_why = "; ".join(
             f["summary"] for f in res.get("file_coverage") or [] if f["status"] not in ("ingested", "empty")
@@ -135,6 +148,8 @@ def _earlier_attempt_batch(ctx: JobContext) -> dict[str, Any] | None:
     catalog = Catalog(ctx.data_dir)
     try:
         for attempt in range(1, int(ctx.job["attempts"])):
+            if ctx.job["params"].get("preview"):
+                break  # a check-only import publishes nothing; it simply runs again
             batch = catalog.batch(f"BATCH-{ctx.job['job_id']}-a{attempt}")
             if batch is not None and batch["state"] in ("published", "held"):
                 return batch
@@ -154,6 +169,7 @@ def import_files(ctx: JobContext) -> dict[str, Any]:
     period = params.get("period")
     source = job_dir(ctx.data_dir, ctx.job["job_id"]) / IMPORT_INPUT
 
+    preview = bool(params.get("preview"))
     earlier = _earlier_attempt_batch(ctx)
     if earlier is not None:
         ctx.stage(f"continuing from batch {earlier['batch_id']} of an earlier attempt")
@@ -162,7 +178,12 @@ def import_files(ctx: JobContext) -> dict[str, Any]:
     else:
         if not source.is_dir():
             raise JobFailed("the uploaded files are no longer on disk (data/jobs/<job>/input was removed)")
-        ctx.preflight_disk(sum(f.stat().st_size for f in source.rglob("*") if f.is_file()))
+        from satsa.jobs.worker import IMPORT_BYTES_PER_INPUT_BYTE, MEMORY_BASE_BYTES
+
+        input_bytes = sum(f.stat().st_size for f in source.rglob("*") if f.is_file())
+        ctx.preflight_disk(input_bytes)
+        ctx.preflight_memory(MEMORY_BASE_BYTES + IMPORT_BYTES_PER_INPUT_BYTE * input_bytes,
+                             f"an import of {input_bytes // (1024 * 1024)} MiB")
         ctx.stage("reading and validating files")
         with tempfile.TemporaryDirectory(dir=job_dir(ctx.data_dir, ctx.job["job_id"])) as tmp:
             work = Path(tmp)
@@ -190,8 +211,8 @@ def import_files(ctx: JobContext) -> dict[str, Any]:
                     period=period,
                     transport="upload",
                     submitted_by=ctx.job["created_by"],
-                    policy="if_clean",
-                    batch_id=f"BATCH-{ctx.job['job_id']}-a{ctx.job['attempts']}",
+                    policy="preview" if preview else "if_clean",
+                    batch_id=f"BATCH-{ctx.job['job_id']}-{'p' if preview else 'a'}{ctx.job['attempts']}",
                 )
             finally:
                 duck.close()
@@ -206,7 +227,20 @@ def import_files(ctx: JobContext) -> dict[str, Any]:
         "entities": res.get("entities", []),
         "message": message,
     }
-    if res.get("status") == "success" and params.get("assess", True):
+    if res.get("status") == "preview":
+        coverage_by_entity: dict[str, Any] = res.get("rule_coverage") or {}
+        cov: dict[str, Any] = coverage_by_entity.get(target or "") or next(iter(coverage_by_entity.values()), {})
+        result["preview"] = {
+            "files": res.get("file_coverage", []),
+            "assessed": sorted(cov.get("assessed", {})),
+            "not_assessed": cov.get("not_assessed", {}),
+            "degraded": cov.get("degraded", {}),
+            "issues": (res.get("dq_issue_list") or [])[:50],
+            "issue_count": len(res.get("dq_issue_list") or []),
+            "unmapped_files": res.get("unmapped_files", []),
+            "invalid_timestamps": res.get("invalid_timestamps", {}),
+        }
+    elif res.get("status") == "success" and params.get("assess", True):
         assessed = _assess(ctx, period or params.get("default_period"), target or "PORTFOLIO")
         result.update(assessed)
         result["message"] = f"{message} | Assessment {assessed['run_id']}: {assessed['findings_count']} findings flagged."

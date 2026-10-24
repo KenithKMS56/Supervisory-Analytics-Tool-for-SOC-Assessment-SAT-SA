@@ -11,6 +11,7 @@ import re
 import shutil
 import statistics
 import tempfile
+import urllib.parse
 import zipfile
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
@@ -41,6 +42,8 @@ from satsa.auth.session import (
     require_role,
 )
 from satsa.bundle.rules_signer import RulePackKeyError, RulePackSigner
+from satsa.cases.workflow import CaseError
+from satsa.config_cache import load_yaml
 from satsa.csv_safe import SafeWriter
 from satsa.explain.finding_card import WHY_IT_MATTERS, FindingCard
 from satsa.ingest.pipeline import IngestionPipeline
@@ -54,6 +57,7 @@ from satsa.peers.anomaly_scan import format_value as format_metric_value
 from satsa.peers.grouping import PeerResolver
 from satsa.report.generator import ReportGenerator, ReportNotFoundError, coverage_sentence
 from satsa.report.naming import entity_pdf_name, finding_pdf_name, portfolio_pdf_name
+from satsa.rules import lifecycle
 from satsa.rules.negative_space import REVIEW_PERIOD_MONTHS_RANGE
 from satsa.rules.registry import RuleRegistry
 from satsa.scoring.control_priorities import rank_controls, rank_processes
@@ -65,11 +69,12 @@ from satsa.security import (
     is_valid_finding_id,
     is_valid_run_id,
     safe_join,
+    safe_local_path,
 )
 from satsa.store.catalog import PublicationError
 from satsa.store.duckdb import DuckDBStore, analytics_cache
 from satsa.store.sqlite import SQLiteStore, utc_now_iso
-from satsa.web_security import CROSS_SITE_REFUSED, cross_site_reason
+from satsa.web_security import CROSS_SITE_REFUSED, SecurityMiddleware, cross_site_reason
 
 # Roles permitted for each protected action category, matching
 # docs/functional_design.md Section 2 (User Personas & Permissions). SAT-SA has
@@ -110,7 +115,7 @@ async def _lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title="SAT-SA Supervisory API",
-    description="Supervisory Analytics Tool for SOC Assessment (NCIIPC)",
+    description="Supervisory Analytics Tool for SOC Assessment",
     version="0.1.0",
     # /docs is served below from local Swagger UI assets (B07): FastAPI's default page loads them
     # from a CDN, which leaves it blank on an air-gapped network.
@@ -151,6 +156,16 @@ def _deployment_settings(_request: Request | None = None) -> dict[str, str]:
 templates.env.globals["deployment"] = _deployment_settings
 
 
+def _brand() -> dict[str, str]:
+    """The configured organisation wording for page chrome (satsa.deployment.branding)."""
+    from satsa.deployment import branding
+
+    return branding(values=_deployment_settings())
+
+
+templates.env.globals["brand"] = _brand
+
+
 # Paths anyone may reach without a session. Everything else requires one; the
 # route's own dependency then enforces the specific role (see the RBAC table
 # in tests/test_rbac_matrix.py, which must list every route).
@@ -164,7 +179,7 @@ PUBLIC_PREFIXES = ("/static/",)
 NON_PAGE_PREFIXES = ("/api/", "/reports/", "/templates/", "/tuning/export-pack", "/openapi.json")
 NOT_SATSA_OPERATOR = (
     "This account is not a SAT-SA operator account (analyst or examiner). "
-    "NCIIPC administrators use the Admin Portal at :8000."
+    "Administrators use the Admin Portal at :8000."
 )
 
 
@@ -400,6 +415,25 @@ async def refuse_cross_site_requests(request: Request, call_next):
     return await call_next(request)
 
 
+# Characters an uploaded file's stored name may not contain.
+UNSAFE_FILE_CHARS = re.compile(r"[^A-Za-z0-9._ -]")
+WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                          *(f"LPT{i}" for i in range(1, 10))}
+
+# Multipart framing around the uploaded files of one /upload request.
+UPLOAD_FORM_SLACK_BYTES = 1024 * 1024
+
+
+def _request_body_limit(path: str) -> int:
+    """The most bytes a request to `path` may send: the upload limit for file uploads, the API
+    body limit for everything else (read at request time, so the environment settings apply)."""
+    return MAX_UPLOAD_BYTES + UPLOAD_FORM_SLACK_BYTES if path == "/upload" else MAX_API_BODY_BYTES
+
+
+# Outermost: security headers on every response, and request bodies capped as they arrive.
+app.add_middleware(SecurityMiddleware, limit_for=lambda path: _request_body_limit(path))
+
+
 def require_valid_entity_id(entity_id: str) -> str:
     """Reject an externally supplied entity_id that fails satsa.security.ENTITY_ID_RE (HTTP 400)."""
     if not is_valid_entity_id(entity_id):
@@ -600,7 +634,7 @@ async def handle_login(
     from satsa.auth.identities import LOGIN_LOCKOUT_MINUTES, LOGIN_MAX_FAILURES, verify_passphrase
 
     uname = username.strip()
-    safe_next = next if (next.startswith("/") and not next.startswith("//")) else "/portfolio"
+    safe_next = safe_local_path(next)
     # One generic message for unknown user, wrong passphrase AND lockout, so the
     # response never reveals whether a username exists or is locked.
     generic_error = RedirectResponse(
@@ -637,7 +671,7 @@ async def handle_login(
         )
         sqlite_store.close()
         err_msg = urllib.parse.quote_plus(
-            "Access Denied: This account has been blocked. Please contact an NCIIPC administrator."
+            "Access Denied: This account has been blocked. Please contact your deployment administrator."
         )
         return RedirectResponse(
             url=f"/login?error={err_msg}&blocked=1&next={safe_next}", status_code=303
@@ -920,6 +954,10 @@ async def view_portfolio(
             y_idx = heatmap_entities.index(r["entity_id"])
             x_idx = domains.index(r["domain"])
             heatmap_data.append([x_idx, y_idx, round(r["score"], 1)])
+    # The same scores as a table, for screen readers and anyone who cannot read the colours.
+    cells = {(x, y): v for x, y, v in heatmap_data}
+    heatmap_table = [{"entity_id": eid, "scores": [cells.get((x, y)) for x in range(len(domains))]}
+                     for y, eid in enumerate(heatmap_entities)]
 
     # Execution Gaps vs Negative Space breakdown
     cur.execute(
@@ -1051,6 +1089,7 @@ async def view_portfolio(
             "heatmap_entities": heatmap_entities,
             "heatmap_domains": domains,
             "heatmap_data": heatmap_data,
+            "heatmap_table": heatmap_table,
             "systemic_findings": systemic_findings,
             "priority_controls": priority_controls,
             "priority_processes": priority_processes,
@@ -2419,9 +2458,11 @@ def handle_upload(
     files: list[UploadFile] = File(...),
     target_entity: Annotated[str, Form()] = "",
     period: Annotated[str, Form()] = "",
+    preview: Annotated[bool, Form()] = False,
     identity: Identity = Depends(require_role(*INGEST_RUN_ROLES)),
 ) -> Response:
-    """Receive a file submission and queue it as an import job (satsa.jobs).
+    """Receive a file submission and queue it as an import job (satsa.jobs). With `preview`
+    ("Check only") the job reads, maps and validates the files and reports, publishing nothing.
 
     The request only checks the form, the upload size and archive limits, and saves the files
     under data/jobs/<job>/input. The worker then validates and ingests them through the
@@ -2449,8 +2490,11 @@ def handle_upload(
         budget = MAX_UPLOAD_BYTES
         for uf in files:
             # Only the base name of the client-supplied filename is used, so a
-            # name like "../../x.csv" cannot write outside the job's directory.
-            safe_name = Path((uf.filename or "").replace("\\", "/")).name or "upload.csv"
+            # name like "../../x.csv" cannot write outside the job's directory, and characters
+            # outside a portable set (Windows refuses <>:"|?* in a file name) become "_".
+            safe_name = UNSAFE_FILE_CHARS.sub("_", Path((uf.filename or "").replace("\\", "/")).name).strip(" .")
+            if not safe_name or safe_name.split(".")[0].upper() in WINDOWS_RESERVED_NAMES:
+                safe_name = f"upload-{safe_name}" if safe_name else "upload.csv"
             if safe_name in names:
                 safe_name = f"{len(names)}-{safe_name}"
             names.append(safe_name)
@@ -2468,8 +2512,10 @@ def handle_upload(
 
     sqlite_store = get_sqlite_store()
     try:
-        params = {"target_entity": target_clean, "period": period_clean, "files": names,
-                  "default_period": _latest_period(sqlite_store)}
+        params: dict[str, Any] = {"target_entity": target_clean, "period": period_clean, "files": names,
+                                  "default_period": _latest_period(sqlite_store)}
+        if preview:
+            params["preview"] = True
         job = JobQueue(sqlite_store).enqueue(
             "import", {**params, "role": identity.role}, identity.username,
             input_fingerprint=fingerprint("import", params, extra=digest.hexdigest()), job_id=job_id,
@@ -2688,11 +2734,11 @@ MAPPINGS_DIR = Path("config/mappings")
 def _load_rules_config() -> dict[str, Any]:
     if not RULES_CONFIG_PATH.exists():
         return {"rules": {}}
-    return yaml.safe_load(RULES_CONFIG_PATH.read_text(encoding="utf-8")) or {"rules": {}}
+    return load_yaml(RULES_CONFIG_PATH) or {"rules": {}}
 
 
-def _write_rules_config(cfg: dict[str, Any]) -> None:
-    """Write config/rules.yaml, preserving its leading comment header."""
+def _render_rules_config(cfg: dict[str, Any]) -> str:
+    """The text of config/rules.yaml for `cfg`, keeping the file's leading comment header."""
     header = ""
     if RULES_CONFIG_PATH.exists():
         lines = RULES_CONFIG_PATH.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -2700,9 +2746,7 @@ def _write_rules_config(cfg: dict[str, Any]) -> None:
             if not line.startswith("#"):
                 break
             header += line
-    RULES_CONFIG_PATH.write_text(
-        header + yaml.dump(cfg, sort_keys=False, width=100), encoding="utf-8"
-    )
+    return header + yaml.dump(cfg, sort_keys=False, width=100)
 
 
 def _tunable_param_rows(rules_cfg: dict[str, Any]) -> list[dict[str, Any]]:
@@ -2716,12 +2760,34 @@ def _tunable_param_rows(rules_cfg: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+@app.get("/rule-versions", response_class=HTMLResponse, dependencies=[Depends(require_role(*SUPERVISORY_READ_ROLES))])
+async def view_rule_versions(request: Request, message: str = "") -> Response:
+    """Rule configuration versions, for examiners and analysts (approve / reject; analysts also
+    put approved versions in force)."""
+    sqlite_store = get_sqlite_store()
+    try:
+        rules_drift = lifecycle.drift(sqlite_store, RULES_CONFIG_PATH)
+        lifecycle.active(sqlite_store, RULES_CONFIG_PATH)
+        rule_versions = lifecycle.versions(sqlite_store)
+    finally:
+        sqlite_store.close()
+    return templates.TemplateResponse(request=request, name="rule_versions.html", context={
+        "active_tab": "tuning", "message": message, "rule_versions": rule_versions, "rules_drift": rules_drift,
+        "viewer": get_current_identity(request),
+    })
+
+
 @app.get("/tuning", response_class=HTMLResponse, dependencies=[Depends(require_role(*ANALYST_ROLES))])
 async def view_tuning(request: Request, message: str = "") -> Response:
     rules_cfg = _load_rules_config()
     sqlite_store = get_sqlite_store()
-    selected_period = _latest_period(sqlite_store)
-    sqlite_store.close()
+    try:
+        selected_period = _latest_period(sqlite_store)
+        rules_drift = lifecycle.drift(sqlite_store, RULES_CONFIG_PATH)
+        lifecycle.active(sqlite_store, RULES_CONFIG_PATH)
+        rule_versions = lifecycle.versions(sqlite_store)
+    finally:
+        sqlite_store.close()
     config_hash = (
         hashlib.sha256(RULES_CONFIG_PATH.read_bytes()).hexdigest()[:16]
         if RULES_CONFIG_PATH.exists()
@@ -2739,6 +2805,9 @@ async def view_tuning(request: Request, message: str = "") -> Response:
             "config_hash": config_hash,
             "preview": None,
             "selected_period": selected_period,
+            "rule_versions": rule_versions,
+            "rules_drift": rules_drift,
+            "viewer": get_current_identity(request),
         },
     )
 
@@ -2758,15 +2827,32 @@ async def handle_tuning_save(
     form = await request.form()
     cfg, changes = _apply_tuning_form(form, _load_rules_config())
 
-    if changes:
-        _write_rules_config(cfg)
-
-    # Re-evaluate with the (possibly) updated thresholds, for the selected period, in the worker
+    # A change is a version (satsa.rules.lifecycle): a draft that another person approves before
+    # it is put in force. A demonstration deployment puts it in force at once, and says so.
+    demo = _deployment_settings().get("mode") == "demo"
     sqlite_store = get_sqlite_store()
     try:
         period = _selected_period(form, sqlite_store)
+        version = None
+        if changes:
+            try:
+                change_list = [{"field": field.replace("__", "."), "old": c["old"], "new": c["new"]}
+                               for field, c in changes.items()]
+                version = lifecycle.propose(sqlite_store, _render_rules_config(cfg), change_list,
+                                            identity.username, identity.role)
+                if demo:
+                    version = lifecycle.activate(sqlite_store, version["version_no"], identity.username,
+                                                 identity.role, RULES_CONFIG_PATH, demo=True)
+            except CaseError as exc:
+                raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
     finally:
         sqlite_store.close()
+    if version is not None and version["state"] == "draft":
+        msg = (f"Draft version {version['version_no']} proposed ({len(changes)} change(s)). Another analyst or "
+               "an examiner must approve it, then an analyst puts it in force; nothing was re-assessed yet.")
+        return RedirectResponse(url=f"/tuning?message={urllib.parse.quote_plus(msg)}#versions", status_code=303)
+
+    # Re-evaluate with the (possibly) updated thresholds, for the selected period, in the worker
     job = enqueue_assessment(period, identity, "rule parameters saved")
     sqlite_store = get_sqlite_store()
     try:
@@ -2782,7 +2868,46 @@ async def handle_tuning_save(
         f"Parameters updated! Period: {period} | Re-assessment queued as job {job['job_id']} "
         "(see Jobs for its findings)"
     )
+    if version is not None:
+        msg += f" | Version {version['version_no']}: {lifecycle.DEMO_ACTIVATION_NOTE}"
     return RedirectResponse(url=f"/tuning?message={msg}", status_code=303)
+
+
+@app.post("/tuning/versions/{version_no}/{decision}")
+async def decide_rule_version(
+    version_no: int,
+    decision: str,
+    note: Annotated[str, Form()] = "",
+    period: Annotated[str, Form()] = "",
+    identity: Identity = Depends(require_role(*SUPERVISORY_READ_ROLES)),
+) -> Response:
+    """approve / reject (an analyst or examiner other than the author) or activate (an analyst;
+    queues a re-assessment of the latest period) one rule configuration version."""
+    if decision not in ("approve", "reject", "activate"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    sqlite_store = get_sqlite_store()
+    try:
+        if decision == "approve":
+            lifecycle.approve(sqlite_store, version_no, identity.username, identity.role, note)
+            msg = f"Version {version_no} approved. An analyst can now put it in force."
+        elif decision == "reject":
+            lifecycle.reject(sqlite_store, version_no, identity.username, identity.role, note)
+            msg = f"Version {version_no} rejected."
+        else:
+            # The period is checked before anything changes, so a bad one cannot leave a version
+            # in force with no re-assessment queued.
+            chosen = period.strip() or _latest_period(sqlite_store)
+            if period.strip() and not re.match(PERIOD_RE, chosen):
+                raise HTTPException(status_code=422, detail="period must look like 2026-Q1, 2026-H1 or 2026-03")
+            lifecycle.activate(sqlite_store, version_no, identity.username, identity.role, RULES_CONFIG_PATH)
+            job = enqueue_assessment(chosen, identity, f"rule version {version_no} put in force")
+            msg = f"Version {version_no} is in force. Re-assessment of {chosen} queued as job {job['job_id']}."
+    except CaseError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    finally:
+        sqlite_store.close()
+    page = "/tuning" if is_analyst(identity.role) else "/rule-versions"
+    return RedirectResponse(url=f"{page}?message={urllib.parse.quote_plus(msg)}#versions", status_code=303)
 
 
 @app.post("/tuning/preview", response_class=HTMLResponse)
@@ -2819,6 +2944,9 @@ async def handle_tuning_preview(
         before = {(r["entity_id"], r["rule_id"]) for r in cur.fetchall()}
         cur.execute("SELECT entity_id, risk_band FROM entity_scores WHERE run_id = ?", (baseline_run,))
         bands_before = {r["entity_id"]: r["risk_band"] for r in cur.fetchall()}
+        # Read-only: a preview records nothing, not even a configuration edited outside the lifecycle.
+        rule_versions = lifecycle.versions(sqlite_store)
+        rules_drift = lifecycle.drift(sqlite_store, RULES_CONFIG_PATH)
     finally:
         duckdb_store.close()
         sqlite_store.close()
@@ -2852,6 +2980,9 @@ async def handle_tuning_preview(
             else "N/A",
             "preview": preview,
             "selected_period": period,
+            "rule_versions": rule_versions,
+            "rules_drift": rules_drift,
+            "viewer": get_current_identity(request),
         },
     )
 
@@ -2942,13 +3073,18 @@ def handle_import_pack(
         tmp_path = Path(tmp.name)
 
     try:
+        lifecycle.active(sqlite_store, RULES_CONFIG_PATH)  # the configuration before the pack is on record
         res = signer.import_rule_pack(
             tmp_path,
             target_config_dir="config",
             sqlite_store=sqlite_store,
             actor=identity.username,
         )
+        recorded = lifecycle.record_signed_pack(sqlite_store, RULES_CONFIG_PATH, identity.username,
+                                                res.get("version"), res.get("signature", ""))
         msg = f"Rule pack verified and installed! Version: {res.get('version')} | Files: {res.get('files_imported')}"
+        if recorded is not None:
+            msg += f" | Rule configuration version {recorded['version_no']} (approved by the pack's signature)"
     except (ValueError, KeyError, OSError, RuntimeError) as e:
         msg = f"Failed to import rule pack: {e}"
     finally:
@@ -3138,7 +3274,7 @@ async def download_portfolio_html(request: Request, run_id: str | None = None) -
     return _built_report(
         request, "portfolio_html", run_id,
         lambda rep, path, rid: rep.generate_portfolio_html(path, rid),
-        lambda rid: f"NCIIPC_Portfolio_Supervisory_Report_{rid}.html", "text/html",
+        lambda rid: f"Portfolio_Supervisory_Report_{rid}.html", "text/html",
     )
 
 

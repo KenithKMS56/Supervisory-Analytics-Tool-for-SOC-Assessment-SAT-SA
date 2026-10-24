@@ -30,7 +30,8 @@ curl -X POST http://127.0.0.1:8001/api/v1/submissions \
      -d @batch.json
 ```
 
-- A request body over `SATSA_MAX_API_BODY_MB` (default 64) gets `413`.
+- A request body over `SATSA_MAX_API_BODY_MB` (default 64) gets `413`, whether it declares its
+  length or is sent in chunks.
 - An invalid, expired or revoked credential gets `401`. This applies from its next request,
   because nothing is cached.
 - Validation, idempotency and overlap rules are those in `docs/data_contract.md`.

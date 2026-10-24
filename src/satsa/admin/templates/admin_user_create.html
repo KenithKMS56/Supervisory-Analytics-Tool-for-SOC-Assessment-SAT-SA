@@ -6,7 +6,7 @@
 <div class="page-header">
   <div class="page-title">
     <h2>Provision Authoritative Identity</h2>
-    <p>Configure user credentials, supervisory role, and organizational boundaries under NCIIPC oversight.</p>
+    <p>Configure user credentials, supervisory role, and organizational boundaries under {{ brand().authority }} oversight.</p>
   </div>
   <a href="/users" class="btn-admin btn-admin-secondary">
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -32,7 +32,7 @@
   <div class="card-header">
     <div>
       <h3>Identity Specification</h3>
-      <span style="font-size: 0.76rem; color: var(--admin-text-muted);">Authoritative credentials issued by NCIIPC administrative authority</span>
+      <span style="font-size: 0.76rem; color: var(--admin-text-muted);">Credentials issued by this deployment's administrators</span>
     </div>
     <span class="badge" style="background: var(--admin-surface-subtle); color: var(--accent-blue); border: 1px solid var(--admin-border); font-family: 'JetBrains Mono', monospace;">
       PBKDF2-HMAC-SHA256
@@ -71,7 +71,7 @@
             title="3 to 32 characters (letters, numbers, underscore, dash, dot)"
             autocomplete="off"
           >
-          <span class="form-helper">Canonical identifier used across SAT-SA (:8001) and NCIIPC Portal (:8000).</span>
+          <span class="form-helper">Canonical identifier used across SAT-SA (:8001) and the Administration Portal (:8000).</span>
         </div>
 
         <!-- Initial Passphrase -->
@@ -122,10 +122,10 @@
           </label>
           <select id="role" name="role" class="form-select" required onchange="handleRoleChange()">
             <option value="" disabled selected>-- Select Authoritative Role --</option>
-            <optgroup label="NCIIPC Supervisory Authorities (Cross-Entity Oversight)">
-              <option value="NCIIPC Super Administrator">NCIIPC Super Administrator (Admin Portal :8000 only &mdash; Provisioning &amp; Identity Control)</option>
-              <option value="NCIIPC Analyst">NCIIPC Analyst (SAT-SA Technical Operator &mdash; Ingestion, Calibration &amp; Assessment Runs)</option>
-              <option value="NCIIPC Examiner">NCIIPC Examiner (SAT-SA Decision Maker &mdash; Review Decisions &amp; Regulatory Dossiers)</option>
+            <optgroup label="Supervisory roles (cross-entity oversight)">
+              <option value="NCIIPC Super Administrator">{{ brand().prefix }}Super Administrator (Admin Portal :8000 only &mdash; Provisioning &amp; Identity Control)</option>
+              <option value="NCIIPC Analyst">{{ brand().prefix }}Analyst (SAT-SA Technical Operator &mdash; Ingestion, Calibration &amp; Assessment Runs)</option>
+              <option value="NCIIPC Examiner">{{ brand().prefix }}Examiner (SAT-SA Decision Maker &mdash; Review Decisions &amp; Regulatory Dossiers)</option>
             </optgroup>
             <optgroup label="Critical Sector Entity Scopes (Restricted Boundary)">
               <option value="CSE Administrator">CSE Administrator (Entity Administration &amp; SOC Oversight)</option>
@@ -140,7 +140,7 @@
         <!-- Admin Portal Access (derived from role; no separate grant) -->
         <div class="form-group">
           <label class="form-label">Control Portal Authorization</label>
-          <span class="form-helper">NCIIPC Control Portal access (:8000) is granted only by the NCIIPC Super Administrator role. It cannot be granted separately to other roles.</span>
+          <span class="form-helper">Administration Portal access (:8000) is granted only by the Super Administrator role. It cannot be granted separately to other roles.</span>
         </div>
       </div>
     </div>
@@ -166,7 +166,7 @@
             Organisation Scope
           </label>
           <select id="org_id" name="org_id" class="form-select" onchange="handleOrgChange()">
-            <option value="">-- National Oversight / Unscoped (NCIIPC) --</option>
+            <option value="">-- National oversight / unscoped --</option>
             {% for org in organisations %}
             <option value="{{ org.org_id }}" data-sector="{{ org.sector }}">
               {{ org.name }} ({{ org.org_id }}) &mdash; {{ org.sector }}
@@ -234,7 +234,7 @@
 <script>
 var allCSEs = [
   {% for cse in cses %}
-  { cse_id: "{{ cse.cse_id }}", org_id: "{{ cse.org_id }}", sector: "{{ cse.sector }}" },
+  { cse_id: {{ cse.cse_id | tojson }}, org_id: {{ cse.org_id | tojson }}, sector: {{ cse.sector | tojson }} },
   {% endfor %}
 ];
 

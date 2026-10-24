@@ -395,6 +395,14 @@ class BatchWriter:
         self.catalog._set_state(self.batch_id, "held", reason)
         self.held = True
 
+    def discard_preview(self) -> None:
+        """A checked-only submission (ingestion policy `preview`): its staged files are removed
+        and the batch is recorded as discarded. Nothing was ever visible to readers."""
+        if not self.published and not self.held:
+            self.catalog._discard_staging(self.batch_id)
+            self.catalog._set_state(self.batch_id, "discarded", "preview only: checked, never published")
+            self.held = True  # closing the block must not mark it failed
+
     def abort(self, reason: str) -> None:
         if not self.published and not self.held:
             self.catalog._discard_staging(self.batch_id)
@@ -773,6 +781,24 @@ class Catalog:
             elif _sha256(path) != entry["sha256"]:
                 problems.append(f"hash mismatch: {entry['rel_path']}")
         return problems
+
+
+def published_rows(data_dir: Path | str) -> int:
+    """Rows in every published batch table (an upper bound on what an assessment loads: an
+    older version of a record counts too). 0 when there is no catalog yet."""
+    path = Path(data_dir) / CATALOG_FILE
+    if not path.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+        try:
+            row = conn.execute("SELECT coalesce(sum(bt.rows), 0) FROM batch_tables bt JOIN batches b USING (batch_id) "
+                               "WHERE b.state = 'published'").fetchone()
+            return int(row[0])
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0
 
 
 def published_sequence(data_dir: Path | str) -> int:

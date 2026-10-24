@@ -89,6 +89,14 @@ class _RecordingStore:
         self.calls.append((sql, params))
         return self.inner.query(sql, params)
 
+    def memo(self, key, compute):
+        """A run-wide result (DuckDBStore.memo), computed through this store so its queries are
+        recorded too; fresh for every evaluation, as for a new assessment."""
+        self._memo = getattr(self, "_memo", {})
+        if key not in self._memo:
+            self._memo[key] = compute()
+        return self._memo[key]
+
 
 @pytest.fixture(scope="module")
 def data_store():
@@ -121,7 +129,11 @@ def test_rule_binds_entity_id_as_parameter(rule, payload, data_store):
 
     assert rec_bad.calls, "rule executed no queries"
     assert [sql for sql, _ in rec_bad.calls] == [sql for sql, _ in rec_ref.calls]
-    assert any(params and payload in params for _, params in rec_bad.calls)
+    # The payload reaches the database only as a bound parameter (the SQL texts above are those
+    # of an unknown entity). A rule that reads one run-wide result and looks the entity up in it
+    # (NS03, DuckDBStore.memo) never sends it at all.
+    run_wide = getattr(rec_bad, "_memo", None)
+    assert run_wide or any(params and payload in params for _, params in rec_bad.calls)
     assert len(bad_findings) == len(ref_findings)
     for bad, ref in zip(bad_findings, ref_findings):
         assert bad.rationale.replace(payload, unknown) == ref.rationale

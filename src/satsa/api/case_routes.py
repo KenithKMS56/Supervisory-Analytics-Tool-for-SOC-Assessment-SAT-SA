@@ -9,6 +9,7 @@ in satsa.cases.workflow, not here: these handlers only translate HTTP to it and 
 from __future__ import annotations
 
 import json
+import re
 from typing import Annotated, Any
 
 import duckdb
@@ -22,6 +23,9 @@ from satsa.cases import blind, packages, workflow
 from satsa.cases.workflow import CASE_ID_RE, STATE_LABELS, Attachment, CaseError
 from satsa.security import is_valid_finding_id
 from satsa.store.sqlite import SQLiteStore
+from satsa.validate import pilot
+
+SAMPLE_ID_RE = re.compile(r"^BLS-[A-F0-9]{12}$")
 
 router = APIRouter()
 
@@ -419,6 +423,22 @@ async def create_blind_sample(
     return RedirectResponse(url=f"/blind-review?created={sample['sample_id']}", status_code=303)
 
 
+@router.post("/blind-review/samples/{sample_id}/replicate")
+async def replicate_blind_sample(sample_id: str, assignee: Annotated[str, Form()],
+                                 identity: Identity = Depends(require_role(*ANALYST))) -> Response:
+    """The sample's entities for a second, independent examiner (satsa.validate.pilot)."""
+    if not SAMPLE_ID_RE.match(sample_id):
+        raise HTTPException(status_code=400, detail="Invalid sample id")
+    store = _store()
+    try:
+        sample = pilot.replicate_sample(store, sample_id, assignee, identity.username, identity.role)
+    except CaseError as exc:
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+    finally:
+        store.close()
+    return RedirectResponse(url=f"/blind-review?created={sample['sample_id']}", status_code=303)
+
+
 @router.get("/blind-review/tasks/{task_id}", response_class=HTMLResponse)
 async def view_blind_task(request: Request, task_id: str,
                           identity: Identity = Depends(require_role(*REVIEW))) -> Response:
@@ -426,6 +446,8 @@ async def view_blind_task(request: Request, task_id: str,
     store = _store()
     try:
         task = blind.task_for(store, task_id, identity.username, identity.role)
+        # The examiner's first look starts their review time (satsa.validate.pilot).
+        pilot.open_task(store, task_id, identity.username)
         findings = []
         if task["revealed_at"]:
             findings = [dict(r) for r in store.conn.execute(

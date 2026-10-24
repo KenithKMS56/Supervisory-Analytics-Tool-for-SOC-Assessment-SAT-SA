@@ -230,6 +230,28 @@ _NIGHT = f"({_LOCAL_HOUR} < 8 OR {_LOCAL_HOUR} >= 20)"
 _LOCAL_DATE = "CAST(timezone(coalesce(_satsa_tz.tz, 'UTC'), created_at AT TIME ZONE 'UTC') AS DATE)"
 
 
+def _night_stats(store: DuckDBStore) -> dict[str, tuple[int, int, str]]:
+    """Per entity: alerts, night-time alerts (local hours) and the zone they were read in.
+
+    One pass over all alerts per assessment (DuckDBStore.memo): NS03 needs every entity's figure
+    for itself and for each of its peers, and converting every alert to local time once per
+    entity made the rule quadratic in the portfolio's size."""
+
+    def compute() -> dict[str, tuple[int, int, str]]:
+        df = store.query(f"""
+            WITH {ENTITY_TZ_CTE}
+            SELECT entity_id, count(*) AS total, count(CASE WHEN {_NIGHT} THEN 1 END) AS night_cnt,
+                   coalesce(any_value(_satsa_tz.tz), 'UTC') AS tz
+            FROM alert LEFT JOIN _satsa_tz USING (entity_id)
+            WHERE entity_id IS NOT NULL
+            GROUP BY entity_id
+        """)
+        return {r["entity_id"]: (int(r["total"]), int(r["night_cnt"]), str(r["tz"] or "UTC"))
+                for r in df.iter_rows(named=True)}
+
+    return store.memo(("NS03", "night_stats"), compute)
+
+
 class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
     """NS03: Unexpectedly low night-time activity.
 
@@ -258,20 +280,8 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
         # Night share of the entity's alerts, hours read in its own time zone.
-        sql = f"""
-        WITH {ENTITY_TZ_CTE}
-        SELECT count(*) AS total, count(CASE WHEN {_NIGHT} THEN 1 END) AS night_cnt,
-               coalesce(any_value(_satsa_tz.tz), 'UTC') AS tz
-        FROM alert LEFT JOIN _satsa_tz USING (entity_id)
-        WHERE entity_id = ?
-        """
-        df = store.query(sql, [entity_id])
-        if df.is_empty():
-            return [], []
-
-        total = df["total"][0]
-        night_cnt = df["night_cnt"][0]
-        tz = str(df["tz"][0] or "UTC")
+        stats = _night_stats(store)
+        total, night_cnt, tz = stats.get(entity_id, (0, 0, "UTC"))
         night_share = night_cnt / max(total, 1)
 
         # Tunable: minimum volume for a night share to mean anything; the robust-z cut-off
@@ -284,20 +294,11 @@ class NS03UnexpectedlyLowOrFlatActivity(BaseRule):
         if total < min_alert_volume:
             return [], []
 
-        # Night share of each peer in the cohort with enough volume to compare.
-        peer_clause, peer_params = self.peer_filter(entity_id, peer_ids)
-        sql_peer = f"""
-        WITH {ENTITY_TZ_CTE}
-        SELECT entity_id, count(CASE WHEN {_NIGHT} THEN 1 END) * 1.0 / count(*) AS night_share
-        FROM alert LEFT JOIN _satsa_tz USING (entity_id)
-        WHERE {peer_clause}
-        GROUP BY entity_id
-        HAVING count(*) >= ?
-        ORDER BY entity_id
-        """
-        peer_df = store.query(sql_peer, [*peer_params, min_alert_volume])
-        peer_shares = [float(v) for v in peer_df["night_share"].to_list()] if not peer_df.is_empty() else []
-        peers_compared = [str(v) for v in peer_df["entity_id"].to_list()] if not peer_df.is_empty() else []
+        # Night share of each peer in the cohort with enough volume to compare: the resolved
+        # cohort, or every other entity (BaseRule.peer_filter).
+        cohort = set(peer_ids) if peer_ids else {e for e in stats if e != entity_id}
+        peers_compared = sorted(e for e in cohort if e in stats and stats[e][0] >= min_alert_volume)
+        peer_shares = [stats[e][1] * 1.0 / stats[e][0] for e in peers_compared]
         ctx = self.context
         local: dict[str, Any] = {"timezone": tz, "night_window": "20:00-08:00 local"}
         if ctx is not None:
@@ -589,21 +590,29 @@ class NS06InventoryVsTelemetry(BaseRule):
     def evaluate(
         self, entity_id: str, store: DuckDBStore, peer_ids: list[str], run_id: str
     ) -> tuple[list[Finding], list[FindingEvidence]]:
+        # An in-service asset with no alert and no (or only zero) telemetry. Alerts and log days
+        # are checked separately: joining both to the asset multiplied every alert by every log
+        # day of the asset before counting.
         sql = """
-        WITH span AS (SELECT min(date) AS lo, max(date) AS hi FROM log_source_daily WHERE entity_id = ?)
+        WITH span AS (SELECT min(date) AS lo, max(date) AS hi FROM log_source_daily WHERE entity_id = ?),
+        telemetry AS (
+            SELECT asset_id, count(event_count) AS n, sum(event_count) AS total
+            FROM log_source_daily WHERE entity_id = ? GROUP BY asset_id
+        )
         SELECT a.asset_id
         FROM asset a
         CROSS JOIN span
-        LEFT JOIN alert alt ON a.entity_id = alt.entity_id AND a.asset_id = alt.asset_id
-        LEFT JOIN log_source_daily l ON a.entity_id = l.entity_id AND a.asset_id = l.asset_id
+        LEFT JOIN telemetry t ON a.asset_id = t.asset_id
         WHERE a.entity_id = ?
           AND NOT coalesce(a.in_service_to < span.lo, false)
           AND NOT coalesce(a.in_service_from > span.hi, false)
+          AND NOT EXISTS (SELECT 1 FROM alert alt WHERE alt.entity_id = a.entity_id AND alt.asset_id = a.asset_id
+                          AND alt.alert_id IS NOT NULL)
+          AND (coalesce(t.n, 0) = 0 OR t.total = 0)
         GROUP BY a.asset_id
-        HAVING count(alt.alert_id) = 0 AND (count(l.event_count) = 0 OR sum(l.event_count) = 0)
         ORDER BY a.asset_id
         """
-        df = store.query(sql, [entity_id, entity_id])
+        df = store.query(sql, [entity_id, entity_id, entity_id])
         if df.is_empty():
             return [], []
 
@@ -766,7 +775,9 @@ class NS08SubmissionCompleteness(BaseRule):
         own = set(store.query(month_sql.format(cond="entity_id = ?"), [entity_id])["m"].to_list())
         if not own:
             return [], []
-        portfolio = set(store.query(month_sql.format(cond="1 = 1"))["m"].to_list())
+        # The portfolio's months are the same for every entity: read once per assessment.
+        portfolio = store.memo(("NS08", "portfolio_months"),
+                               lambda: set(store.query(month_sql.format(cond="1 = 1"))["m"].to_list()))
         missing_labels = sorted(portfolio - own)
 
         month_cnt = len(own)

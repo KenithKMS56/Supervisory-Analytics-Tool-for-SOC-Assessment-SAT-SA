@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>First-run setup | NCIIPC Administration Portal</title>
+  <title>First-run setup | {{ brand().admin_portal }}</title>
   <link rel="stylesheet" href="/static/admin.css">
   <style>
     .setup-wrapper { min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 2rem 1rem; }
@@ -69,6 +69,12 @@
           <label for="deployment_name" class="form-label">Deployment name</label>
           <input id="deployment_name" name="deployment_name" class="form-input" required minlength="2" maxlength="120"
                  value="{{ values.deployment_name or '' }}">
+        </div>
+        <div class="form-group">
+          <label for="organisation_name" class="form-label">Organisation shown in the product (optional)</label>
+          <input id="organisation_name" name="organisation_name" class="form-input" maxlength="80"
+                 value="{{ values.organisation_name or '' }}" aria-describedby="organisation_help">
+          <span id="organisation_help" class="form-helper">Leave empty for neutral wording ("Administration Portal"). Only name an organisation that runs this deployment.</span>
         </div>
         <div class="form-group">
           <label for="timezone" class="form-label">Time zone (IANA name)</label>

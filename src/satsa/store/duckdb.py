@@ -3,6 +3,7 @@
 import logging
 import os
 import threading
+import time
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -84,6 +85,7 @@ class DuckDBStore:
         self._catalog: Catalog | None = None
         self._active_batch: BatchWriter | None = None
         self._defer_reload = False
+        self._memo: dict[Any, Any] = {}
         # Publication sequence the loaded tables reflect (the source snapshot); None until loaded.
         self.source_snapshot: int | None = None
         self.conn = duckdb.connect(":memory:")
@@ -315,6 +317,16 @@ class DuckDBStore:
             finally:
                 self._active_batch = None
 
+    def memo(self, key: Any, compute: Any) -> Any:
+        """`compute()`, computed once per key while the loaded tables stay as they are.
+
+        For results every entity of an assessment asks for in the same form (a portfolio-wide
+        aggregate): the first rule evaluation computes it, the others reuse it. Loading,
+        writing or executing anything on this store forgets every memo."""
+        if key not in self._memo:
+            self._memo[key] = compute()
+        return self._memo[key]
+
     def write_partitioned_parquet(self, table_name: str, df: pl.DataFrame) -> None:
         """Store rows of a canonical table as a new, immutable batch file per entity.
 
@@ -323,6 +335,7 @@ class DuckDBStore:
         `deferred_reload`). Existing files are never rewritten: an updated record is a new
         version, and the loader selects the latest one (see `load_table_from_parquet`).
         """
+        self._memo.clear()
         if df.is_empty():
             return
         if self._active_batch is not None:
@@ -359,6 +372,7 @@ class DuckDBStore:
         text_timestamp_sql, which applies a UTC offset instead of dropping it. A published file
         that is missing or unreadable is skipped with a warning, never silently.
         """
+        self._memo.clear()
         catalog = self.catalog
         catalog.adopt_legacy_files(table_name)
         snapshot = catalog.max_pub_seq() if max_pub_seq is None else max_pub_seq
@@ -494,6 +508,7 @@ class DuckDBStore:
 
     def execute(self, sql: str, params: list[Any] | None = None) -> None:
         """Execute raw DDL or modification statement."""
+        self._memo.clear()
         if params:
             self.conn.execute(sql, params)
         else:
@@ -524,6 +539,7 @@ class SharedDuckDBView(DuckDBStore):
         self._catalog = None
         self._active_batch = None
         self._defer_reload = False
+        self._memo = {}
         self.source_snapshot = shared.source_snapshot
         self.conn = shared.conn.cursor()
 
@@ -571,14 +587,31 @@ class AnalyticsCache:
     that only declares tables empty and so adds no file.
     """
 
+    # The Parquet fingerprint walks every file; it is taken at most this often per data directory.
+    # Publication through the catalog changes the publication sequence, which is read on every
+    # request, so this delay applies only to files changed outside the catalog.
+    FINGERPRINT_SECONDS = 2.0
+
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._stores: dict[Path, tuple[tuple[Any, ...], DuckDBStore]] = {}
+        self._fingerprints: dict[Path, tuple[float, int, tuple[int, int, int]]] = {}
         self.loads = 0  # how many times the tables were (re)loaded; read by tests and benchmarks
+
+    def _fingerprint(self, root: Path, sequence: int) -> tuple[int, int, int]:
+        """The Parquet fingerprint, taken again when the interval has passed or anything was
+        published since (so a fingerprint is never paired with a newer publication)."""
+        now = time.monotonic()
+        taken = self._fingerprints.get(root)
+        if taken is None or taken[1] != sequence or now - taken[0] >= self.FINGERPRINT_SECONDS:
+            taken = (now, sequence, parquet_fingerprint(root / "parquet"))
+            self._fingerprints[root] = taken
+        return taken[2]
 
     def view(self, data_dir: Path | str, run_marker: str | None) -> SharedDuckDBView:
         root = Path(data_dir).resolve()
-        key = (run_marker, published_sequence(root), *parquet_fingerprint(root / "parquet"))
+        sequence = published_sequence(root)
+        key = (run_marker, sequence, *self._fingerprint(root, sequence))
         with self._lock:
             cached = self._stores.get(root)
             if cached is None or cached[0] != key:
@@ -593,6 +626,7 @@ class AnalyticsCache:
     def clear(self) -> None:
         with self._lock:
             self._stores.clear()
+            self._fingerprints.clear()
 
 
 analytics_cache = AnalyticsCache()

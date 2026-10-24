@@ -34,5 +34,13 @@ if [ -n "${TARGET_PYTHON:-}" ]; then set -- "$@" --python-version "$TARGET_PYTHO
 
 uv build --wheel --out-dir "$OUT"
 
+# Optional, online only: SATSA_AUDIT=1 checks the pinned dependencies against the public advisory
+# database with pip-audit (it must be installed for $PY). It sends the package names and versions
+# to that service, so it never runs unless asked for.
+if [ "${SATSA_AUDIT:-}" = "1" ]; then
+  "$PY" -m pip_audit --require-hashes --disable-pip -r "$OUT/requirements.txt" > "$OUT/pip-audit.txt"
+  echo "Dependency audit written to $OUT/pip-audit.txt"
+fi
+
 echo "Wheelhouse ready: $OUT ($(ls "$OUT"/*.whl | wc -l | tr -d ' ') wheels)"
 echo "Install offline:  see docs/offline_install.md"

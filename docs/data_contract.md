@@ -33,6 +33,7 @@ There is no second write path.
 | `auto` | Rows that pass are published. The rest are reported as DQ issues. |
 | `strict` | Nothing is stored. The response is HTTP 422 with `errors`, one entry per problem: `table`, `field`, `row` (1-based record number in that table's section), `value` and `reason`, plus an exact `error_count`. |
 | `if_clean` | The batch is staged but held unpublished. An analyst then chooses **Publish as is** (rejected rows stay out) or **Discard** under *Upload → Held submissions*. Both decisions are audited. |
+| `preview` | **Check only** (upload page checkbox, `satsa ingest --check-only`). Everything is read, mapped and validated and the full report returned: per file, rows that would be stored, filtered or rejected; the data-quality issues; which rules the entity could be assessed on. Nothing is published, recorded as submitted or saved as a DQ issue; the staged files are removed and the batch is recorded as `discarded`. |
 
 A held batch is invisible to every assessment until it is published.
 
@@ -134,6 +135,15 @@ Member names are validated before anything is extracted.
 
 ## API change log
 
+- **1.2 (Phase 5).** No change to request or response fields.
+  - Every request body is capped as it arrives: `/upload` at the upload limit plus 1 MiB of
+    form framing, every other request at `SATSA_MAX_API_BODY_MB` (default 64). A body without
+    `Content-Length` (chunked) is cut off at the cap with `413`, as one that declares too much
+    already was.
+  - Every response carries `Content-Security-Policy`, `X-Content-Type-Options: nosniff`,
+    `X-Frame-Options: DENY` and `Referrer-Policy: same-origin`.
+  - An uploaded file is stored under its base name with characters other than letters, digits,
+    `.`, `_`, `-` and space replaced by `_` (the name shown on the job page is that stored name).
 - **1.1 (Phase 2).**
   - `POST /api/v1/submissions` with `run_assessment_now: true` now *queues* the assessment as a
     job and returns `assessment_job_id`.

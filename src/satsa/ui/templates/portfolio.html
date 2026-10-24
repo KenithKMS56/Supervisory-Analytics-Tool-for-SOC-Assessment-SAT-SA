@@ -55,7 +55,7 @@
     <span class="badge" style="background: rgba(59,130,246,0.15); color: var(--accent-blue); font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 0.85rem; padding: 0.25rem 0.6rem;">{{ current_identity.cse_id }}</span>
     <div>
       <div style="font-weight: 600; font-size: 0.9rem;">Authoritative Scope: {{ current_identity.org_name or current_identity.org_id or 'Critical Sector Entity' }}</div>
-      <div style="font-size: 0.78rem; color: var(--text-muted);">Operator: <strong>{{ current_identity.username }}</strong> ({{ current_identity.role }}) &bull; Enforced boundary: designated entity records under NCIIPC oversight.</div>
+      <div style="font-size: 0.78rem; color: var(--text-muted);">Operator: <strong>{{ current_identity.username }}</strong> ({{ current_identity.role }}) &bull; Enforced boundary: designated entity records under {{ brand().authority }} oversight.</div>
     </div>
   </div>
   <a href="/entity/{{ current_identity.cse_id }}" class="btn btn-secondary" style="font-size: 0.8rem; padding: 0.4rem 0.85rem;">View Assigned Profile &rarr;</a>
@@ -186,7 +186,7 @@
       </span>
     </span>
     <span style="font-size: 0.82rem; color: var(--text-secondary);">
-      {% if trend_periods %}{{ trend_periods | join(' &bull; ') | safe }}{% else %}No historical runs recorded yet{% endif %}
+      {% if trend_periods %}{% for p in trend_periods %}{{ p }}{% if not loop.last %} &bull; {% endif %}{% endfor %}{% else %}No historical runs recorded yet{% endif %}
     </span>
   </div>
   {% if not trend_has_data %}
@@ -195,7 +195,18 @@
     Trigger the demo re-seed or run <code>satsa run --period &lt;label&gt;</code> across multiple periods to build up genuine trend history.
   </div>
   {% else %}
-  <div id="trajectoryChart" style="width: 100%; height: 300px;"></div>
+  <div id="trajectoryChart" role="img" aria-label="Risk index of each entity across assessment runs; the same figures are in the table below the chart." style="width: 100%; height: 300px;"></div>
+  <details class="chart-table">
+    <summary>Show the trend as a table</summary>
+    <div class="table-responsive"><table>
+      <caption class="visually-hidden">Risk index by entity and period</caption>
+      <thead><tr><th scope="col">Entity</th>{% for p in trend_periods %}<th scope="col">{{ p }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for s in trend_series if not s.insufficient_history %}
+        <tr><th scope="row">{{ s.name }}</th>{% for v in s.data %}<td>{% if v is not none %}{{ v | round(1) }}{% else %}&mdash;{% endif %}</td>{% endfor %}</tr>
+      {% endfor %}</tbody>
+    </table></div>
+    <p style="font-size: 0.8rem; color: var(--text-secondary);">&mdash;: no run of that period scored the entity. Entities with fewer than two runs are left out.</p>
+  </details>
   {% endif %}
   {% if trend_warnings %}
   <ul class="trend-warnings" style="margin: 0.75rem 0 0; padding-left: 1.25rem; font-size: 0.82rem; color: var(--text-secondary);">
@@ -215,7 +226,17 @@
     </span>
     <span style="font-size: 0.82rem; color: var(--text-secondary);">Sequential risk scale: 0 (No Risk) &bull; Low &bull; Medium &bull; Elevated &bull; High &bull; Critical</span>
   </div>
-  <div id="portfolioHeatmap" style="width: 100%; height: 350px;"></div>
+  <div id="portfolioHeatmap" role="img" aria-label="Domain scores of each entity, 0 to 100; the same figures are in the table below the chart." style="width: 100%; height: 350px;"></div>
+  <details class="chart-table">
+    <summary>Show the domain scores as a table</summary>
+    <div class="table-responsive"><table>
+      <caption class="visually-hidden">Domain score by entity (0 to 100, higher means more supervisory concern)</caption>
+      <thead><tr><th scope="col">Entity</th>{% for d in heatmap_domains %}<th scope="col">{{ d }}</th>{% endfor %}</tr></thead>
+      <tbody>{% for row in heatmap_table %}
+        <tr><th scope="row"><a href="/entity/{{ row.entity_id }}">{{ row.entity_id }}</a></th>{% for v in row.scores %}<td>{% if v is not none %}{{ v }}{% else %}<span title="No rule could assess this domain">not assessed</span>{% endif %}</td>{% endfor %}</tr>
+      {% endfor %}</tbody>
+    </table></div>
+  </details>
 </div>
 
 <!-- Ranked Entities Table -->

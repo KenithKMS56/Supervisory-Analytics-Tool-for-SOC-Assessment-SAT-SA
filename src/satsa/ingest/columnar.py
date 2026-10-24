@@ -217,26 +217,30 @@ def _hygiene(frame: pl.DataFrame, table: str, pipeline: IngestionPipeline) -> pl
         frame = frame.with_columns(_mapped(frame, "owner", lambda v: pseudo(str(v), prefix="OWNER")))
     elif table == "closure" and "comment" in frame.columns:
         redactor = pipeline.redactor
+        if frame.schema["comment"] == pl.Null:  # every comment empty: nothing to join on
+            frame = frame.with_columns(pl.col("comment").cast(pl.String))
         has_comment = _truthy(frame, "comment")
-        derived: dict[str, tuple[str, int, str]] = {}
+        # Each distinct comment is redacted and hashed once; the results are joined back by the
+        # comment text (a lookup table rather than a replace over every text, which held
+        # several copies of all comments at once). Only the ten stored shingles are hashed.
+        lookup_rows = []
         for text in frame.filter(has_comment)["comment"].unique().to_list():
             redacted = redactor.redact_text(str(text))
-            shingles = redactor.hash_shingles(redactor.generate_shingles(redacted))
-            derived[text] = (redactor.compute_norm_hash(redacted), len(redacted), ",".join(shingles[:10]))
-        texts = list(derived)
-
-        def part(index: int, dtype: Any) -> pl.Expr:
-            return pl.col("comment").replace_strict(texts, [derived[t][index] for t in texts], default=None, return_dtype=dtype)
+            shingles = redactor.hash_shingles(redactor.generate_shingles(redacted)[:10])
+            lookup_rows.append((text, redactor.compute_norm_hash(redacted), len(redacted), ",".join(shingles)))
+        lookup = pl.DataFrame(lookup_rows, schema={"comment": frame.schema["comment"], "_c_hash": pl.String,
+                                                   "_c_len": pl.Int64, "_c_shingles": pl.String}, orient="row")
 
         def keep(column: str, dtype: Any) -> pl.Expr:
             return pl.col(column) if column in frame.columns else pl.lit(None, dtype=dtype)
 
+        frame = frame.join(lookup, on="comment", how="left", maintain_order="left", nulls_equal=False)
         frame = frame.with_columns(
-            pl.when(has_comment).then(part(0, pl.String)).otherwise(keep("comment_norm_hash", pl.String))
+            pl.when(has_comment).then(pl.col("_c_hash")).otherwise(keep("comment_norm_hash", pl.String))
             .cast(pl.String).alias("comment_norm_hash"),
-            pl.when(has_comment).then(part(1, pl.Int64)).otherwise(keep("comment_len", pl.Int64))
+            pl.when(has_comment).then(pl.col("_c_len")).otherwise(keep("comment_len", pl.Int64))
             .cast(pl.Int64).alias("comment_len"),
-            pl.when(has_comment).then(part(2, pl.String)).otherwise(keep("comment_shingles", pl.String))
+            pl.when(has_comment).then(pl.col("_c_shingles")).otherwise(keep("comment_shingles", pl.String))
             .cast(pl.String).alias("comment_shingles"),
-        ).drop("comment")  # fmt: skip
+        ).drop("comment", "_c_hash", "_c_len", "_c_shingles")  # fmt: skip
     return frame

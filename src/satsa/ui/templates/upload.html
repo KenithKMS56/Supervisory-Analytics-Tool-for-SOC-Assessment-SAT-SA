@@ -186,6 +186,12 @@
 
       <div id="file-list" style="margin-top: 1rem; color: var(--text-secondary); font-size: 0.85rem;"></div>
 
+      <label style="display: flex; gap: 0.5rem; align-items: flex-start; margin-top: 1rem; font-size: 0.88rem;">
+        <input type="checkbox" name="preview" value="1" aria-describedby="preview-help">
+        <span><strong>Check only</strong> &mdash; read, map and validate the files and show what they would give, without publishing anything.
+          <span id="preview-help" style="display: block; color: var(--text-muted); font-size: 0.8rem;">The result lists, per file, the rows that would be stored, filtered or rejected, the data-quality issues, and which rules the entity could then be assessed on.</span></span>
+      </label>
+
       <button type="submit" class="btn" style="width: 100%; justify-content: center; margin-top: 1.25rem;">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M5 12h14M12 5l7 7-7 7"/>
@@ -254,10 +260,10 @@
         <td style="font-size: 0.82rem;">{{ b.received_at }}</td>
         <td style="font-size: 0.82rem;">{{ b.note }}</td>
         <td style="white-space: nowrap;">
-          <form method="post" action="/batches/{{ b.batch_id }}/publish" style="display: inline;" onsubmit="return confirm('Publish {{ b.batch_id }} as it is? Its rejected rows stay out.');">
+          <form method="post" action="/batches/{{ b.batch_id }}/publish" style="display: inline;" data-confirm="Publish {{ b.batch_id }} as it is? Its rejected rows stay out." onsubmit="return confirm(this.dataset.confirm);">
             <button type="submit" class="btn" style="font-size: 0.8rem;">Publish as is</button>
           </form>
-          <form method="post" action="/batches/{{ b.batch_id }}/discard" style="display: inline;" onsubmit="return confirm('Discard {{ b.batch_id }}?');">
+          <form method="post" action="/batches/{{ b.batch_id }}/discard" style="display: inline;" data-confirm="Discard {{ b.batch_id }}?" onsubmit="return confirm(this.dataset.confirm);">
             <button type="submit" class="btn btn-secondary" style="font-size: 0.8rem;">Discard</button>
           </form>
         </td>
@@ -326,7 +332,7 @@
               {% if ent.entity_id in (retired_entities or []) %}
               <span class="badge" title="Left out of assessments; its submissions and history are kept">Retired</span>
               {% else %}
-              <form method="post" action="/upload/delete-entity/{{ ent.entity_id }}" style="margin: 0; display: inline;" onsubmit="return confirm('Retire entity {{ ent.entity_id }}? It is left out of future assessments; its submissions, runs and findings are kept.');">
+              <form method="post" action="/upload/delete-entity/{{ ent.entity_id }}" style="margin: 0; display: inline;" data-confirm="Retire entity {{ ent.entity_id }}? It is left out of future assessments; its submissions, runs and findings are kept." onsubmit="return confirm(this.dataset.confirm);">
                 <button type="submit" class="btn btn-danger" style="padding: 0.25rem 0.6rem; font-size: 0.74rem;">
                   Retire
                 </button>
@@ -396,8 +402,10 @@ function updateFileList(input) {
   if (input.files.length > 0) {
     let html = '<div style="background: var(--bg-hover); padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-color);">' +
                '<strong style="color: var(--accent-blue);">Selected ' + input.files.length + ' file(s) for ingestion:</strong><ul style="margin-top: 0.35rem; padding-left: 1.25rem;">';
+    // A file's name is the user's own text: escape it before it becomes HTML.
+    const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     for (let i = 0; i < input.files.length; i++) {
-      html += '<li>' + input.files[i].name + ' <span style="color: var(--text-muted);">(' + Math.round(input.files[i].size / 1024) + ' KB)</span></li>';
+      html += '<li>' + esc(input.files[i].name) + ' <span style="color: var(--text-muted);">(' + Math.round(input.files[i].size / 1024) + ' KB)</span></li>';
     }
     html += '</ul></div>';
     list.innerHTML = html;

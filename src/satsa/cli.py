@@ -10,7 +10,7 @@ from satsa.serving import ServingConfig
 
 app = typer.Typer(
     name="satsa",
-    help="Supervisory Analytics Tool for SOC Assessment (NCIIPC)",
+    help="Supervisory Analytics Tool for SOC Assessment",
     add_completion=False,
 )
 console = Console()
@@ -136,6 +136,9 @@ def ingest_cmd(
         "-p",
         help="Review period the submission covers (2026-Q1, 2026-H1, 2026-03); recorded on the batch",
     ),
+    check_only: bool = typer.Option(
+        False, "--check-only", help="Read, map and validate, and report what would be stored; publish nothing"
+    ),
 ) -> None:
     """Ingest datasets, execute DQ checks, pseudonymise actors, redact PII, and store partitioned Parquet.
 
@@ -204,7 +207,8 @@ def ingest_cmd(
 
     try:
         result = pipeline.ingest_directory(
-            Path(data_dir), default_entity_id=entity, mapping=mapping, period=period, transport="cli"
+            Path(data_dir), default_entity_id=entity, mapping=mapping, period=period, transport="cli",
+            policy="preview" if check_only else "auto",
         )
     finally:
         duckdb_store.close()
@@ -219,6 +223,14 @@ def ingest_cmd(
             "fix the data and re-ingest before running an assessment."
         )
         raise typer.Exit(code=1)
+    if result.get("status") == "preview":
+        console.print("[bold yellow][=] Checked only: nothing was published or recorded.[/bold yellow]")
+        for f in result.get("file_coverage", []):
+            console.print(f"  * {f['summary']}")
+        for issue in result.get("dq_issue_list", [])[:20]:
+            console.print(f"  * [yellow]{issue['check_name']}[/yellow] ({issue['entity_id']}): {issue['details']}")
+        _print_ingest_coverage(result)
+        return
     if result.get("status") == "success":
         console.print("[bold green][+] Ingestion completed successfully:[/bold green]")
         console.print(f"  * Batch ID: [cyan]{result.get('batch_id')}[/cyan]")
@@ -569,14 +581,14 @@ def admin_cmd(
     host: str = typer.Option(
         None, "--host", "-h", help="Bind address (default: SATSA_HOST, else loopback 127.0.0.1)"
     ),
-    port: int = typer.Option(8000, "--port", "-p", help="NCIIPC Administration Portal port (default 8000)"),
+    port: int = typer.Option(8000, "--port", "-p", help="Administration Portal port (default 8000)"),
     ssl_certfile: str = typer.Option(None, "--ssl-certfile", help="TLS certificate (default: SATSA_TLS_CERT)"),
     ssl_keyfile: str = typer.Option(None, "--ssl-keyfile", help="TLS private key (default: SATSA_TLS_KEY)"),
 ) -> None:
-    """Launch NCIIPC Administration Portal control plane."""
+    """Launch the Administration Portal."""
     config = _serving_config_or_exit(host, ssl_certfile, ssl_keyfile)
     console.print(
-        f"[bold green][+] Launching NCIIPC Administration Portal at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
+        f"[bold green][+] Launching the Administration Portal at:[/bold green] [cyan]{config.scheme}://{config.host}:{port}[/cyan]"
     )
     console.print("[dim]Administrative identity and control console. Press Ctrl+C to exit.[/dim]")
     _run_uvicorn_guarded("satsa.admin.app:app", config, port)
@@ -1569,6 +1581,8 @@ def setup_cmd(
     job_inputs_days: int = typer.Option(30, "--keep-job-inputs-days"),
     backups_keep: int = typer.Option(7, "--keep-backups"),
     data_dir: str = typer.Option("data", "--data-dir"),
+    organisation_name: str = typer.Option("", "--organisation-name",
+                                          help="Organisation shown in the product (none: neutral wording)"),
 ) -> None:
     """First-run setup from the shell, instead of the Admin Portal's /setup page.
 
@@ -1588,7 +1602,7 @@ def setup_cmd(
         complete_setup(store, data_dir, token=None, admin_username=admin_username, passphrase=passphrase,
                        confirm=passphrase, deployment_name=deployment_name, timezone=timezone,
                        job_inputs_days=job_inputs_days, backups_keep=backups_keep,
-                       actor=f"cli:{admin_username}", require_token=False)
+                       actor=f"cli:{admin_username}", require_token=False, organisation_name=organisation_name)
     except SetupError as exc:
         console.print(f"[bold red][!] {exc}[/bold red]")
         raise typer.Exit(code=1) from exc
@@ -1599,6 +1613,27 @@ def setup_cmd(
 
 deployment_app = typer.Typer(help="Deployment mode and settings (docs/first_run_setup.md)")
 app.add_typer(deployment_app, name="deployment")
+
+
+@deployment_app.command("brand")
+def deployment_brand(
+    organisation: str = typer.Option(..., "--organisation", help="Organisation name to show; '' for neutral wording"),
+    actor: str = typer.Option(..., "--actor", help="Who is making the change (recorded in the audit log)"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+) -> None:
+    """Set the organisation name the portals and reports show (audited)."""
+    from satsa.deployment import SetupError, set_branding
+    from satsa.store.sqlite import SQLiteStore
+
+    store = SQLiteStore(Path(data_dir) / "satsa.db")
+    try:
+        brand = set_branding(store, organisation, actor=f"cli:{actor}")
+    except SetupError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+    finally:
+        store.close()
+    console.print(f"[green]Portals now show: {brand['admin_portal']}; authority: {brand['authority']}[/green]")
 
 
 @deployment_app.command("show")
@@ -1865,6 +1900,121 @@ def release_verify(
         console.print(f"[green]Signature valid for key {public_key_fingerprint(Path(public_key).read_bytes())}[/green]")
     else:
         console.print("[yellow]Signature not checked: pass --public-key[/yellow]")
+
+
+pilot_app = typer.Typer(help="Independent pilot evaluation from blinded reviews (docs/shadow_pilot_runbook.md, Part B)")
+app.add_typer(pilot_app, name="pilot")
+
+
+def _pilot_account(store: Any, username: str) -> str:
+    """The role of an active SAT-SA account: pilot actions are made in a named person's name."""
+    row = store.conn.execute("SELECT role, status FROM identities WHERE username = ?", (username,)).fetchone()
+    if row is None or (row["status"] or "ACTIVE").upper() != "ACTIVE":
+        console.print(f"[bold red][!] {username!r} is not an active account[/bold red]")
+        raise typer.Exit(code=1)
+    return str(row["role"])
+
+
+def _pilot_call(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    from satsa.cases.workflow import CaseError
+
+    try:
+        return fn(*args, **kwargs)
+    except CaseError as exc:
+        console.print(f"[bold red][!] {exc}[/bold red]")
+        raise typer.Exit(code=1) from None
+
+
+@pilot_app.command("freeze")
+def pilot_freeze(
+    name: str = typer.Option(..., "--name", help="A name for the protocol (never reused)"),
+    run_id: str = typer.Option(..., "--run", help="Completed run whose configuration is frozen"),
+    actor: str = typer.Option(..., "--actor", help="The analyst freezing it"),
+    seed: int | None = typer.Option(None, "--seed", help="Seed of the calibration / held-out split (random if omitted)"),
+    calibration: float = typer.Option(0.3, "--calibration", help="Share of entities kept for calibration"),
+    budget: int = typer.Option(10, "--budget", help="Entities per arm an examiner can review (fixed budget)"),
+    notes: str = typer.Option("", "--notes"),
+) -> None:
+    """Freeze thresholds and the entity split before any judgement is looked at."""
+    from satsa.store.sqlite import SQLiteStore
+    from satsa.validate import pilot
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        res = _pilot_call(pilot.freeze_protocol, store, name, run_id, actor, _pilot_account(store, actor), seed=seed,
+                          calibration_fraction=calibration, budget=budget, notes=notes)
+    finally:
+        store.close()
+    console.print(f"[green]Protocol {res['protocol_id']} frozen at configuration {res['config_hash']} (seed {res['seed']})[/green]")
+    console.print(f"  calibration: {', '.join(res['calibration']) or 'none'}")
+    console.print(f"  held out:    {', '.join(res['held_out'])}")
+
+
+@pilot_app.command("replicate")
+def pilot_replicate(
+    sample_id: str = typer.Option(..., "--sample", help="Blind sample to repeat"),
+    assignee: str = typer.Option(..., "--assignee", help="The second, independent examiner"),
+    actor: str = typer.Option(..., "--actor", help="The analyst assigning it"),
+) -> None:
+    """Assign a blind sample's entities to a second examiner, in a new order."""
+    from satsa.store.sqlite import SQLiteStore
+    from satsa.validate import pilot
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        res = _pilot_call(pilot.replicate_sample, store, sample_id, assignee, actor, _pilot_account(store, actor))
+    finally:
+        store.close()
+    console.print(f"[green]Sample {res['sample_id']} ({res['tasks']} tasks) assigned to {assignee}[/green]")
+
+
+@pilot_app.command("adjudicate")
+def pilot_adjudicate(
+    protocol_id: str = typer.Option(..., "--protocol"),
+    run_id: str = typer.Option(..., "--run"),
+    entity_id: str = typer.Option(..., "--entity"),
+    label: str = typer.Option(..., "--label", help="Low, Moderate, Elevated or Critical"),
+    rationale: str = typer.Option(..., "--rationale"),
+    actor: str = typer.Option(..., "--actor", help="An examiner who reviewed neither side"),
+) -> None:
+    """Settle a disagreement between the two reviewers of an entity."""
+    from satsa.store.sqlite import SQLiteStore
+    from satsa.validate import pilot
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        res = _pilot_call(pilot.adjudicate, store, protocol_id, run_id, entity_id, label, actor,
+                          _pilot_account(store, actor), rationale)
+    finally:
+        store.close()
+    console.print(f"[green]Recorded {res['adjudication_id']}[/green]")
+
+
+@pilot_app.command("evaluate")
+def pilot_evaluate(
+    protocol_id: str = typer.Option(..., "--protocol"),
+    out: str | None = typer.Option(None, "--out", help="Write the Markdown report here"),
+    json_out: str | None = typer.Option(None, "--json", help="Write the raw figures here"),
+) -> None:
+    """The pilot's figures under a frozen protocol; nothing unanswered is counted as negative."""
+    import json as _json
+
+    from satsa.store.sqlite import SQLiteStore
+    from satsa.validate import pilot
+
+    store = SQLiteStore("data/satsa.db")
+    try:
+        res = _pilot_call(pilot.evaluate, store, protocol_id)
+    finally:
+        store.close()
+    report = pilot.evaluation_markdown(res)
+    if out:
+        Path(out).write_text(report, encoding="utf-8")
+        console.print(f"[green]Wrote {out}[/green]")
+    else:
+        console.print(report)
+    if json_out:
+        Path(json_out).write_text(_json.dumps(res, indent=1), encoding="utf-8")
 
 
 if __name__ == "__main__":

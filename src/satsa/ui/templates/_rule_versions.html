@@ -1,0 +1,42 @@
+{# Rule configuration versions (satsa.rules.lifecycle). Needs: rule_versions, rules_drift, viewer, can_tune. #}
+<div class="card" id="versions" style="margin-bottom: 1.5rem;">
+  <h2>Rule configuration versions</h2>
+  <p style="color: var(--text-secondary); font-size: 0.85rem;">
+    A change to the thresholds is a draft until someone other than its author approves it; an analyst then puts it in
+    force, which re-assesses the latest period. Every run keeps the exact configuration it used.
+  </p>
+  {% if rules_drift %}<div class="notice-banner" role="alert" style="margin-bottom: 1rem;"><strong>Warning:</strong> {{ rules_drift }}</div>{% endif %}
+  <div class="table-responsive"><table>
+    <thead><tr><th scope="col">Version</th><th scope="col">State</th><th scope="col">Changes</th><th scope="col">Proposed</th><th scope="col">Approved</th><th scope="col">In force</th><th scope="col">Decision</th></tr></thead>
+    <tbody>{% for v in rule_versions | default([]) %}
+      <tr>
+        <th scope="row">v{{ v.version_no }}{% if v.base_version_no %} <span style="color: var(--text-muted); font-weight: 400;">(from v{{ v.base_version_no }})</span>{% endif %}</th>
+        <td><span class="badge {% if v.state == 'active' %}badge-low{% elif v.state in ('draft', 'approved') %}badge-mod{% elif v.state == 'rejected' %}badge-crit{% endif %}">{{ v.state }}</span></td>
+        <td>{% for c in v.changes %}<code>{{ c.field | default(c.rule ~ "." ~ c.key) }}</code> {{ c.old }} &rarr; {{ c.new }}{% if not loop.last %}; {% endif %}{% else %}{{ v.source.replace("_", " ") }}{% endfor %}{% if v.note %}<div style="font-size: 0.78rem; color: var(--text-muted);">{{ v.note }}</div>{% endif %}</td>
+        <td>{{ v.created_by }}<br><span style="font-size: 0.75rem; color: var(--text-muted);">{{ v.created_at[:16] }}</span></td>
+        <td>{% if v.approved_by %}{{ v.approved_by }}{% if v.approval_note %}<div style="font-size: 0.75rem; color: var(--text-muted);">{{ v.approval_note }}</div>{% endif %}{% else %}&mdash;{% endif %}</td>
+        <td>{% if v.activated_at %}{{ v.activated_at[:16] }}{% if v.retired_at %} to {{ v.retired_at[:16] }}{% endif %}{% else %}&mdash;{% endif %}</td>
+        <td>
+          {% if v.state == 'draft' and viewer and viewer.username != v.created_by %}
+          <form method="post" action="/tuning/versions/{{ v.version_no }}/approve" style="display: flex; gap: 0.35rem; margin: 0 0 0.35rem;">
+            <input name="note" class="form-control" placeholder="Note (optional)" aria-label="Approval note for version {{ v.version_no }}" maxlength="2000">
+            <button type="submit" class="btn btn-primary">Approve</button>
+          </form>
+          {% elif v.state == 'draft' %}<span style="font-size: 0.8rem; color: var(--text-muted);">Awaiting another person's approval</span>{% endif %}
+          {% if v.state == 'approved' and can_tune %}
+          <form method="post" action="/tuning/versions/{{ v.version_no }}/activate" style="margin: 0 0 0.35rem;">
+            <button type="submit" class="btn">Put in force &amp; re-assess</button>
+          </form>
+          {% endif %}
+          {% if v.state in ('draft', 'approved') %}
+          <form method="post" action="/tuning/versions/{{ v.version_no }}/reject" style="display: flex; gap: 0.35rem; margin: 0;">
+            <input name="note" class="form-control" placeholder="Reason" required aria-label="Reason for rejecting version {{ v.version_no }}" maxlength="2000">
+            <button type="submit" class="btn btn-secondary">Reject</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}</tbody>
+  </table></div>
+</div>
+

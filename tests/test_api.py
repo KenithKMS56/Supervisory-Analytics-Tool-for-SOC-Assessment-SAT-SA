@@ -2,6 +2,7 @@
 
 import re
 
+import pytest
 from fastapi.testclient import TestClient
 
 from satsa.api.routes import app
@@ -21,9 +22,14 @@ def _login(c: TestClient, username: str = "analyst", password: str = "ChangeMe-A
 # tests/test_rbac_matrix.py for the dedicated RBAC tests). The analyst may open
 # every page these tests touch; review decisions (queue feedback, blind-review
 # verdicts) are the examiner's only, so those go through examiner_client.
-_login(client)
 examiner_client = TestClient(app)
-_login(examiner_client, "examiner", "ChangeMe-Examiner#2026")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _signed_in():
+    """Sign in when this module's tests start (a session opened at import can time out first)."""
+    _login(client)
+    _login(examiner_client, "examiner", "ChangeMe-Examiner#2026")
 
 
 def test_ui_portfolio_view():

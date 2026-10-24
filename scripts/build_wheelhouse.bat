@@ -23,6 +23,14 @@ uv export --frozen --no-dev --no-emit-project --no-header --format requirements-
 "%PYTHON%" -m pip download --only-binary=:all: --require-hashes -r "%OUT%\requirements.txt" -d "%OUT%" || goto :fail
 uv build --wheel --out-dir "%OUT%" || goto :fail
 
+rem Optional, online only: SATSA_AUDIT=1 checks the pinned dependencies against the public
+rem advisory database with pip-audit (it must be installed in %PYTHON%). It sends the list of
+rem package names and versions to that service, so it is never run unless asked for.
+if "%SATSA_AUDIT%"=="1" (
+  "%PYTHON%" -m pip_audit --require-hashes --disable-pip -r "%OUT%\requirements.txt" > "%OUT%\pip-audit.txt" || goto :fail
+  echo Dependency audit written to %OUT%\pip-audit.txt
+)
+
 popd
 echo Wheelhouse ready: %OUT%
 echo Install offline: see docs\offline_install.md

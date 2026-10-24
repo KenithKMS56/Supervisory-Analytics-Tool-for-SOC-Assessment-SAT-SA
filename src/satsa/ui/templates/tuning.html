@@ -39,16 +39,20 @@
   <div class="stat-card">
     <div class="stat-label">Rule Pack Version</div>
     <div class="stat-value" style="color: var(--accent-indigo);">v1.0.0 (HMAC Signed)</div>
-    <div class="stat-desc">Signed with NCIIPC cryptographic key</div>
+    <div class="stat-desc">Signed with the deployment's rule-pack key</div>
   </div>
 </div>
+
+{% set can_tune = true %}
+{% include "_rule_versions.html" %}
 
 <div class="grid-2-1">
   <!-- Left: Rule Parameter Tuning Form -->
   <div class="card">
     <h2>Supervisory Threshold Calibration</h2>
     <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1.5rem;">
-      Adjust heuristic cut-offs for the supervisory assessment engine. Changes are saved to <code>config/rules.yaml</code> and re-hashed:
+      Adjust heuristic cut-offs for the supervisory assessment engine. Saving proposes a new version (above); it changes
+      <code>config/rules.yaml</code> once it is approved and put in force{% if deployment().get("mode") == "demo" %} (in this demonstration deployment, at once){% endif %}:
     </p>
 
     {% if preview %}
@@ -113,7 +117,7 @@
     <div class="card">
       <h3>Import Signed Rule Pack</h3>
       <p style="color: var(--text-secondary); font-size: 0.85rem; margin-bottom: 1rem;">
-        Deploy an updated, cryptographically signed rule archive from NCIIPC headquarters. The HMAC signature and all SHA-256 checksums are verified before applying.
+        Deploy an updated, cryptographically signed rule archive from {{ brand().authority }}. The HMAC signature and all SHA-256 checksums are verified before applying.
       </p>
       <form method="post" action="/tuning/import-pack" enctype="multipart/form-data">
         <div style="margin-bottom: 1rem;">
