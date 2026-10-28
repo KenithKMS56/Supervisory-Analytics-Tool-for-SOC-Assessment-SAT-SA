@@ -327,3 +327,13 @@ def test_server_side_cse_boundary_enforcement():
     require_cse_access("CSE-01", analyst)
     require_cse_access("CSE-02", analyst)
     require_cse_access("CSE-10", analyst)
+
+
+@pytest.mark.parametrize("template", ["admin_user_create.html", "admin_user_reset.html"])
+def test_generated_initial_passphrase_uses_csprng(template):
+    """The suggested passphrase is a credential: Math.random() is predictable."""
+    source = (Path(__file__).resolve().parent.parent / "src/satsa/admin/templates" / template).read_text(
+        encoding="utf-8"
+    )
+    assert "crypto.getRandomValues" in source
+    assert "Math.random" not in source
