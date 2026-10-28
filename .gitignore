@@ -49,3 +49,7 @@ data/backups/
 data/staging/
 data/quarantine/
 data/jobs/
+
+# Demonstration deployment (python entrypoint.py --demo, start-demo.bat): its own data, reports and config copy.
+demo-run/
+demo-data/

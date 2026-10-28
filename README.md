@@ -315,10 +315,13 @@ Runs both portals (Admin Portal and SAT-SA, shared RBAC and activity feed) witho
    Headless alternative: `satsa setup --admin-username ... --deployment-name ...`. See
    `docs/first_run_setup.md`.
 
-   **Demonstration deployment.** Start with `SATSA_DEMO=1` on a separate data directory, for
-   example `SATSA_DEMO=1 SATSA_DATA_DIR=./demo-data docker compose -p satsa-demo up -d`. A demo
-   deployment loads synthetic data, labels every page as a demonstration, and has these accounts
-   with published passphrases. A production deployment never has them:
+   **Demonstration deployment.** Double-click `start-demo.bat` (Windows; it uses Docker if
+   installed, otherwise this project's Python), or run `python entrypoint.py --demo`. The demo
+   keeps everything in `demo-run/`, so it never touches `data/`; stop it with `stop-demo.bat`
+   (or Ctrl+C) and delete `demo-run/` to start afresh. A demo deployment loads synthetic data,
+   labels every page as a demonstration, and has these accounts with published passphrases. Both
+   login pages have **one-click buttons** for them: *Analyst* and *Examiner* on `:8001`,
+   *nciipc_admin* and *admin* on `:8000`. A production deployment never has them:
 
    | Username | Assigned Role | Default Passphrase | Accessible Interfaces |
    | :--- | :--- | :--- | :--- |
@@ -329,13 +332,13 @@ Runs both portals (Admin Portal and SAT-SA, shared RBAC and activity feed) witho
 
    > **Upgrading:** the former `supervisor` role becomes `analyst` on startup; the untouched demo account `supervisor` is renamed `analyst` (`ChangeMe-Analyst#2026`), a rotated one keeps its name.
 
-   > **First login:** every seeded account must choose a new passphrase the first time it signs in. Until it does, its session can open the change-password page and nothing else (pages redirect there; APIs and mutating requests return HTTP 403). The new passphrase must be at least 12 characters and cannot be one of the defaults above. Accounts an administrator creates or resets with "force password change" ticked are held to the same rule.
+   > **First login:** the demo accounts above sign in straight away, so the buttons keep working. Accounts an administrator creates or resets with "force password change" ticked must choose a new passphrase the first time they sign in. Until they do, the session can open the change-password page and nothing else (pages redirect there; APIs and mutating requests return HTTP 403). The new passphrase must be at least 12 characters and cannot be one of the defaults above. In a production database created before deployment modes existed, the seeded accounts are held to the same rule.
 
    > **Network exposure:** `docker compose` publishes both ports on `127.0.0.1` only. To reach the portals from another machine, opt in with `SATSA_BIND_ADDRESS=0.0.0.0 docker compose up -d`, and turn on TLS first (`python scripts/generate_selfsigned_cert.py`, then `SATSA_TLS_CERT` / `SATSA_TLS_KEY`). See `docs/deployment_ops.md` Section 1.3.
 
 4. **Stop the platform:**
-   - **Windows**: `stop.bat`
-   - **Linux / macOS**: `docker compose down`
+   - **Windows**: `stop.bat` (the demo: `stop-demo.bat`)
+   - **Linux / macOS**: `docker compose down` (the demo: `docker compose -p satsa-demo down`)
 
 ---
 
@@ -386,9 +389,13 @@ For an air-gapped machine, install from a wheelhouse instead: [`docs/offline_ins
    uv run satsa serve --host 127.0.0.1 --port 8001
    ```
 
-5. **Open your browser:** Navigate to [http://127.0.0.1:8001](http://127.0.0.1:8001) and sign in
-   as `examiner` / `ChangeMe-Examiner#2026` or `analyst` / `ChangeMe-Analyst#2026` (Method 1's
-   table); each asks for a new passphrase the first time. Uploads and assessments started from
+   **Or in one command:** `uv run python entrypoint.py --demo` starts both portals and the worker
+   in `demo-run/` and loads the demonstration data itself; no `SATSA_DEMO` or separate data
+   directory needed.
+
+5. **Open your browser:** Navigate to [http://127.0.0.1:8001](http://127.0.0.1:8001) and click
+   **Analyst** or **Examiner** under the login form (Method 1's table lists the passphrases they
+   use). Uploads and assessments started from
    the web pages run as jobs: start the worker in a second terminal (same `SATSA_DEMO=1`) with
    `uv run satsa worker`, or start everything at once with `uv run python entrypoint.py`.
    Install under a short path on Windows (or enable long paths): a deep directory can exceed
@@ -507,6 +514,7 @@ satsa/
 ├── entrypoint.sh                # Container shell wrapper
 ├── start.bat                    # One-click Windows startup & automated healthcheck launcher
 ├── stop.bat                     # Clean Windows shutdown script
+├── start-demo.bat / stop-demo.bat  # Demo deployment in demo-run/ (Docker or Python), one-click sign-in
 ├── config/                      # Human-readable YAML rule configurations
 │   ├── rules.yaml               # Thresholds for all 20 rules (EG01-12, NS01-08)
 │   ├── scoring.yaml             # Domain weights, severity multipliers, CRI bands

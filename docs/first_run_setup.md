@@ -56,14 +56,27 @@ satsa deployment show
 
 ## Demo mode
 
-Start with `SATSA_DEMO=1` on a **separate data directory**:
+A demo runs with `SATSA_DEMO=1` on a **separate data directory**. The launchers keep everything
+in `demo-run/` (its own `data/`, `reports/` and a copy of `config/`), so the production `data/`
+is never touched:
 
 ```
-SATSA_DEMO=1 SATSA_DATA_DIR=./demo-data docker compose -p satsa-demo up -d
+start-demo.bat                  # Windows: Docker if installed, otherwise this project's Python
+python entrypoint.py --demo     # any OS, without Docker
 ```
+
+`stop-demo.bat` stops it; delete `demo-run/` to start the demo afresh. With Compose directly:
+
+```
+SATSA_DEMO=1 SATSA_DATA_DIR=./demo-run/data SATSA_REPORTS_DIR=./demo-run/reports \
+SATSA_CONFIG_DIR=./demo-run/config SATSA_CONTAINER_NAME=satsa-demo docker compose -p satsa-demo up -d
+```
+
+(copy `config/` to `demo-run/config/` first).
 
 - **Accounts.** The demonstration accounts are created, with published passphrases
-  (`README.md`). Each must still choose a new passphrase at first login.
+  (`README.md`). Both login pages have one-click buttons for them (*Analyst*, *Examiner* on
+  SAT-SA; *nciipc_admin*, *admin* on the Admin Portal), and they owe no passphrase change.
 - **Data.** Synthetic data is loaded by a `demo_seed` job, which the worker runs.
 - **Labelling.** Every page of both portals shows a "DEMONSTRATION DEPLOYMENT" banner.
 - **Isolation.** A process started with `SATSA_DEMO=1` against a production database refuses to
@@ -74,5 +87,6 @@ SATSA_DEMO=1 SATSA_DATA_DIR=./demo-data docker compose -p satsa-demo up -d
 
 `satsa migrate` (or the first start) records them as production, with `mode_origin` saying so.
 Their existing accounts stay, so no setup is pending. Demonstration accounts in such a database
-(e.g. `analyst` with `ChangeMe-Analyst#2026`) are still forced to change their passphrase at
-first login, as before. Remove or rotate them through the Admin Portal.
+(e.g. `analyst` with `ChangeMe-Analyst#2026`) are forced to change their passphrase at first
+login, because this is production. Its login pages show no one-click buttons. Remove or rotate
+these accounts through the Admin Portal.

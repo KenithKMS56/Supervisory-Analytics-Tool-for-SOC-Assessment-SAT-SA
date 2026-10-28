@@ -150,17 +150,17 @@
         <span class="pulse-dot"></span> Offline Local RBAC (PBKDF2-HMAC-SHA256)
       </div>
       <div class="demo-credentials-grid">
-        <div class="cred-item" onclick="fillCreds('analyst', 'ChangeMe-Analyst#2026')" title="Technical operator: ingestion, calibration, assessment runs">
+        <button type="button" class="cred-item" id="btnDemoAnalyst" onclick="signInAs('analyst', 'ChangeMe-Analyst#2026')" title="Sign in as the technical operator: ingestion, calibration, assessment runs">
           <span class="cred-role">Analyst</span>
           <code>analyst</code>
-        </div>
-        <div class="cred-item" onclick="fillCreds('examiner', 'ChangeMe-Examiner#2026')" title="Decision maker: review queue, blind review, regulatory dossiers">
+        </button>
+        <button type="button" class="cred-item" id="btnDemoExaminer" onclick="signInAs('examiner', 'ChangeMe-Examiner#2026')" title="Sign in as the decision maker: review queue, blind review, regulatory dossiers">
           <span class="cred-role">Examiner</span>
           <code>examiner</code>
-        </div>
+        </button>
       </div>
       <div class="demo-hint-text">
-        Demonstration deployment: these accounts' passphrases are published.
+        Demonstration deployment: click a role to sign in. These accounts' passphrases are published.
         Administrators use the Admin Portal (:8000).
       </div>
     </div>
@@ -474,9 +474,13 @@
   text-align: center;
   cursor: pointer;
   transition: all var(--transition-fast);
+  font: inherit;
+  color: inherit;
+  width: 100%;
 }
 
-.cred-item:hover {
+.cred-item:hover,
+.cred-item:focus-visible {
   border-color: var(--accent-primary);
   transform: translateY(-1px);
 }
@@ -517,13 +521,15 @@ function togglePasswordVisibility() {
   }
 }
 
-function fillCreds(u, p) {
+// Demo deployments only: fill in a published demonstration account and sign in with it.
+function signInAs(u, p) {
   const uInput = document.getElementById('username');
   const pInput = document.getElementById('password');
-  if (uInput && pInput) {
+  const form = document.getElementById('loginForm');
+  if (uInput && pInput && form) {
     uInput.value = u;
     pInput.value = p;
-    uInput.focus();
+    form.requestSubmit();
   }
 }
 

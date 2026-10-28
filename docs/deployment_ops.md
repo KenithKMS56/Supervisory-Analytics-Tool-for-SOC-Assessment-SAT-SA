@@ -61,18 +61,19 @@ What other machines can reach is decided by the published address, which is why 
 setting that defaults to loopback. When the portals listen beyond loopback over plain HTTP,
 start-up prints a warning.
 
-**First login.** A new database is seeded with four accounts whose passphrases are published
-in the README (`nciipc_admin`, `admin`, `analyst`, `examiner`). Each is created owing a
-passphrase change: signing in with the published passphrase opens a session that can reach
-the change-password page and nothing else (pages redirect there; APIs, downloads and every
-mutating request return HTTP 403). The same applies to any account an administrator creates
-or resets with "force password change" ticked. The new passphrase must be at least 12
+**First login.** A production deployment has no seeded accounts. Any account an administrator
+creates or resets with "force password change" ticked is created owing a passphrase change:
+signing in with the issued passphrase opens a session that can reach the change-password page
+and nothing else (pages redirect there; APIs, downloads and every mutating request return
+HTTP 403). A demo deployment is seeded with four accounts whose passphrases are published in
+the README (`nciipc_admin`, `admin`, `analyst`, `examiner`); they owe no change, because both
+login pages sign in with them in one click. The new passphrase must be at least 12
 characters, differ from the current one and not be one of the published defaults; the current
 passphrase is asked for again, and wrong attempts count towards the login lockout (5 failures
 in 15 minutes). Changing it ends that user's other sessions and is written to the audit log
-(`password_changed` / `PASSWORD_CHANGED`). A database created before this rule existed is
-covered at start-up: any seeded account still on its published passphrase is flagged then.
-There is no setting that turns this off. From the CLI, `satsa users set-password <username>`
+(`password_changed` / `PASSWORD_CHANGED`). A production database created before deployment
+modes existed still holds the seeded accounts; it is covered at start-up: any of them still on
+its published passphrase is flagged then. There is no setting that turns this off. From the CLI, `satsa users set-password <username>`
 sets a passphrase directly.
 
 **TLS (optional).** Serving is plain HTTP unless both a certificate and a key are configured.

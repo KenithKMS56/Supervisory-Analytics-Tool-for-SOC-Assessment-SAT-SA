@@ -15,7 +15,7 @@ export SATSA_DEMO=1        # demo mode: set before the data directory is created
 satsa generate-data && satsa ingest && satsa run
 satsa serve --host 127.0.0.1 --port 8001
 ```
-Open `http://127.0.0.1:8001` and sign in as `examiner` (`ChangeMe-Examiner#2026`). Seeded accounts must set a new passphrase on first login, so do this before the audience arrives.
+Open `http://127.0.0.1:8001` and click **Examiner** under the login form (it signs in as `examiner` / `ChangeMe-Examiner#2026`). On Windows, `start-demo.bat` does all of this, and `python entrypoint.py --demo` starts both portals and the worker in `demo-run/`.
 
 ---
 
