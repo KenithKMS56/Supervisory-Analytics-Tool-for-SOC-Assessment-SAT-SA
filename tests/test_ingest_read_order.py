@@ -127,3 +127,11 @@ def test_reading_the_largest_csv_first_changes_nothing_else(tmp_path, monkeypatc
         assert any(check == "file_partly_read" for _, check, *_ in early["dq"])
     else:
         assert len(early["tables"]["workflow_event"]) == 3000
+
+
+def test_files_are_taken_by_name_whatever_order_the_filesystem_lists_them(tmp_path, monkeypatch):
+    """NTFS lists a directory alphabetically, ext4 does not: ingest must not depend on either."""
+    listed = Path.rglob
+    monkeypatch.setattr(Path, "rglob", lambda self, pattern: reversed(list(listed(self, pattern))))
+    plain = _ingest(tmp_path, False, None, monkeypatch)
+    assert plain["reads"] == ["asset.csv", "case.csv", "closure.csv", "workflow_event.csv"]
