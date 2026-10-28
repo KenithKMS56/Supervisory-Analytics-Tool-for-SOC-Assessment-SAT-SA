@@ -17,7 +17,8 @@ it.
    ```
 
    A restart prints the same token until setup is done.
-2. **Open the Admin Portal** (`:8000`). It redirects to `/setup`. Enter:
+2. **Open the Admin Portal** (`:8000`) and sign in. Before setup, sign-in redirects to `/setup`.
+   Enter:
    - the token;
    - the first administrator's username and passphrase (at least 12 characters, not a
      published default);
@@ -32,8 +33,16 @@ it.
    - The token is deleted and `/setup` returns 404.
    - The setup is audited in both audit logs.
    - Wrong tokens are logged. After 5 failures in 15 minutes, setup is refused for 15 minutes.
-4. **Sign in** as the new administrator and create analyst and examiner accounts under *Users*.
-5. **Import data deliberately** through SAT-SA's upload page or `satsa ingest`, either real
+4. **Sign in** as the new administrator. In production the portal then asks you to enrol an
+   authenticator app (TOTP, offline) and shows 10 recovery codes once; keep them apart from the
+   device (`docs/security/mfa.md`).
+5. **Create analyst and examiner accounts** under *Users → Create New User*. The *Initial
+   Passphrase* box is filled with a random 16-character passphrase; leave *Require Password Reset
+   on Initial Login* ticked. Give the username and initial passphrase to the person yourself: the
+   portal does not send them. At their first SAT-SA sign-in (`:8001`) they must choose their own
+   passphrase before anything else opens. A forgotten passphrase is replaced with **Reset** on the
+   user's row.
+6. **Import data deliberately** through SAT-SA's upload page or `satsa ingest`, either real
    submissions or a sample you choose. A production deployment never loads demonstration data
    by itself, and its "Load Demonstration Data" action is refused (HTTP 403).
 

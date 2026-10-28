@@ -286,7 +286,7 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 
 ---
 
-### Method 1: One-Click Docker Deployment (Demo; the image has not been built in this project's recorded evidence)
+### Method 1: One-Click Docker Deployment (the image has not been built in this project's recorded evidence)
 
 Runs both portals (Admin Portal and SAT-SA, shared RBAC and activity feed) without a local Python environment:
 
@@ -309,8 +309,10 @@ Runs both portals (Admin Portal and SAT-SA, shared RBAC and activity feed) witho
    accounts and no data. The platform console prints a one-time setup token (also written to
    `data/secrets/setup_token`). Open the Admin Portal, which sends you to `/setup`, and enter the
    token there. Setup creates the first administrator and records the deployment name, time zone
-   and retention. That administrator then creates the analyst and examiner accounts. Headless
-   alternative: `satsa setup --admin-username ... --deployment-name ...`. See
+   and retention. That administrator then creates the analyst and examiner accounts. The steps,
+   including where each passphrase comes from, are in
+   [First sign-in on a production deployment](#first-sign-in-on-a-production-deployment).
+   Headless alternative: `satsa setup --admin-username ... --deployment-name ...`. See
    `docs/first_run_setup.md`.
 
    **Demonstration deployment.** Start with `SATSA_DEMO=1` on a separate data directory, for
@@ -366,7 +368,8 @@ For an air-gapped machine, install from a wheelhouse instead: [`docs/offline_ins
    data directory that does not exist yet (here `data/`, in a fresh clone). The deployment's mode
    is fixed when its database is first created: without `SATSA_DEMO=1` it is a production
    deployment, which has no accounts until first-run setup (`docs/first_run_setup.md`), so the
-   sign-in page would have no account to accept.
+   sign-in page would have no account to accept. For a production deployment, follow
+   [First sign-in on a production deployment](#first-sign-in-on-a-production-deployment) instead.
    ```bash
    export SATSA_DEMO=1              # Windows PowerShell: $env:SATSA_DEMO = "1"
 
@@ -405,6 +408,45 @@ pytest
 ```
 Then run the four commands of Method 2 without `uv run`, with `SATSA_DEMO=1` set as described
 there.
+
+---
+
+### First sign-in on a production deployment
+
+No portal shows or sends a ready-made passphrase. The first administrator chooses their own with a
+one-time token; analysts and examiners receive an initial passphrase from an administrator and
+replace it at their first sign-in. Start the platform without `SATSA_DEMO` (Method 1, or
+`python entrypoint.py`).
+
+1. **Copy the setup token.** The console prints `PRODUCTION deployment, not set up yet` followed
+   by a one-time token, also saved in `data/secrets/setup_token`. A restart prints the same token
+   until setup is done.
+2. **Create the first administrator** (Admin Portal, `:8000`). Before setup, the portal's sign-in
+   leads to `/setup`. Enter the token, then choose the administrator's username and passphrase
+   (at least 12 characters, not a published demo passphrase), the deployment name and time zone.
+   The token is then deleted and `/setup` returns 404.
+3. **Sign in and enrol the second factor.** In production every administrator needs an
+   authenticator app (any TOTP app; it works offline). Add the key the portal shows, enter the
+   6-digit code, and keep the **10 recovery codes** shown once afterwards, apart from the device.
+   Each later admin sign-in asks for a code. See `docs/security/mfa.md`.
+4. **Create the analyst and examiner accounts.** *Users → Create New User*: enter a username and
+   choose *Analyst* or *Examiner*. The **Initial Passphrase** box is filled with a random
+   16-character passphrase (**Generate** makes another). Leave **Require Password Reset on Initial
+   Login** ticked.
+5. **Hand over the initial passphrase.** Give the username and initial passphrase to the person
+   yourself, over a channel you trust. The portal does not e-mail or display it anywhere else, and
+   stores only a salted hash.
+6. **First sign-in to SAT-SA** (`:8001`). The person signs in with the initial passphrase and is
+   sent to *Set a New Passphrase*; nothing else opens until they choose their own (at least 12
+   characters).
+7. **Forgotten passphrase.** An administrator clicks **Reset** on the user's row in *Users*. The
+   reset page suggests a new random passphrase and requires a change at the next sign-in. A lost
+   authenticator is reset by another administrator: **Edit** on that user's row, then
+   **Reset second factor**.
+
+A database created before deployment modes existed is treated as production but keeps its old
+accounts and has no setup token: sign in with them, and any account still on its published demo
+passphrase must change it first.
 
 ---
 
