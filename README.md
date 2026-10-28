@@ -1,4 +1,4 @@
-![CI](https://github.com/KenithKMS56/Supervisory-Analytics-Tool-for-SOC-Assessment-SAT-SA/actions/workflows/test.yml/badge.svg?branch=hardening/sih26157)
+![CI](https://github.com/KenithKMS56/Supervisory-Analytics-Tool-for-SOC-Assessment-SAT-SA/actions/workflows/test.yml/badge.svg?branch=main)
 # SAT-SA: Supervisory Analytics Tool for SOC Assessment:
 **National Critical Information Infrastructure Protection Centre (NCIIPC)**
 
@@ -205,16 +205,17 @@ The **NCIIPC Administration Portal** (`http://localhost:8000`) is a dedicated su
      - **Scoped CSE**: Critical Sector Entity assigned to the user (e.g. `CSE-01 Northern Power Grid`).
    - Dynamic validation ensures the chosen CSE strictly belongs to the assigned organisation.
 
-2. **User Lifecycle & Session Control (`/users/{username}/edit`, `/users/{username}/reset-password`)**:
+2. **User Lifecycle & Session Control (`/users/{username}/edit`, `/users/{username}/reset`)**:
    - Status toggling (`ACTIVE` vs. `BLOCKED`): Immediately terminates all active sessions across both portals.
-   - Credential Reset: Generates random salt, hashes passphrase with 200,000 PBKDF2 iterations, revokes old sessions, and enforces a mandatory `force_password_change` flag.
+   - Credential Reset: suggests a random 16-character passphrase (browser CSPRNG), stores it with a fresh salt and 200,000 PBKDF2 iterations, revokes old sessions, and sets `force_password_change` (ticked by default) so the user picks their own at next sign-in.
+   - First administrator and second factor: a new production deployment is set up once at `/setup` with a local one-time token; administrators then enrol a TOTP authenticator (`/mfa/setup`, 10 one-time recovery codes), required in production. Another administrator can reset a lost authenticator. See [First sign-in on a production deployment](#first-sign-in-on-a-production-deployment).
 
 3. **Critical Sector Entity & Organisation Registries (`/organisations`, `/cses`)**:
    - Authoritative registry for national critical information infrastructure bodies.
    - Registry view showing active CSE count and provisioned analyst count per entity.
 
 4. **Independent Administrative Audit Log (`/audit`)**:
-   - Append-only log recording every administrative action (`USER_CREATED`, `ROLE_CHANGED`, `CSE_CHANGED`, `ACCOUNT_BLOCKED`, `PASSWORD_RESET`, `ORGANISATION_CREATED`, etc.).
+   - Append-only log recording every administrative action (`FIRST_RUN_SETUP`, `USER_CREATED`, `ROLE_CHANGED`, `CSE_CHANGED`, `ACCOUNT_BLOCKED`, `CREDENTIAL_RESET`, `MFA_RESET`, `ORGANISATION_CREATED`, etc.).
    - Hash-chained (`prev_hash`; SHA3-256 for new entries) and verifiable on demand via the UI; a signed off-box checkpoint (`satsa audit checkpoint`) also catches removal of the newest entries.
 
 ---
@@ -274,7 +275,7 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 | **Rule Threshold Sensitivity** (primary dataset) | **4 of 66** single-threshold ±20% moves change an outcome, all injected defects built just over their threshold (EG05 pairs, EG07, NS05, NS08's review period). None creates a false alarm on a clean entity on this seed; across the hard set, lowering EG05's pair threshold does. | n/a -- reported for transparency | Margins are synthetic; real calibration needs the pilot |
 | **DuckDB Scan Throughput** (one in-memory query, one thread; not an assessment time) | **7,570,338 rows/second** at 1,000,000 rows (`satsa benchmark`, 2026-10-01) | n/a | Scan only; end-to-end figures in the next row |
 | **Scale, end to end** (`docs/benchmarks.md`, recorded 2026-10-02) | 5,000,000 alerts (50 entities, 21.4M rows): ingest **46.6 s** (5.7 GB peak), assessment **124 s** (3.9 GB peak); first page after a run 17.4 s, repeats under 0.5 s | n/a | Measured on a 4-core / 24 GB laptop, uniform synthetic data |
-| **Automated Test Suite** | **1,130 passed, 0 failed, 33 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), incl. property-based tests, Python 3.11 (Windows), 2026-10-02. Statement-and-branch coverage **89.3%**; rules 94-100%, scoring 83-100%, audit-chain store 91%. Linux and CI not run. | 100% passing | Verified locally |
+| **Automated Test Suite** | **1,755 passed, 0 failed, 54 skipped** (skips: public routes in the RBAC matrix are exercised once, anonymously), incl. property-based and browser tests, Python 3.11 (Windows), 2026-10-28. Statement-and-branch coverage **88.4%**; rules 89-100%, scoring 80-100%, audit-chain store 90%. CI runs the suite on Linux (browser tests skipped there). | 100% passing | Verified locally |
 
 ---
 
@@ -465,26 +466,43 @@ The `satsa` command provides a complete command suite powered by Typer and Rich:
 Usage: satsa [OPTIONS] COMMAND [ARGS]...
 
 Commands:
+  version         Show the SAT-SA version.
+  setup           First-run setup from the shell, instead of the Admin Portal's /setup page.
+  deployment      Deployment mode and settings (docs/first_run_setup.md).
   generate-data   Generate a synthetic periodic SOC submission with ground-truth defects.
   ingest          Ingest CSV/JSON/SQLite exports (or --api-config local APIs), apply HMAC masking, build Parquet
                   (--source splunk|servicenow|thehive --entity <id> for a product export).
   run             Execute the supervisory assessment across all entities.
+  replay          Re-run a recorded assessment with its own configuration and source snapshot, and compare.
   seed-history    Seed genuine multi-period historical runs for the trend chart.
   serve           Launch the air-gapped web dashboard and REST API (loopback; optional TLS).
   admin           Launch the NCIIPC Administration Portal.
+  worker          Run the local job worker: imports, assessments and demo seeding.
+  jobs            Inspect and cancel durable jobs.
   tls-cert        Create a self-signed TLS certificate offline.
   report          Export supervisory dossiers (HTML, ReportLab PDF, and CSV).
   validate        Run the detector-implementation correctness harness (primary dataset).
   validate-stress Run the harder stress-scenario validation (borderline/ambiguous/noisy).
   validate-independent  Validate on a separately written generator, many seeds, vs naive baselines.
+  pilot           Independent pilot evaluation from blinded reviews (docs/shadow_pilot_runbook.md, Part B).
   benchmark       Benchmark DuckDB columnar scan throughput and query latency.
-  audit keygen / checkpoint / verify   Key pair; signed chain checkpoint; verify chain (+ checkpoint).
+  audit verify / head / keygen / checkpoint   Verify chain (+ checkpoint); head for off-box record; key pair; signed checkpoint.
+  backup / restore  Consistent backup; verify and restore into an empty directory (docs/backup_restore.md).
+  migrate         Apply pending schema migrations, recover and verify (docs/migrations.md).
+  verify-data     Check every published Parquet file against its recorded SHA-256.
+  recover         Quarantine what an interrupted writer left behind.
+  keys            Pseudonymisation keys in data/secrets/ (docs/key_management.md).
+  entity          Retire or reinstate entities (nothing is ever erased).
+  service-credential  Service credentials for the submission API (docs/api_credentials.md).
+  ops             Readiness, retention and diagnostics (docs/deployment_ops.md).
   offline-bundle  Package self-contained offline distribution archive.
+  release         Sign and verify offline bundles (docs/offline_install.md).
   rules export    Export and sign versioned rule-pack archive (.tar.gz).
   rules import    Verify cryptographic signature and import rule-pack.
   users list      List local RBAC identities and their roles.
   users set-password  Create/rotate a local identity's passphrase.
 ```
+`satsa <command> --help` lists each command's options.
 
 ### Example Commands:
 ```bash
@@ -508,8 +526,9 @@ satsa rules export -c config -o dist/nciipc_rules_v1.tar.gz
 
 ```
 satsa/
-├── Dockerfile                   # Hardened multi-portal container definition (Python 3.11-slim)
+├── Dockerfile / Containerfile   # Hardened multi-portal container definition (Python 3.11-slim)
 ├── docker-compose.yml           # Unified orchestration for ports 8000 and 8001
+├── Makefile                     # make check (lint, typecheck, test), format, offline-bundle
 ├── entrypoint.py                # Dual-portal concurrent process launcher & volume seeder
 ├── entrypoint.sh                # Container shell wrapper
 ├── start.bat                    # One-click Windows startup & automated healthcheck launcher
@@ -528,7 +547,10 @@ satsa/
 │   ├── data_requirements.md     # Canonical schemas & per-rule dependency matrix
 │   ├── infrastructure.md        # Hardware sizing and measured scale figures
 │   ├── validation.md            # Empirical precision/recall & lift methodology
-│   └── deployment_ops.md        # Air-gapped operations, backup & rule update guide
+│   ├── deployment_ops.md        # Air-gapped operations, backup & rule update guide
+│   └── first_run_setup.md       # Production setup token, first administrator, demo deployments
+├── demo_data/                   # Demonstration upload bundle (synthetic)
+├── scripts/                     # TLS certificate, wheelhouse, benchmark and validation helpers
 ├── src/satsa/                   # Core Python package
 │   ├── admin/                   # NCIIPC Administration Portal (:8000)
 │   │   ├── app.py               # FastAPI admin application definition & lifespan
@@ -538,13 +560,16 @@ satsa/
 │   │   └── templates/           # Dedicated Jinja2 templates for admin control tabs
 │   ├── api/routes.py            # SAT-SA Supervisory Tool (:8001) endpoints
 │   ├── auth/                    # Local PBKDF2 identity store & session tokens
+│   ├── cases/                   # Supervisory cases and blind-review tasks
 │   ├── cli.py                   # Typer CLI application entry point
+│   ├── deployment.py            # Production / demo mode, first-run setup token
 │   ├── ingest/ scoring/ validate/ # Ingestion & pseudonymisation; scoring; validation harness
+│   ├── jobs/                    # Durable job queue and worker (imports, assessments)
 │   ├── rules/                   # Deterministic DuckDB SQL rule definitions (EG/NS)
 │   ├── store/                   # DuckDB columnar engine & SQLite store (autocommit + WAL)
 │   └── ui/                      # Server-rendered Jinja2 templates & static assets
 │       ├── static/              # SAT-SA CSS stylesheets and vendored echarts.min.js
-│       └── templates/           # Clean, responsive HTML templates for all 10 tabs
+│       └── templates/           # Server-rendered HTML templates for every SAT-SA page
 ├── tests/                       # pytest suite: rules, scoring, RBAC, audit, ingest, offline, property tests
 ├── pyproject.toml               # PEP 621 package metadata, CLI, & dependencies
 └── README.md                    # Standard repository readme
@@ -587,6 +612,8 @@ satsa/
 - [`docs/shadow_pilot_runbook.md`](docs/shadow_pilot_runbook.md): Measuring accuracy against historical examiner workpapers.
 - [`docs/benchmarks.md`](docs/benchmarks.md) and [`docs/infrastructure.md`](docs/infrastructure.md): Measured ingest, assessment, page-load times and memory; hardware sizing.
 - [`docs/deployment_ops.md`](docs/deployment_ops.md) and [`docs/offline_install.md`](docs/offline_install.md): Air-gapped deployment, wheelhouse install, rule packs, backups.
+- [`docs/first_run_setup.md`](docs/first_run_setup.md), [`docs/security/mfa.md`](docs/security/mfa.md): Production setup token, first administrator, administrator second factor; demo deployments.
+- [`docs/backup_restore.md`](docs/backup_restore.md), [`docs/migrations.md`](docs/migrations.md), [`docs/key_management.md`](docs/key_management.md), [`docs/api_credentials.md`](docs/api_credentials.md): Backup and restore, schema migrations, pseudonymisation keys, submission-API credentials.
 - [`docs/ps_traceability.md`](docs/ps_traceability.md) and [`docs/legal_traceability.md`](docs/legal_traceability.md): Requirement to code, test and evidence; statutory context for legal review.
 - [`docs/usability_protocol.md`](docs/usability_protocol.md): Timed examiner tasks (no session run yet).
 - [`docs/slides_outline.md`](docs/slides_outline.md), [`docs/demo_script.md`](docs/demo_script.md): Presentation outline and demo click-path.

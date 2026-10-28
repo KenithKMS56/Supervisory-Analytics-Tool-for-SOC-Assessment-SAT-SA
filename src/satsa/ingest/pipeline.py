@@ -881,8 +881,9 @@ class IngestionPipeline:
         dir_path = Path(input_dir)
         # Suffixes are matched case-insensitively ("ALERTS.CSV" is a CSV on every platform).
         # Files are taken in the order they always were (CSV, then JSON, then NDJSON), with
-        # the newer formats after them.
-        found = [f for f in dir_path.rglob("*") if _is_submission_file(f)]
+        # the newer formats after them. Within a format they are taken by name: rglob lists in
+        # the filesystem's own order, alphabetical on NTFS but arbitrary on ext4.
+        found = [f for f in sorted(dir_path.rglob("*")) if _is_submission_file(f)]
         raw_files: list[Path | DatabaseTable] = [
             f for suffix in FILE_ORDER for f in found if f.suffix.lower() == suffix
         ]
