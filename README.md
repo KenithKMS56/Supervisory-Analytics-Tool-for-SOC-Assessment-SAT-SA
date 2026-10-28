@@ -286,7 +286,7 @@ The Admin Portal monitors SAT-SA's own operators (not CSE data). Both applicatio
 
 ---
 
-### Method 1: One-Click Docker Deployment (Demo; the image has not been built in this project's recorded evidence)
+### Method 1: One-Click Docker Deployment (the image has not been built in this project's recorded evidence)
 
 Runs both portals (Admin Portal and SAT-SA, shared RBAC and activity feed) without a local Python environment:
 
@@ -309,14 +309,19 @@ Runs both portals (Admin Portal and SAT-SA, shared RBAC and activity feed) witho
    accounts and no data. The platform console prints a one-time setup token (also written to
    `data/secrets/setup_token`). Open the Admin Portal, which sends you to `/setup`, and enter the
    token there. Setup creates the first administrator and records the deployment name, time zone
-   and retention. That administrator then creates the analyst and examiner accounts. Headless
-   alternative: `satsa setup --admin-username ... --deployment-name ...`. See
+   and retention. That administrator then creates the analyst and examiner accounts. The steps,
+   including where each passphrase comes from, are in
+   [First sign-in on a production deployment](#first-sign-in-on-a-production-deployment).
+   Headless alternative: `satsa setup --admin-username ... --deployment-name ...`. See
    `docs/first_run_setup.md`.
 
-   **Demonstration deployment.** Start with `SATSA_DEMO=1` on a separate data directory, for
-   example `SATSA_DEMO=1 SATSA_DATA_DIR=./demo-data docker compose -p satsa-demo up -d`. A demo
-   deployment loads synthetic data, labels every page as a demonstration, and has these accounts
-   with published passphrases. A production deployment never has them:
+   **Demonstration deployment.** Double-click `start-demo.bat` (Windows; it uses Docker if
+   installed, otherwise this project's Python), or run `python entrypoint.py --demo`. The demo
+   keeps everything in `demo-run/`, so it never touches `data/`; stop it with `stop-demo.bat`
+   (or Ctrl+C) and delete `demo-run/` to start afresh. A demo deployment loads synthetic data,
+   labels every page as a demonstration, and has these accounts with published passphrases. Both
+   login pages have **one-click buttons** for them: *Analyst* and *Examiner* on `:8001`,
+   *nciipc_admin* and *admin* on `:8000`. A production deployment never has them:
 
    | Username | Assigned Role | Default Passphrase | Accessible Interfaces |
    | :--- | :--- | :--- | :--- |
@@ -327,13 +332,13 @@ Runs both portals (Admin Portal and SAT-SA, shared RBAC and activity feed) witho
 
    > **Upgrading:** the former `supervisor` role becomes `analyst` on startup; the untouched demo account `supervisor` is renamed `analyst` (`ChangeMe-Analyst#2026`), a rotated one keeps its name.
 
-   > **First login:** every seeded account must choose a new passphrase the first time it signs in. Until it does, its session can open the change-password page and nothing else (pages redirect there; APIs and mutating requests return HTTP 403). The new passphrase must be at least 12 characters and cannot be one of the defaults above. Accounts an administrator creates or resets with "force password change" ticked are held to the same rule.
+   > **First login:** the demo accounts above sign in straight away, so the buttons keep working. Accounts an administrator creates or resets with "force password change" ticked must choose a new passphrase the first time they sign in. Until they do, the session can open the change-password page and nothing else (pages redirect there; APIs and mutating requests return HTTP 403). The new passphrase must be at least 12 characters and cannot be one of the defaults above. In a production database created before deployment modes existed, the seeded accounts are held to the same rule.
 
    > **Network exposure:** `docker compose` publishes both ports on `127.0.0.1` only. To reach the portals from another machine, opt in with `SATSA_BIND_ADDRESS=0.0.0.0 docker compose up -d`, and turn on TLS first (`python scripts/generate_selfsigned_cert.py`, then `SATSA_TLS_CERT` / `SATSA_TLS_KEY`). See `docs/deployment_ops.md` Section 1.3.
 
 4. **Stop the platform:**
-   - **Windows**: `stop.bat`
-   - **Linux / macOS**: `docker compose down`
+   - **Windows**: `stop.bat` (the demo: `stop-demo.bat`)
+   - **Linux / macOS**: `docker compose down` (the demo: `docker compose -p satsa-demo down`)
 
 ---
 
@@ -366,7 +371,8 @@ For an air-gapped machine, install from a wheelhouse instead: [`docs/offline_ins
    data directory that does not exist yet (here `data/`, in a fresh clone). The deployment's mode
    is fixed when its database is first created: without `SATSA_DEMO=1` it is a production
    deployment, which has no accounts until first-run setup (`docs/first_run_setup.md`), so the
-   sign-in page would have no account to accept.
+   sign-in page would have no account to accept. For a production deployment, follow
+   [First sign-in on a production deployment](#first-sign-in-on-a-production-deployment) instead.
    ```bash
    export SATSA_DEMO=1              # Windows PowerShell: $env:SATSA_DEMO = "1"
 
@@ -383,9 +389,13 @@ For an air-gapped machine, install from a wheelhouse instead: [`docs/offline_ins
    uv run satsa serve --host 127.0.0.1 --port 8001
    ```
 
-5. **Open your browser:** Navigate to [http://127.0.0.1:8001](http://127.0.0.1:8001) and sign in
-   as `examiner` / `ChangeMe-Examiner#2026` or `analyst` / `ChangeMe-Analyst#2026` (Method 1's
-   table); each asks for a new passphrase the first time. Uploads and assessments started from
+   **Or in one command:** `uv run python entrypoint.py --demo` starts both portals and the worker
+   in `demo-run/` and loads the demonstration data itself; no `SATSA_DEMO` or separate data
+   directory needed.
+
+5. **Open your browser:** Navigate to [http://127.0.0.1:8001](http://127.0.0.1:8001) and click
+   **Analyst** or **Examiner** under the login form (Method 1's table lists the passphrases they
+   use). Uploads and assessments started from
    the web pages run as jobs: start the worker in a second terminal (same `SATSA_DEMO=1`) with
    `uv run satsa worker`, or start everything at once with `uv run python entrypoint.py`.
    Install under a short path on Windows (or enable long paths): a deep directory can exceed
@@ -405,6 +415,45 @@ pytest
 ```
 Then run the four commands of Method 2 without `uv run`, with `SATSA_DEMO=1` set as described
 there.
+
+---
+
+### First sign-in on a production deployment
+
+No portal shows or sends a ready-made passphrase. The first administrator chooses their own with a
+one-time token; analysts and examiners receive an initial passphrase from an administrator and
+replace it at their first sign-in. Start the platform without `SATSA_DEMO` (Method 1, or
+`python entrypoint.py`).
+
+1. **Copy the setup token.** The console prints `PRODUCTION deployment, not set up yet` followed
+   by a one-time token, also saved in `data/secrets/setup_token`. A restart prints the same token
+   until setup is done.
+2. **Create the first administrator** (Admin Portal, `:8000`). Before setup, the portal's sign-in
+   leads to `/setup`. Enter the token, then choose the administrator's username and passphrase
+   (at least 12 characters, not a published demo passphrase), the deployment name and time zone.
+   The token is then deleted and `/setup` returns 404.
+3. **Sign in and enrol the second factor.** In production every administrator needs an
+   authenticator app (any TOTP app; it works offline). Add the key the portal shows, enter the
+   6-digit code, and keep the **10 recovery codes** shown once afterwards, apart from the device.
+   Each later admin sign-in asks for a code. See `docs/security/mfa.md`.
+4. **Create the analyst and examiner accounts.** *Users → Create New User*: enter a username and
+   choose *Analyst* or *Examiner*. The **Initial Passphrase** box is filled with a random
+   16-character passphrase (**Generate** makes another). Leave **Require Password Reset on Initial
+   Login** ticked.
+5. **Hand over the initial passphrase.** Give the username and initial passphrase to the person
+   yourself, over a channel you trust. The portal does not e-mail or display it anywhere else, and
+   stores only a salted hash.
+6. **First sign-in to SAT-SA** (`:8001`). The person signs in with the initial passphrase and is
+   sent to *Set a New Passphrase*; nothing else opens until they choose their own (at least 12
+   characters).
+7. **Forgotten passphrase.** An administrator clicks **Reset** on the user's row in *Users*. The
+   reset page suggests a new random passphrase and requires a change at the next sign-in. A lost
+   authenticator is reset by another administrator: **Edit** on that user's row, then
+   **Reset second factor**.
+
+A database created before deployment modes existed is treated as production but keeps its old
+accounts and has no setup token: sign in with them, and any account still on its published demo
+passphrase must change it first.
 
 ---
 
@@ -465,6 +514,7 @@ satsa/
 ├── entrypoint.sh                # Container shell wrapper
 ├── start.bat                    # One-click Windows startup & automated healthcheck launcher
 ├── stop.bat                     # Clean Windows shutdown script
+├── start-demo.bat / stop-demo.bat  # Demo deployment in demo-run/ (Docker or Python), one-click sign-in
 ├── config/                      # Human-readable YAML rule configurations
 │   ├── rules.yaml               # Thresholds for all 20 rules (EG01-12, NS01-08)
 │   ├── scoring.yaml             # Domain weights, severity multipliers, CRI bands

@@ -268,10 +268,8 @@ def prepare_deployment(data_dir: Path | str = "data") -> list[str]:
         store.seed_default_organisations_and_cses()
         if current == DEMO:
             store.seed_default_admin()
-            for username in store.flag_unrotated_default_accounts():
-                lines.append(f"[!] Account '{username}' still uses its published default passphrase: "
-                             "a new one must be set at first login.")
-            lines.append("[+] DEMONSTRATION deployment: synthetic data and published passphrases.")
+            lines.append("[+] DEMONSTRATION deployment: synthetic data and published passphrases "
+                         "(one-click sign-in on both login pages).")
             has_findings = store.conn.execute("SELECT 1 FROM findings LIMIT 1").fetchone() is not None
             pending = store.conn.execute(
                 "SELECT 1 FROM jobs WHERE kind = 'demo_seed' AND state IN ('queued', 'running')"

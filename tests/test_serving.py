@@ -249,8 +249,8 @@ def test_portal_serves_https_with_the_generated_certificate(tmp_path):
         with pytest.raises(urllib.error.HTTPError) as redirect:
             opener.open(request, timeout=30)
         assert redirect.value.code == 303
-        # A fresh install: the seeded passphrase only leads to the change-password page.
-        assert redirect.value.headers["location"] == "/change-password"
+        # A fresh demo install: the seeded account signs in straight away (one-click demo sign-in).
+        assert redirect.value.headers["location"] == "/portfolio"
         cookie = redirect.value.headers["set-cookie"]
         assert "satsa_session=" in cookie and "Secure" in cookie and "HttpOnly" in cookie
     finally:

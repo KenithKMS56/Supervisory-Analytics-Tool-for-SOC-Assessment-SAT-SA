@@ -14,8 +14,9 @@ Use one or the other, not both.
 
 Start from an empty store, otherwise earlier runs appear in the trend chart and the
 CSE-06 finding below does not fire. Stop the server, then in File Explorer rename or
-delete `data/parquet` and `data/satsa.db`. On the next start the seeded accounts ask for
-a new passphrase at first login.
+delete `data/parquet` and `data/satsa.db`. With `start-demo.bat` or
+`python entrypoint.py --demo`, delete the `demo-run` folder instead. The demo accounts
+sign in with one click from the login pages.
 
 ## Steps
 

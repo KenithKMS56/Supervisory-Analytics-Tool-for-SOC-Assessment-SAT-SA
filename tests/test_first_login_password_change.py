@@ -1,8 +1,11 @@
-"""Seeded default accounts (and admin-issued passphrases) must be replaced at first login.
+"""Admin-issued passphrases, and seeded default accounts in a production database, must be
+replaced at first login.
 
 A session opened with such a passphrase can reach the change-password page and nothing
-else, on both portals. conftest.py lifts the requirement for the rest of the suite; the
-`first_login_enforced` fixture puts the real seeding and start-up behaviour back here.
+else, on both portals. A demo deployment's accounts owe no change: their passphrases are
+published for the login pages' one-click buttons. conftest.py lifts the requirement for the
+rest of the suite; the `first_login_enforced` fixture puts the real seeding and start-up
+behaviour back here.
 """
 
 import uuid
@@ -11,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from satsa import deployment
 from satsa.admin.app import app as admin_app
 from satsa.api.routes import app as satsa_app
 from satsa.auth.identities import (
@@ -40,28 +44,58 @@ def _change(client: TestClient, current: str, new: str = NEW, confirm: str | Non
     )
 
 
+def _pre_modes_production(path) -> SQLiteStore:
+    """A production database created before deployment modes existed: it still holds the seeded
+    accounts with their published passphrases (the suite creates databases as demos)."""
+    store = SQLiteStore(path)
+    store.seed_default_organisations_and_cses()
+    store.seed_default_admin()
+    deployment.set_settings(
+        store, {"mode": deployment.PRODUCTION, "setup_completed_at": "before deployment modes"}, actor="system"
+    )
+    return store
+
+
 # ------------------------------------------------------------------ seeding and start-up
 
 
-def test_every_seeded_account_is_created_owing_a_passphrase_change(tmp_path, first_login_enforced):
-    store = SQLiteStore(tmp_path / "fresh.db")
+def test_demo_accounts_sign_in_without_a_passphrase_change(tmp_path, monkeypatch, first_login_enforced):
+    """The login pages' one-click buttons keep working: a fresh demo install, end to end."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "data").mkdir()
+    store = SQLiteStore("data/satsa.db")
     store.seed_default_organisations_and_cses()
     store.seed_default_admin()
     try:
+        assert deployment.is_demo(store)
         assert set(SEEDED_DEFAULT_PASSPHRASES) == {"admin", "analyst", "examiner", "nciipc_admin"}
+        assert store.flag_unrotated_default_accounts() == []
         for username in SEEDED_DEFAULT_PASSPHRASES:
-            assert _flag(store, username) == 1, username
+            assert _flag(store, username) == 0, username
     finally:
         store.close()
 
+    def sign_in(app, username):
+        return TestClient(app).post(
+            "/login", data={"username": username, "password": SEEDED_DEFAULT_PASSPHRASES[username]},
+            follow_redirects=False,
+        )
 
-def test_start_up_flags_a_database_seeded_before_rotation_was_enforced(tmp_path, first_login_enforced):
-    store = SQLiteStore(tmp_path / "old.db")
-    store.seed_default_admin()
+    for username in ("analyst", "examiner"):
+        assert sign_in(satsa_app, username).headers["location"] == "/portfolio", username
+    admin_app.state.store = SQLiteStore("data/satsa.db")
     try:
-        # An older database: the seeded accounts exist with their defaults and no flag.
-        store.conn.execute("UPDATE identities SET force_password_change = 0")
-        store.conn.commit()
+        for username in ("nciipc_admin", "admin"):
+            login = sign_in(admin_app, username)
+            assert login.status_code == 303 and login.headers["location"] == "/", username
+    finally:
+        admin_app.state.store.close()
+
+
+def test_start_up_flags_seeded_accounts_in_a_production_database(tmp_path, first_login_enforced):
+    store = _pre_modes_production(tmp_path / "old.db")
+    try:
+        assert all(_flag(store, u) == 0 for u in SEEDED_DEFAULT_PASSPHRASES)
         assert sorted(store.flag_unrotated_default_accounts()) == sorted(SEEDED_DEFAULT_PASSPHRASES)
         assert all(_flag(store, u) == 1 for u in SEEDED_DEFAULT_PASSPHRASES)
 
@@ -89,9 +123,12 @@ def test_passphrase_policy():
 def test_satsa_seeded_default_login_can_only_set_a_new_passphrase(
     tmp_path, monkeypatch, first_login_enforced
 ):
-    """A fresh install, end to end, with the real seeded `analyst` account."""
+    """A production database with the seeded `analyst` account, end to end, after start-up."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data").mkdir()
+    store = _pre_modes_production("data/satsa.db")
+    store.flag_unrotated_default_accounts()
+    store.close()
     default = SEEDED_DEFAULT_PASSPHRASES["analyst"]
     c = TestClient(satsa_app)
 
@@ -209,10 +246,10 @@ def test_change_password_needs_a_session():
 
 
 @pytest.fixture
-def fresh_admin_portal(tmp_path, first_login_enforced):
-    store = SQLiteStore(tmp_path / "admin.db")
-    store.seed_default_organisations_and_cses()
-    store.seed_default_admin()
+def fresh_admin_portal(tmp_path, monkeypatch, first_login_enforced):
+    monkeypatch.setenv("SATSA_ADMIN_MFA", "optional")  # production requires MFA: test_admin_mfa.py
+    store = _pre_modes_production(tmp_path / "admin.db")
+    store.flag_unrotated_default_accounts()
     admin_app.state.store = store
     yield store
     store.close()

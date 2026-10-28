@@ -197,7 +197,8 @@ def test_demo_is_labelled_seeded_and_loads_its_data_through_one_job(tmp_path, mo
     try:
         assert deployment.is_demo(store)
         flags = dict(store.conn.execute("SELECT username, force_password_change FROM identities").fetchall())
-        assert set(flags) >= {"admin", "analyst", "examiner", "nciipc_admin"} and set(flags.values()) == {1}
+        # Published for one-click sign-in, so no change is owed (test_first_login_password_change.py).
+        assert set(flags) >= {"admin", "analyst", "examiner", "nciipc_admin"} and set(flags.values()) == {0}
         jobs = store.conn.execute("SELECT kind, state FROM jobs").fetchall()
         assert [tuple(j) for j in jobs] == [("demo_seed", "queued")]
     finally:

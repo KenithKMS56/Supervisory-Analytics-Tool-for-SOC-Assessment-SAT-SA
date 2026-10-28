@@ -17,7 +17,8 @@ it.
    ```
 
    A restart prints the same token until setup is done.
-2. **Open the Admin Portal** (`:8000`). It redirects to `/setup`. Enter:
+2. **Open the Admin Portal** (`:8000`) and sign in. Before setup, sign-in redirects to `/setup`.
+   Enter:
    - the token;
    - the first administrator's username and passphrase (at least 12 characters, not a
      published default);
@@ -32,8 +33,16 @@ it.
    - The token is deleted and `/setup` returns 404.
    - The setup is audited in both audit logs.
    - Wrong tokens are logged. After 5 failures in 15 minutes, setup is refused for 15 minutes.
-4. **Sign in** as the new administrator and create analyst and examiner accounts under *Users*.
-5. **Import data deliberately** through SAT-SA's upload page or `satsa ingest`, either real
+4. **Sign in** as the new administrator. In production the portal then asks you to enrol an
+   authenticator app (TOTP, offline) and shows 10 recovery codes once; keep them apart from the
+   device (`docs/security/mfa.md`).
+5. **Create analyst and examiner accounts** under *Users → Create New User*. The *Initial
+   Passphrase* box is filled with a random 16-character passphrase; leave *Require Password Reset
+   on Initial Login* ticked. Give the username and initial passphrase to the person yourself: the
+   portal does not send them. At their first SAT-SA sign-in (`:8001`) they must choose their own
+   passphrase before anything else opens. A forgotten passphrase is replaced with **Reset** on the
+   user's row.
+6. **Import data deliberately** through SAT-SA's upload page or `satsa ingest`, either real
    submissions or a sample you choose. A production deployment never loads demonstration data
    by itself, and its "Load Demonstration Data" action is refused (HTTP 403).
 
@@ -47,14 +56,27 @@ satsa deployment show
 
 ## Demo mode
 
-Start with `SATSA_DEMO=1` on a **separate data directory**:
+A demo runs with `SATSA_DEMO=1` on a **separate data directory**. The launchers keep everything
+in `demo-run/` (its own `data/`, `reports/` and a copy of `config/`), so the production `data/`
+is never touched:
 
 ```
-SATSA_DEMO=1 SATSA_DATA_DIR=./demo-data docker compose -p satsa-demo up -d
+start-demo.bat                  # Windows: Docker if installed, otherwise this project's Python
+python entrypoint.py --demo     # any OS, without Docker
 ```
+
+`stop-demo.bat` stops it; delete `demo-run/` to start the demo afresh. With Compose directly:
+
+```
+SATSA_DEMO=1 SATSA_DATA_DIR=./demo-run/data SATSA_REPORTS_DIR=./demo-run/reports \
+SATSA_CONFIG_DIR=./demo-run/config SATSA_CONTAINER_NAME=satsa-demo docker compose -p satsa-demo up -d
+```
+
+(copy `config/` to `demo-run/config/` first).
 
 - **Accounts.** The demonstration accounts are created, with published passphrases
-  (`README.md`). Each must still choose a new passphrase at first login.
+  (`README.md`). Both login pages have one-click buttons for them (*Analyst*, *Examiner* on
+  SAT-SA; *nciipc_admin*, *admin* on the Admin Portal), and they owe no passphrase change.
 - **Data.** Synthetic data is loaded by a `demo_seed` job, which the worker runs.
 - **Labelling.** Every page of both portals shows a "DEMONSTRATION DEPLOYMENT" banner.
 - **Isolation.** A process started with `SATSA_DEMO=1` against a production database refuses to
@@ -65,5 +87,6 @@ SATSA_DEMO=1 SATSA_DATA_DIR=./demo-data docker compose -p satsa-demo up -d
 
 `satsa migrate` (or the first start) records them as production, with `mode_origin` saying so.
 Their existing accounts stay, so no setup is pending. Demonstration accounts in such a database
-(e.g. `analyst` with `ChangeMe-Analyst#2026`) are still forced to change their passphrase at
-first login, as before. Remove or rotate them through the Admin Portal.
+(e.g. `analyst` with `ChangeMe-Analyst#2026`) are forced to change their passphrase at first
+login, because this is production. Its login pages show no one-click buttons. Remove or rotate
+these accounts through the Admin Portal.

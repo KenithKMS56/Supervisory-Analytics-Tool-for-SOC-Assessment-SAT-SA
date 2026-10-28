@@ -916,13 +916,14 @@ class SQLiteStore:
             for username, role, passphrase in DEFAULT_IDENTITIES:
                 salt = generate_salt()
                 pass_hash = hash_passphrase(passphrase, salt)
-                # The passphrase is published, so the account must rotate it at first login. The
-                # demo administrator is created with its Admin Portal standing here, once; nothing
-                # restores it later if an administrator changes it (see seed_default_admin).
+                # Only a demo deployment is seeded (see __init__). Its passphrases are published so
+                # the login pages can sign in with one click, so no change is owed at first login.
+                # The demo administrator is created with its Admin Portal standing here, once;
+                # nothing restores it later if an administrator changes it (see seed_default_admin).
                 is_admin = role == "admin"
                 self.conn.execute(
                     "INSERT OR REPLACE INTO identities (username, role, pass_hash, pass_salt, "
-                    "force_password_change, org_id, status, is_admin_user) VALUES (?, ?, ?, ?, 1, ?, 'ACTIVE', ?)",
+                    "force_password_change, org_id, status, is_admin_user) VALUES (?, ?, ?, ?, 0, ?, 'ACTIVE', ?)",
                     (username, role, pass_hash, salt.hex(), "ORG-NCIIPC" if is_admin else None, int(is_admin)),
                 )
         return True
@@ -930,11 +931,16 @@ class SQLiteStore:
     def flag_unrotated_default_accounts(self) -> list[str]:
         """Require a passphrase change on every seeded account still using its published default.
 
-        Run at application start, so a database seeded before first-login rotation was
-        enforced is covered too. Returns the usernames newly flagged.
+        Run at application start, so a production database created before deployment modes
+        existed, which still holds the seeded accounts, is covered. A demo deployment is left
+        alone: its published passphrases are what the login pages' one-click buttons use.
+        Returns the usernames newly flagged.
         """
         from satsa.auth.identities import SEEDED_DEFAULT_PASSPHRASES, verify_passphrase
+        from satsa.deployment import is_demo
 
+        if is_demo(self):
+            return []
         flagged: list[str] = []
         for username, passphrase in SEEDED_DEFAULT_PASSPHRASES.items():
             row = self.conn.execute(
@@ -1672,13 +1678,14 @@ class SQLiteStore:
             salt = generate_salt()
             pass_hash = hash_passphrase(passphrase, salt)
             with self.transaction():
-                # force_password_change = 1: the bootstrap passphrase is published.
+                # force_password_change = 0: a demo account, signed in with one click from the
+                # Admin Portal's login page (see seed_default_identities).
                 self.conn.execute(
                     """
                     INSERT INTO identities (
                         username, role, pass_hash, pass_salt, is_blocked,
                         org_id, cse_id, status, is_admin_user, force_password_change
-                    ) VALUES (?, ?, ?, ?, 0, 'ORG-NCIIPC', NULL, 'ACTIVE', 1, 1)
+                    ) VALUES (?, ?, ?, ?, 0, 'ORG-NCIIPC', NULL, 'ACTIVE', 1, 0)
                     """,
                     (username, role, pass_hash, salt.hex()),
                 )

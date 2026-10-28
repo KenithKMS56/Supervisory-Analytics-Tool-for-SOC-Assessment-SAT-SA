@@ -107,9 +107,16 @@
 <script>
 function generatePassphrase() {
   var chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*";
+  // CSPRNG; bytes at or above the largest multiple of chars.length are dropped so every
+  // character is equally likely.
+  var limit = 256 - (256 % chars.length);
   var pass = "";
-  for (var i = 0; i < 16; i++) {
-    pass += chars.charAt(Math.floor(Math.random() * chars.length));
+  var buf = new Uint8Array(32);
+  while (pass.length < 16) {
+    crypto.getRandomValues(buf);
+    for (var i = 0; i < buf.length && pass.length < 16; i++) {
+      if (buf[i] < limit) pass += chars.charAt(buf[i] % chars.length);
+    }
   }
   document.getElementById("new_password").value = pass;
 }

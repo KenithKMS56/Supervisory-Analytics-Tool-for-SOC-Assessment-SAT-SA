@@ -3,3 +3,6 @@ src/satsa/ui/static/vendor/** -text
 
 # Binary documents: never convert line endings (a converted PDF has wrong byte offsets).
 *.pdf binary
+
+# Windows batch files: cmd misreads labels and goto in files with LF line endings.
+*.bat text eol=crlf

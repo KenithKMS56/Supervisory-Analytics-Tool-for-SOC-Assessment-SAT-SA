@@ -11,11 +11,16 @@ DuckDB Parquet storage, and the admin activity feed.
 Bind address and TLS come from the environment (see satsa.serving): SATSA_HOST
 (default 127.0.0.1) and SATSA_TLS_CERT + SATSA_TLS_KEY (default: plain HTTP).
 `python entrypoint.py --healthcheck` probes both portals with the same settings.
+
+`python entrypoint.py --demo` starts a demonstration deployment (satsa.deployment) in its own
+directory, demo-run/, next to this file: its own data/ and reports/, and a copy of config/ made
+on its first start. The working directory's data/ is never touched.
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -24,6 +29,19 @@ from pathlib import Path
 
 ADMIN_PORT = 8000
 SATSA_PORT = 8001
+REPO = Path(__file__).resolve().parent
+DEMO_DIR = REPO / "demo-run"
+
+
+def enter_demo_dir() -> None:
+    """Run the platform as a demo from DEMO_DIR. Tuning there edits the demo's own config copy;
+    docs/ is refreshed on each start because the portals render validation reports from it."""
+    DEMO_DIR.mkdir(exist_ok=True)
+    if not (DEMO_DIR / "config").exists():
+        shutil.copytree(REPO / "config", DEMO_DIR / "config")
+    shutil.copytree(REPO / "docs", DEMO_DIR / "docs", dirs_exist_ok=True)
+    os.environ["SATSA_DEMO"] = "1"
+    os.chdir(DEMO_DIR)
 
 
 def healthcheck() -> int:
@@ -54,6 +72,8 @@ def main() -> None:
 
     if "--healthcheck" in sys.argv[1:]:
         sys.exit(healthcheck())
+    if "--demo" in sys.argv[1:]:
+        enter_demo_dir()
 
     try:
         config = serving_config()

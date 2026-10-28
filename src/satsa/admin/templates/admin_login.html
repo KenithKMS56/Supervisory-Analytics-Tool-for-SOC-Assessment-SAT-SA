@@ -91,6 +91,39 @@
       animation: spin 0.6s linear infinite;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+    .demo-accounts {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.5rem;
+      margin-top: 0.6rem;
+    }
+    .demo-account {
+      background: var(--admin-surface-subtle);
+      border: 1px solid var(--admin-border);
+      border-radius: 8px;
+      padding: 0.5rem;
+      font: inherit;
+      color: var(--admin-text-primary);
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s ease, transform 0.15s ease;
+    }
+    .demo-account:hover,
+    .demo-account:focus-visible {
+      border-color: var(--accent-primary);
+      transform: translateY(-1px);
+    }
+    .demo-account span {
+      display: block;
+      font-size: 0.7rem;
+      color: var(--admin-text-muted);
+      margin-bottom: 2px;
+    }
+    .demo-account code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.76rem;
+      color: var(--accent-primary);
+    }
   </style>
 </head>
 <body>
@@ -167,9 +200,19 @@
           Demonstration accounts
         </div>
         <div style="font-size: 0.76rem; color: var(--admin-text-muted); line-height: 1.5;">
-          This is a demonstration deployment. Its accounts' passphrases are published:<br>
-          <code style="font-family: 'JetBrains Mono', monospace; color: var(--accent-primary);">nciipc_admin / ChangeMe-NCIIPC#2026</code><br>
-          or demo administrator: <code style="font-family: 'JetBrains Mono', monospace; color: var(--accent-primary);">admin / ChangeMe-Admin#2026</code>.
+          This is a demonstration deployment: click an account to sign in. Its passphrases are published
+          (<code style="font-family: 'JetBrains Mono', monospace;">ChangeMe-NCIIPC#2026</code>,
+          <code style="font-family: 'JetBrains Mono', monospace;">ChangeMe-Admin#2026</code>).
+        </div>
+        <div class="demo-accounts">
+          <button type="button" class="demo-account" id="btnDemoSuperAdmin" onclick="signInAs('nciipc_admin', 'ChangeMe-NCIIPC#2026')" title="Sign in as the demo Super Administrator">
+            <span>Super Administrator</span>
+            <code>nciipc_admin</code>
+          </button>
+          <button type="button" class="demo-account" id="btnDemoAdmin" onclick="signInAs('admin', 'ChangeMe-Admin#2026')" title="Sign in as the demo administrator">
+            <span>Administrator</span>
+            <code>admin</code>
+          </button>
         </div>
       </div>
       {% endif %}
@@ -184,6 +227,12 @@
   </div>
 
   <script>
+    // Demo deployments only: fill in a published demonstration account and sign in with it.
+    function signInAs(u, p) {
+      document.getElementById('username').value = u;
+      document.getElementById('password').value = p;
+      document.getElementById('adminLoginForm').requestSubmit();
+    }
     document.getElementById('adminLoginForm').addEventListener('submit', function() {
       var btn = document.getElementById('btnAdminSubmit');
       var spinner = document.getElementById('adminLoginSpinner');
